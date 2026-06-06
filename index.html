@@ -51,6 +51,51 @@
 <div id="root"></div>
 
 <script>
+// === CORS 프록시 자동 래퍼 (GitHub Pages/모바일용) ===
+(function(){
+  // PC 로컬 실행에서는 프록시 안 씀
+  if(location.protocol === 'file:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1'){
+    console.log('🏠 로컬 모드 - 프록시 비활성');
+    return;
+  }
+  
+  const PROXY = 'https://corsproxy.io/?';
+  const TARGETS = [
+    'query1.finance.yahoo.com',
+    'query2.finance.yahoo.com',
+    'data.krx.co.kr',
+    'finance.naver.com',
+    'openapi.ls-sec.co.kr',
+    'opendart.fss.or.kr',
+    'www.alphavantage.co'
+  ];
+  
+  function needsProxy(url){
+    if(typeof url !== 'string') return false;
+    if(url.includes('corsproxy.io')) return false;
+    return TARGETS.some(d => url.includes(d));
+  }
+  
+  function proxify(url){
+    return needsProxy(url) ? (PROXY + encodeURIComponent(url)) : url;
+  }
+  
+  const originalFetch = window.fetch;
+  window.fetch = function(input, init){
+    try {
+      if(typeof input === 'string' && needsProxy(input)){
+        input = proxify(input);
+      } else if(input instanceof Request && needsProxy(input.url)){
+        input = new Request(proxify(input.url), input);
+      }
+    } catch(e){ console.warn('proxy wrap error:', e); }
+    return originalFetch.call(this, input, init);
+  };
+  
+  console.log('🌐 CORS 프록시 활성:', PROXY);
+  console.log('   대상:', TARGETS.join(', '));
+})();
+
 /* ============================================
    v5: LRU Cache Manager
    ============================================ */
