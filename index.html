@@ -474,6 +474,60 @@ window.showBSACharts = function(){
 };
 console.log('💡 차트 보기: showBSACharts() 실행');
 
+// === 떠다니는 차트 버튼 자동 생성 ===
+(function createFloatingChartButton(){
+  function addButton(){
+    if(document.getElementById('floating-chart-btn')) return;
+    
+    const btn = document.createElement('button');
+    btn.id = 'floating-chart-btn';
+    btn.innerHTML = '📊<br>차트';
+    btn.title = 'BSA 백테스트 차트 보기';
+    btn.style.cssText = `
+      position: fixed;
+      bottom: 80px;
+      right: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: bold;
+      line-height: 1.2;
+      z-index: 9998;
+      transition: transform 0.2s, box-shadow 0.2s;
+    `;
+    btn.onmouseover = function(){
+      btn.style.transform = 'scale(1.1)';
+      btn.style.boxShadow = '0 6px 18px rgba(0,0,0,0.4)';
+    };
+    btn.onmouseout = function(){
+      btn.style.transform = 'scale(1)';
+      btn.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
+    };
+    btn.onclick = function(){
+      if(typeof showBSACharts === 'function'){
+        showBSACharts();
+      } else {
+        alert('차트 함수가 로드되지 않았습니다.');
+      }
+    };
+    document.body.appendChild(btn);
+    console.log('✅ 차트 버튼 생성됨 (우측 하단)');
+  }
+  
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', addButton);
+  } else {
+    setTimeout(addButton, 500);
+  }
+})();
+
+
 
 /* ============================================
    v5: LRU Cache Manager
