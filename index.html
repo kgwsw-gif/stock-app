@@ -226,6 +226,79 @@ window.analyzeSectorTrend = function(days){
 };
 console.log('💡 섹터 분석: analyzeSectorTrend() 또는 analyzeSectorTrend(7) [최근 7일]');
 
+// === 종목별 등장 빈도 분석 ===
+window.analyzeStockFrequency = function(days){
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  if(log.length === 0){
+    console.log('❌ 분석할 데이터가 없습니다.');
+    return;
+  }
+  
+  const N = days || log.length;
+  const recent = log.slice(-N);
+  const totalDays = recent.length;
+  
+  // 종목별 집계
+  const stockStats = {};
+  
+  recent.forEach(day => {
+    if(!day.top5) return;
+    day.top5.forEach((stock, idx) => {
+      const key = stock.code || stock.name;
+      if(!stockStats[key]){
+        stockStats[key] = {
+          name: stock.name,
+          code: stock.code,
+          sector: stock.sector,
+          count: 0,
+          top1: 0,
+          top3: 0,
+          ranks: [],
+          bsaSum: 0,
+          accelSum: 0,
+          lastDate: ''
+        };
+      }
+      stockStats[key].count++;
+      if(idx === 0) stockStats[key].top1++;
+      if(idx < 3) stockStats[key].top3++;
+      stockStats[key].ranks.push(idx + 1);
+      stockStats[key].bsaSum += (stock.bsa || 0);
+      stockStats[key].accelSum += (stock.accel || 0);
+      stockStats[key].lastDate = day.date;
+    });
+  });
+  
+  // 정렬 및 가공
+  const sorted = Object.values(stockStats)
+    .map(s => ({
+      종목명: s.name,
+      코드: s.code,
+      섹터: s.sector,
+      등장: s.count + '/' + totalDays,
+      비중: (s.count / totalDays * 100).toFixed(0) + '%',
+      Top1: s.top1,
+      Top3: s.top3,
+      평균순위: (s.ranks.reduce((a,b)=>a+b,0) / s.ranks.length).toFixed(1),
+      평균BSA: (s.bsaSum / s.count).toFixed(1),
+      평균가속: (s.accelSum / s.count).toFixed(1),
+      최근등장: s.lastDate
+    }))
+    .sort((a,b) => b.Top1 - a.Top1 || parseInt(b.등장) - parseInt(a.등장));
+  
+  console.log('=== 종목별 등장 빈도 분석 ('+N+'일, 총 '+totalDays*5+'슬롯) ===');
+  console.table(sorted);
+  
+  if(sorted[0]){
+    console.log('🏆 최강 종목:', sorted[0].종목명, 
+      '(Top1 '+sorted[0].Top1+'회, 등장 '+sorted[0].등장+')');
+  }
+  
+  return sorted;
+};
+console.log('💡 종목 빈도: analyzeStockFrequency() 또는 analyzeStockFrequency(7)');
+
+
 
 
 
