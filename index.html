@@ -635,6 +635,270 @@ console.log('💡 변화 분석: showTodayChanges() 실행');
   }
 })();
 
+// === 떠다니는 CSV 버튼 ===
+(function createFloatingCSVButton(){
+  function addButton(){
+    if(document.getElementById('floating-csv-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'floating-csv-btn';
+    btn.innerHTML = '📥<br>CSV';
+    btn.title = 'BSA 로그 CSV 다운로드';
+    btn.style.cssText = `
+      position: fixed;
+      bottom: 220px;
+      right: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+      color: white;
+      border: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: bold;
+      line-height: 1.2;
+      z-index: 9998;
+      transition: transform 0.2s;
+    `;
+    btn.onmouseover = function(){ btn.style.transform = 'scale(1.1)'; };
+    btn.onmouseout = function(){ btn.style.transform = 'scale(1)'; };
+    btn.onclick = function(){
+      if(typeof exportBSALogToCSV === 'function'){
+        exportBSALogToCSV();
+      } else {
+        alert('CSV 함수가 로드되지 않았습니다.');
+      }
+    };
+    document.body.appendChild(btn);
+    console.log('✅ CSV 버튼 생성됨');
+  }
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', addButton);
+  } else {
+    setTimeout(addButton, 700);
+  }
+})();
+
+// === 백테스트 완료 자동 감지 + 변화 모달 자동 표시 ===
+(function setupAutoChangeNotification(){
+  const STORAGE_KEY = 'bsa_daily_log';
+  let lastSeenDate = null;
+  let lastSeenCount = 0;
+  
+  // 초기값 설정
+  function initBaseline(){
+    try {
+      const log = JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
+      lastSeenCount = log.length;
+      lastSeenDate = log.length > 0 ? log[log.length-1].date : null;
+    } catch(e) {}
+  }
+  
+  // 변화 감지
+  function checkForUpdate(){
+    try {
+      const log = JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
+      const currentDate = log.length > 0 ? log[log.length-1].date : null;
+      
+      // 새 일자 추가됐거나, 같은 날짜라도 데이터가 갱신됐을 때
+      const newDay = log.length > lastSeenCount;
+      const sameDayUpdate = log.length > 0 && 
+        currentDate === lastSeenDate && 
+        log[log.length-1].top5 && log[log.length-1].top5.length > 0;
+      
+      if(newDay){
+        console.log('🎯 새 일별 로그 감지:', currentDate);
+        lastSeenCount = log.length;
+        lastSeenDate = currentDate;
+        
+        // 0.5초 뒤 모달 표시
+        setTimeout(() => {
+          if(typeof showTodayChangesModal === 'function'){
+            showTodayChangesModal();
+            console.log('✅ 변화 분석 자동 표시됨');
+          }
+        }, 500);
+      }
+    } catch(e) {
+      console.log('자동 감지 오류:', e.message);
+    }
+  }
+  
+  // localStorage.setItem 가로채기 (같은 탭에서 발생)
+  const originalSetItem = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = function(key, value){
+    const result = originalSetItem(key, value);
+    if(key === STORAGE_KEY){
+      setTimeout(checkForUpdate, 100);
+    }
+    return result;
+  };
+  
+  // storage 이벤트 (다른 탭에서 변경 시)
+  window.addEventListener('storage', function(e){
+    if(e.key === STORAGE_KEY){
+      checkForUpdate();
+    }
+  });
+  
+  // 페이지 로드 시 초기화
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', initBaseline);
+  } else {
+    initBaseline();
+  }
+  
+  console.log('✅ 백테스트 자동 알림 활성화');
+})();
+
+// === 주목 종목 (6~15위) 분석 ===
+window.showWatchList = function(showAlert){
+  // 1. 우선 메모리의 최신 백테스트 결과 (_validBackup) 사용
+  // 2. 없으면 일별 로그의 watchList 필드 (향후 확장용)
+  const vb = window._validBackup;
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  
+  let candidates = [];
+  let dataSource = '';
+  
+  if(vb && vb.length > 5){
+    // BSA 점수 순으로 정렬
+    const sorted = [...vb].sort((a,b) => (b.bsa||0) - (a.bsa||0));
+    candidates = sorted.slice(5, 15); // 6~15위
+    dataSource = '최근 백테스트 (' + vb.length + '종목)';
+  } else if(log.length > 0 && log[log.length-1].watchList){
+    candidates = log[log.length-1].watchList;
+    dataSource = '일별 로그 (' + log[log.length-1].date + ')';
+  } else {
+    alert('주목 종목 데이터가 없습니다.\n백테스트를 먼저 실행하세요.');
+    return;
+  }
+  
+  if(candidates.length === 0){
+    alert('주목할 종목이 없습니다.');
+    return;
+  }
+  
+  // 모달 표시
+  const existing = document.getElementById('watch-modal');
+  if(existing) existing.remove();
+  
+  let html = '<h2 style="margin-top:0;color:#333;">🔭 주목 종목 (6위~15위)</h2>';
+  html += '<div style="padding:10px;background:#fff8e1;border-radius:6px;margin-bottom:15px;font-size:13px;">';
+  html += '<strong>📊 데이터:</strong> ' + dataSource + '<br>';
+  html += '<strong>💡 의미:</strong> Top 5 바로 다음 후보 종목들. 가속도가 강한 종목은 곧 Top 5 진입 가능';
+  html += '</div>';
+  
+  html += '<table style="width:100%;border-collapse:collapse;font-size:14px;">';
+  html += '<tr style="background:#f5f5f5;">';
+  html += '<th style="padding:8px;border:1px solid #ddd;">순위</th>';
+  html += '<th style="padding:8px;border:1px solid #ddd;">종목</th>';
+  html += '<th style="padding:8px;border:1px solid #ddd;">섹터</th>';
+  html += '<th style="padding:8px;border:1px solid #ddd;">BSA</th>';
+  html += '<th style="padding:8px;border:1px solid #ddd;">가속</th>';
+  html += '<th style="padding:8px;border:1px solid #ddd;">평가</th></tr>';
+  
+  candidates.forEach((s, i) => {
+    const rank = i + 6;
+    const accel = typeof s.accel === 'number' ? s.accel : 0;
+    const bsa = s.bsa || 0;
+    
+    let evaluation, color;
+    if(accel > 20 && bsa >= 55){
+      evaluation = '🚀 강력 후보';
+      color = '#4caf50';
+    } else if(accel > 10){
+      evaluation = '📈 상승 모멘텀';
+      color = '#2196f3';
+    } else if(accel < -5){
+      evaluation = '📉 약화';
+      color = '#f44336';
+    } else {
+      evaluation = '➡️ 관망';
+      color = '#666';
+    }
+    
+    html += '<tr>';
+    html += '<td style="padding:8px;border:1px solid #ddd;text-align:center;">' + rank + '</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;"><strong>' + (s.name||'-') + '</strong></td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;">' + (s.sector||'-') + '</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;text-align:right;">' + bsa + '</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;text-align:right;color:' + (accel>0?'#2196f3':'#f44336') + ';">' + accel.toFixed(1) + '</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;color:' + color + ';font-weight:bold;">' + evaluation + '</td>';
+    html += '</tr>';
+  });
+  html += '</table>';
+  
+  // 강력 후보 요약
+  const strongCandidates = candidates.filter(s => (s.accel||0) > 20 && (s.bsa||0) >= 55);
+  if(strongCandidates.length > 0){
+    html += '<div style="margin-top:15px;padding:12px;background:#e8f5e9;border-radius:6px;border-left:4px solid #4caf50;">';
+    html += '<strong>🎯 강력 후보 (' + strongCandidates.length + '개):</strong> ';
+    html += strongCandidates.map(s => s.name).join(', ');
+    html += '<br><small style="color:#666;">다음 백테스트에서 Top 5 진입 가능성이 높습니다.</small>';
+    html += '</div>';
+  }
+  
+  const modal = document.createElement('div');
+  modal.id = 'watch-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;overflow:auto;';
+  const inner = document.createElement('div');
+  inner.style.cssText = 'background:white;border-radius:12px;padding:24px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;position:relative;';
+  inner.innerHTML = html + '<button id="watch-close" style="position:absolute;top:12px;right:12px;padding:6px 14px;background:#dc3545;color:white;border:none;border-radius:6px;cursor:pointer;">✕ 닫기</button>';
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  document.getElementById('watch-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  
+  console.log('✅ 주목 종목 ' + candidates.length + '개 표시됨');
+};
+
+// === 떠다니는 주목 버튼 ===
+(function createFloatingWatchButton(){
+  function addButton(){
+    if(document.getElementById('floating-watch-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'floating-watch-btn';
+    btn.innerHTML = '🔭<br>주목';
+    btn.title = '6~15위 주목 종목 보기';
+    btn.style.cssText = `
+      position: fixed;
+      bottom: 290px;
+      right: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+      color: white;
+      border: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: bold;
+      line-height: 1.2;
+      z-index: 9998;
+      transition: transform 0.2s;
+    `;
+    btn.onmouseover = function(){ btn.style.transform = 'scale(1.1)'; };
+    btn.onmouseout = function(){ btn.style.transform = 'scale(1)'; };
+    btn.onclick = function(){ showWatchList(); };
+    document.body.appendChild(btn);
+    console.log('✅ 주목 버튼 생성됨');
+  }
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', addButton);
+  } else {
+    setTimeout(addButton, 800);
+  }
+})();
+
+console.log('💡 주목 종목: showWatchList() 또는 🔭 버튼 클릭');
+
+
+
+
+
 // === 변화 분석 모달 (예쁘게 표시) ===
 window.showTodayChangesModal = function(){
   const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
