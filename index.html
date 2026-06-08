@@ -46,6 +46,7 @@
     [role="button"],[type="button"],button{cursor:pointer}
     .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
   </style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body class="bg-gray-50">
 <div id="root"></div>
@@ -298,8 +299,180 @@ window.analyzeStockFrequency = function(days){
 };
 console.log('💡 종목 빈도: analyzeStockFrequency() 또는 analyzeStockFrequency(7)');
 
-
-
+// === 차트 시각화 ===
+window.showBSACharts = function(){
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  if(log.length === 0){
+    alert('데이터가 없습니다. 백테스트를 먼저 실행하세요.');
+    return;
+  }
+  if(typeof Chart === 'undefined'){
+    alert('Chart.js 라이브러리가 로드되지 않았습니다.');
+    return;
+  }
+  
+  // 기존 차트 창 제거
+  const existing = document.getElementById('bsa-charts-modal');
+  if(existing) existing.remove();
+  
+  // 모달 컨테이너
+  const modal = document.createElement('div');
+  modal.id = 'bsa-charts-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;overflow:auto;';
+  
+  const inner = document.createElement('div');
+  inner.style.cssText = 'background:white;border-radius:12px;padding:20px;max-width:1200px;width:100%;max-height:95vh;overflow-y:auto;';
+  inner.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h2 style="margin:0;color:#333;">📊 BSA 백테스트 시각화</h2>
+      <button id="bsa-charts-close" style="padding:8px 16px;background:#dc3545;color:white;border:none;border-radius:6px;cursor:pointer;font-size:16px;">✕ 닫기</button>
+    </div>
+    <div style="margin-bottom:20px;padding:12px;background:#f0f8ff;border-radius:8px;">
+      <strong>📅 분석 기간:</strong> ${log[0].date} ~ ${log[log.length-1].date} (총 ${log.length}일)
+    </div>
+    <div style="margin-bottom:30px;">
+      <h3 style="color:#555;">📈 KOSPI30 시장 점수 추이</h3>
+      <canvas id="chart-kospi" height="100"></canvas>
+    </div>
+    <div style="margin-bottom:30px;display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+      <div>
+        <h3 style="color:#555;">🥧 섹터 등장 빈도</h3>
+        <canvas id="chart-sector"></canvas>
+      </div>
+      <div>
+        <h3 style="color:#555;">🏆 Top 5 종목 평균 BSA</h3>
+        <canvas id="chart-stock"></canvas>
+      </div>
+    </div>
+    <div>
+      <h3 style="color:#555;">📉 주요 종목 일별 순위 (낮을수록 좋음)</h3>
+      <canvas id="chart-rank" height="100"></canvas>
+    </div>
+  `;
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  
+  document.getElementById('bsa-charts-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  
+  // 1. KOSPI30 추이
+  const dates = log.map(d => d.date);
+  const kospiData = log.map(d => d.kospi30);
+  new Chart(document.getElementById('chart-kospi'), {
+    type: 'line',
+    data: {
+      labels: dates,
+      datasets: [{
+        label: 'KOSPI30',
+        data: kospiData,
+        borderColor: '#ff6b6b',
+        backgroundColor: 'rgba(255,107,107,0.1)',
+        tension: 0.3,
+        fill: true,
+        pointRadius: 5
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: true } },
+      scales: { y: { beginAtZero: false } }
+    }
+  });
+  
+  // 2. 섹터 빈도 (도넛)
+  const sectorCount = {};
+  log.forEach(d => {
+    (d.top5||[]).forEach(s => {
+      const sec = s.sector || '미분류';
+      sectorCount[sec] = (sectorCount[sec]||0) + 1;
+    });
+  });
+  const sectorLabels = Object.keys(sectorCount);
+  const sectorValues = Object.values(sectorCount);
+  const colors = ['#ff6b6b','#4ecdc4','#45b7d1','#f7b731','#a55eea','#26de81','#fd9644','#778ca3'];
+  new Chart(document.getElementById('chart-sector'), {
+    type: 'doughnut',
+    data: {
+      labels: sectorLabels,
+      datasets: [{
+        data: sectorValues,
+        backgroundColor: colors.slice(0, sectorLabels.length)
+      }]
+    },
+    options: { responsive: true }
+  });
+  
+  // 3. 종목별 평균 BSA (막대)
+  const stockBSA = {};
+  log.forEach(d => {
+    (d.top5||[]).forEach(s => {
+      if(!stockBSA[s.name]) stockBSA[s.name] = {sum:0, cnt:0};
+      stockBSA[s.name].sum += (s.bsa||0);
+      stockBSA[s.name].cnt++;
+    });
+  });
+  const stockEntries = Object.entries(stockBSA)
+    .map(([n,v]) => ({name:n, avg: v.sum/v.cnt}))
+    .sort((a,b)=>b.avg-a.avg)
+    .slice(0, 10);
+  new Chart(document.getElementById('chart-stock'), {
+    type: 'bar',
+    data: {
+      labels: stockEntries.map(s=>s.name),
+      datasets: [{
+        label: '평균 BSA',
+        data: stockEntries.map(s=>s.avg.toFixed(1)),
+        backgroundColor: '#4ecdc4'
+      }]
+    },
+    options: {
+      responsive: true,
+      indexAxis: 'y',
+      plugins: { legend: { display: false } }
+    }
+  });
+  
+  // 4. 종목별 순위 추이
+  const stockRanks = {};
+  log.forEach(d => {
+    (d.top5||[]).forEach((s, i) => {
+      if(!stockRanks[s.name]) stockRanks[s.name] = {};
+      stockRanks[s.name][d.date] = i + 1;
+    });
+  });
+  // 등장 빈도 높은 종목 5개만
+  const topStocks = Object.entries(stockRanks)
+    .map(([n,r])=>({name:n, count:Object.keys(r).length}))
+    .sort((a,b)=>b.count-a.count)
+    .slice(0,5)
+    .map(s=>s.name);
+  const rankDatasets = topStocks.map((name, idx) => ({
+    label: name,
+    data: dates.map(d => stockRanks[name][d] || null),
+    borderColor: colors[idx],
+    backgroundColor: colors[idx],
+    tension: 0.2,
+    spanGaps: true,
+    pointRadius: 5
+  }));
+  new Chart(document.getElementById('chart-rank'), {
+    type: 'line',
+    data: { labels: dates, datasets: rankDatasets },
+    options: {
+      responsive: true,
+      scales: {
+        y: {
+          reverse: true,
+          min: 0.5, max: 5.5,
+          ticks: { stepSize: 1, callback: v => v + '위' }
+        }
+      }
+    }
+  });
+  
+  console.log('✅ 차트 표시 완료');
+};
+console.log('💡 차트 보기: showBSACharts() 실행');
 
 
 /* ============================================
