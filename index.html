@@ -893,10 +893,961 @@ window.showWatchList = function(showAlert){
   }
 })();
 
+// === 종목별 추적 차트 ===
+window.showStockTracker = function(stockName){
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  if(log.length === 0){
+    alert('데이터가 없습니다.');
+    return;
+  }
+  if(typeof Chart === 'undefined'){
+    alert('Chart.js가 로드되지 않았습니다.');
+    return;
+  }
+  
+  // 등장한 모든 종목 수집
+  const allStocks = {};
+  log.forEach(d => {
+    (d.top5||[]).forEach((s, i) => {
+      const key = s.name;
+      if(!allStocks[key]){
+        allStocks[key] = {name: s.name, code: s.code, sector: s.sector, history: []};
+      }
+      allStocks[key].history.push({date: d.date, rank: i+1, bsa: s.bsa, accel: s.accel});
+    });
+  });
+  
+  const stockList = Object.values(allStocks).sort((a,b) => b.history.length - a.history.length);
+  
+  // 종목 선택 안 됐으면 선택 UI 표시
+  if(!stockName){
+    const existing = document.getElementById('tracker-select-modal');
+    if(existing) existing.remove();
+    
+    let html = '<h2 style="margin-top:0;color:#333;">📈 종목 추적 - 선택</h2>';
+    html += '<p style="color:#666;font-size:13px;">추적할 종목을 선택하세요 (등장 횟수 순)</p>';
+    html += '<div style="max-height:400px;overflow-y:auto;">';
+    stockList.forEach(s => {
+      html += '<button class="track-stock-btn" data-name="' + s.name + '" style="display:block;width:100%;padding:10px;margin:4px 0;text-align:left;background:#f5f5f5;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:14px;">';
+      html += '<strong>' + s.name + '</strong> <span style="color:#666;">(' + s.sector + ')</span> ';
+      html += '<span style="float:right;color:#2196f3;">' + s.history.length + '회 등장</span></button>';
+    });
+    html += '</div>';
+    
+    const modal = document.createElement('div');
+    modal.id = 'tracker-select-modal';
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;overflow:auto;';
+    const inner = document.createElement('div');
+    inner.style.cssText = 'background:white;border-radius:12px;padding:24px;max-width:600px;width:100%;max-height:90vh;overflow-y:auto;position:relative;';
+    inner.innerHTML = html + '<button id="tracker-select-close" style="position:absolute;top:12px;right:12px;padding:6px 14px;background:#dc3545;color:white;border:none;border-radius:6px;cursor:pointer;">✕</button>';
+    modal.appendChild(inner);
+    document.body.appendChild(modal);
+    document.getElementById('tracker-select-close').onclick = () => modal.remove();
+    modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+    
+    document.querySelectorAll('.track-stock-btn').forEach(btn => {
+      btn.onclick = () => {
+        const name = btn.getAttribute('data-name');
+        modal.remove();
+        showStockTracker(name);
+      };
+    });
+    return;
+  }
+  
+  // 선택된 종목의 차트 표시
+  const stock = allStocks[stockName];
+  if(!stock){
+    alert('해당 종목 데이터가 없습니다.');
+    return;
+  }
+  
+  const existing2 = document.getElementById('tracker-chart-modal');
+  if(existing2) existing2.remove();
+  
+  const dates = stock.history.map(h => h.date);
+  const bsas = stock.history.map(h => h.bsa);
+  const accels = stock.history.map(h => h.accel);
+  const ranks = stock.history.map(h => h.rank);
+  
+  let html2 = '<h2 style="margin-top:0;color:#333;">📈 ' + stock.name + ' 추적 차트</h2>';
+  html2 += '<div style="padding:10px;background:#e3f2fd;border-radius:6px;margin-bottom:15px;font-size:13px;">';
+  html2 += '<strong>섹터:</strong> ' + stock.sector + ' | <strong>코드:</strong> ' + stock.code + ' | <strong>등장:</strong> ' + stock.history.length + '회';
+  html2 += '</div>';
+  html2 += '<div style="margin-bottom:20px;"><h3 style="color:#555;">📊 BSA & 가속도 추이</h3><canvas id="tracker-chart1" height="80"></canvas></div>';
+  html2 += '<div><h3 style="color:#555;">🏆 순위 추이 (낮을수록 좋음)</h3><canvas id="tracker-chart2" height="80"></canvas></div>';
+  
+  const modal2 = document.createElement('div');
+  modal2.id = 'tracker-chart-modal';
+  modal2.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;overflow:auto;';
+  const inner2 = document.createElement('div');
+  inner2.style.cssText = 'background:white;border-radius:12px;padding:24px;max-width:1000px;width:100%;max-height:90vh;overflow-y:auto;position:relative;';
+  inner2.innerHTML = html2 + '<button id="tracker-chart-close" style="position:absolute;top:12px;right:12px;padding:6px 14px;background:#dc3545;color:white;border:none;border-radius:6px;cursor:pointer;">✕ 닫기</button>';
+  modal2.appendChild(inner2);
+  document.body.appendChild(modal2);
+  document.getElementById('tracker-chart-close').onclick = () => modal2.remove();
+  modal2.onclick = (e) => { if(e.target === modal2) modal2.remove(); };
+  
+  new Chart(document.getElementById('tracker-chart1'), {
+    type: 'line',
+    data: {
+      labels: dates,
+      datasets: [
+        {label:'BSA', data:bsas, borderColor:'#ff6b6b', backgroundColor:'rgba(255,107,107,0.1)', yAxisID:'y', tension:0.3, pointRadius:5},
+        {label:'가속도', data:accels, borderColor:'#4ecdc4', backgroundColor:'rgba(78,205,196,0.1)', yAxisID:'y1', tension:0.3, pointRadius:5}
+      ]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        y: {position:'left', title:{display:true, text:'BSA'}},
+        y1: {position:'right', title:{display:true, text:'가속도'}, grid:{drawOnChartArea:false}}
+      }
+    }
+  });
+  
+  new Chart(document.getElementById('tracker-chart2'), {
+    type: 'line',
+    data: {
+      labels: dates,
+      datasets: [{label:'순위', data:ranks, borderColor:'#a55eea', backgroundColor:'rgba(165,94,234,0.1)', tension:0.2, pointRadius:7, fill:true}]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        y: {reverse:true, min:0.5, max:5.5, ticks:{stepSize:1, callback:v=>v+'위'}}
+      }
+    }
+  });
+};
+
+// === 종목 추적 떠다니는 버튼 ===
+(function createFloatingTrackerButton(){
+  function addButton(){
+    if(document.getElementById('floating-tracker-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'floating-tracker-btn';
+    btn.innerHTML = '📈<br>추적';
+    btn.title = '종목별 추적 차트';
+    btn.style.cssText = `
+      position: fixed;
+      bottom: 360px;
+      right: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #00c6ff 0%, #0072ff 100%);
+      color: white;
+      border: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: bold;
+      line-height: 1.2;
+      z-index: 9998;
+      transition: transform 0.2s;
+    `;
+    btn.onmouseover = function(){ btn.style.transform = 'scale(1.1)'; };
+    btn.onmouseout = function(){ btn.style.transform = 'scale(1)'; };
+    btn.onclick = function(){ showStockTracker(); };
+    document.body.appendChild(btn);
+    console.log('✅ 추적 버튼 생성됨');
+  }
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', addButton);
+  } else {
+    setTimeout(addButton, 900);
+  }
+})();
+
+// === 섹터별 시간 추이 차트 ===
+window.showSectorTrendChart = function(){
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  if(log.length === 0){
+    alert('데이터가 없습니다.');
+    return;
+  }
+  if(typeof Chart === 'undefined'){
+    alert('Chart.js가 로드되지 않았습니다.');
+    return;
+  }
+  
+  // 섹터별 일별 등장 횟수 집계
+  const sectorDaily = {}; // {섹터: {날짜: 횟수}}
+  const allSectors = new Set();
+  const dates = log.map(d => d.date);
+  
+  log.forEach(d => {
+    (d.top5||[]).forEach(s => {
+      const sec = s.sector || '미분류';
+      allSectors.add(sec);
+      if(!sectorDaily[sec]) sectorDaily[sec] = {};
+      sectorDaily[sec][d.date] = (sectorDaily[sec][d.date] || 0) + 1;
+    });
+  });
+  
+  // 섹터별 누적 등장 횟수로 정렬 (상위 8개)
+  const sectorTotal = {};
+  Object.entries(sectorDaily).forEach(([sec, byDate]) => {
+    sectorTotal[sec] = Object.values(byDate).reduce((a,b) => a+b, 0);
+  });
+  const topSectors = Object.entries(sectorTotal)
+    .sort((a,b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(e => e[0]);
+  
+  const colors = ['#ff6b6b','#4ecdc4','#45b7d1','#f7b731','#a55eea','#26de81','#fd9644','#778ca3'];
+  
+  // 모달 표시
+  const existing = document.getElementById('sector-chart-modal');
+  if(existing) existing.remove();
+  
+  let html = '<h2 style="margin-top:0;color:#333;">🏭 섹터별 시간 추이</h2>';
+  html += '<div style="padding:10px;background:#fce4ec;border-radius:6px;margin-bottom:15px;font-size:13px;">';
+  html += '<strong>📅 분석 기간:</strong> ' + dates[0] + ' ~ ' + dates[dates.length-1] + ' (' + dates.length + '일)<br>';
+  html += '<strong>💡 의미:</strong> 각 날짜에 해당 섹터가 Top5에 몇 개 종목을 올렸는지 (0~5)';
+  html += '</div>';
+  html += '<div style="margin-bottom:25px;"><h3 style="color:#555;">📈 라인 차트 (일별 변화)</h3><canvas id="sector-trend-line" height="100"></canvas></div>';
+  html += '<div><h3 style="color:#555;">📊 누적 막대 (전체 비중)</h3><canvas id="sector-trend-bar" height="80"></canvas></div>';
+  
+  // 섹터별 통계 표
+  html += '<h3 style="color:#555;margin-top:25px;">📋 섹터별 통계</h3>';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:14px;">';
+  html += '<tr style="background:#f5f5f5;"><th style="padding:8px;border:1px solid #ddd;">섹터</th><th style="padding:8px;border:1px solid #ddd;">총 등장</th><th style="padding:8px;border:1px solid #ddd;">평균/일</th><th style="padding:8px;border:1px solid #ddd;">최근 추세</th></tr>';
+  
+  topSectors.forEach((sec, idx) => {
+    const counts = dates.map(d => sectorDaily[sec][d] || 0);
+    const total = counts.reduce((a,b) => a+b, 0);
+    const avg = (total / dates.length).toFixed(1);
+    
+    let trend = '➡️ 유지';
+    let trendColor = '#666';
+    if(counts.length >= 2){
+      const recent = counts[counts.length-1];
+      const prev = counts[counts.length-2];
+      if(recent > prev){ trend = '⬆️ 증가'; trendColor = '#4caf50'; }
+      else if(recent < prev){ trend = '⬇️ 감소'; trendColor = '#f44336'; }
+    }
+    
+    html += '<tr>';
+    html += '<td style="padding:8px;border:1px solid #ddd;"><span style="display:inline-block;width:12px;height:12px;background:' + colors[idx] + ';margin-right:6px;border-radius:2px;"></span><strong>' + sec + '</strong></td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;text-align:center;">' + total + '</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;text-align:center;">' + avg + '</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;color:' + trendColor + ';font-weight:bold;">' + trend + '</td>';
+    html += '</tr>';
+  });
+  html += '</table>';
+  
+  const modal = document.createElement('div');
+  modal.id = 'sector-chart-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;overflow:auto;';
+  const inner = document.createElement('div');
+  inner.style.cssText = 'background:white;border-radius:12px;padding:24px;max-width:1100px;width:100%;max-height:95vh;overflow-y:auto;position:relative;';
+  inner.innerHTML = html + '<button id="sector-chart-close" style="position:absolute;top:12px;right:12px;padding:6px 14px;background:#dc3545;color:white;border:none;border-radius:6px;cursor:pointer;">✕ 닫기</button>';
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  document.getElementById('sector-chart-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  
+  // 라인 차트
+  const lineDatasets = topSectors.map((sec, idx) => ({
+    label: sec,
+    data: dates.map(d => sectorDaily[sec][d] || 0),
+    borderColor: colors[idx],
+    backgroundColor: colors[idx] + '33',
+    tension: 0.3,
+    pointRadius: 5
+  }));
+  
+  new Chart(document.getElementById('sector-trend-line'), {
+    type: 'line',
+    data: { labels: dates, datasets: lineDatasets },
+    options: {
+      responsive: true,
+      scales: {
+        y: { beginAtZero: true, max: 5, ticks:{stepSize:1, callback:v=>v+'개'} }
+      }
+    }
+  });
+  
+  // 누적 막대 차트
+  new Chart(document.getElementById('sector-trend-bar'), {
+    type: 'bar',
+    data: {
+      labels: dates,
+      datasets: topSectors.map((sec, idx) => ({
+        label: sec,
+        data: dates.map(d => sectorDaily[sec][d] || 0),
+        backgroundColor: colors[idx]
+      }))
+    },
+    options: {
+      responsive: true,
+      scales: {
+        x: { stacked: true },
+        y: { stacked: true, max: 5, ticks:{stepSize:1} }
+      }
+    }
+  });
+};
+
+// === 섹터 추이 떠다니는 버튼 ===
+(function createFloatingSectorButton(){
+  function addButton(){
+    if(document.getElementById('floating-sector-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'floating-sector-btn';
+    btn.innerHTML = '🏭<br>섹터';
+    btn.title = '섹터별 시간 추이';
+    btn.style.cssText = `
+      position: fixed;
+      bottom: 430px;
+      right: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #f12711 0%, #f5af19 100%);
+      color: white;
+      border: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: bold;
+      line-height: 1.2;
+      z-index: 9998;
+      transition: transform 0.2s;
+    `;
+    btn.onmouseover = function(){ btn.style.transform = 'scale(1.1)'; };
+    btn.onmouseout = function(){ btn.style.transform = 'scale(1)'; };
+    btn.onclick = function(){ showSectorTrendChart(); };
+    document.body.appendChild(btn);
+    console.log('✅ 섹터 버튼 생성됨');
+  }
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', addButton);
+  } else {
+    setTimeout(addButton, 1000);
+  }
+})();
+
+// === 강력 후보 알림 시스템 ===
+// 알림 임계값 (localStorage로 저장 가능)
+window.ALERT_THRESHOLD = {
+  accelMin: 30,
+  bsaMin: 60
+};
+
+// 토스트 알림 함수
+window.showToast = function(message, type, duration){
+  type = type || 'success'; // success, warning, danger
+  duration = duration || 6000;
+  
+  const colors = {
+    success: 'linear-gradient(135deg, #4caf50, #45a049)',
+    warning: 'linear-gradient(135deg, #ff9800, #f57c00)',
+    danger: 'linear-gradient(135deg, #f44336, #d32f2f)',
+    info: 'linear-gradient(135deg, #2196f3, #1976d2)'
+  };
+  
+  const toast = document.createElement('div');
+  toast.style.cssText = `
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-100px);
+    padding: 16px 24px;
+    background: ${colors[type] || colors.success};
+    color: white;
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    z-index: 99999;
+    font-size: 15px;
+    font-weight: bold;
+    max-width: 90%;
+    text-align: center;
+    transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    cursor: pointer;
+  `;
+  toast.innerHTML = message;
+  toast.onclick = () => toast.remove();
+  document.body.appendChild(toast);
+  
+  setTimeout(() => { toast.style.transform = 'translateX(-50%) translateY(0)'; }, 50);
+  setTimeout(() => {
+    toast.style.transform = 'translateX(-50%) translateY(-100px)';
+    setTimeout(() => toast.remove(), 400);
+  }, duration);
+};
+
+// 강력 후보 스캔
+window.scanStrongCandidates = function(silent){
+  const vb = window._validBackup;
+  if(!vb || vb.length === 0){
+    if(!silent) alert('백테스트 데이터가 없습니다.');
+    return [];
+  }
+  
+  const th = window.ALERT_THRESHOLD;
+  const strong = vb.filter(s => 
+    (s.accel||0) >= th.accelMin && (s.bsa||0) >= th.bsaMin
+  ).sort((a,b) => (b.bsa||0) - (a.bsa||0));
+  
+  return strong;
+};
+
+// 강력 후보 모달
+window.showStrongCandidates = function(){
+  const strong = scanStrongCandidates();
+  if(!strong || strong.length === 0){
+    alert('강력 후보가 없습니다.\n(기준: 가속도 ≥' + window.ALERT_THRESHOLD.accelMin + ', BSA ≥' + window.ALERT_THRESHOLD.bsaMin + ')');
+    return;
+  }
+  
+  const existing = document.getElementById('strong-modal');
+  if(existing) existing.remove();
+  
+  let html = '<h2 style="margin-top:0;color:#333;">🚨 강력 후보 알림</h2>';
+  html += '<div style="padding:12px;background:#fff3e0;border-radius:6px;margin-bottom:15px;font-size:13px;border-left:4px solid #ff9800;">';
+  html += '<strong>🎯 기준:</strong> 가속도 ≥ ' + window.ALERT_THRESHOLD.accelMin + ' AND BSA ≥ ' + window.ALERT_THRESHOLD.bsaMin + '<br>';
+  html += '<strong>💡 의미:</strong> 강력한 상승 모멘텀 + 높은 BSA 점수 (매수 신호 가능성 ↑)';
+  html += '</div>';
+  
+  html += '<table style="width:100%;border-collapse:collapse;font-size:14px;">';
+  html += '<tr style="background:#f5f5f5;">';
+  html += '<th style="padding:8px;border:1px solid #ddd;">종목</th>';
+  html += '<th style="padding:8px;border:1px solid #ddd;">섹터</th>';
+  html += '<th style="padding:8px;border:1px solid #ddd;">BSA</th>';
+  html += '<th style="padding:8px;border:1px solid #ddd;">가속</th>';
+  html += '<th style="padding:8px;border:1px solid #ddd;">현재가</th>';
+  html += '<th style="padding:8px;border:1px solid #ddd;">강도</th></tr>';
+  
+  strong.forEach(s => {
+    const intensity = (s.bsa||0) + (s.accel||0)*0.5;
+    let badge = '⭐';
+    if(intensity >= 100) badge = '🌟🌟🌟';
+    else if(intensity >= 85) badge = '🌟🌟';
+    else if(intensity >= 70) badge = '🌟';
+    
+    html += '<tr>';
+    html += '<td style="padding:8px;border:1px solid #ddd;"><strong>' + s.name + '</strong></td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;">' + (s.sector||'-') + '</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;text-align:right;color:#ff6b6b;font-weight:bold;">' + s.bsa + '</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;text-align:right;color:#4caf50;font-weight:bold;">' + (s.accel||0).toFixed(1) + '</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;text-align:right;">' + (s.price ? s.price.toLocaleString() : '-') + '</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;text-align:center;font-size:18px;">' + badge + '</td>';
+    html += '</tr>';
+  });
+  html += '</table>';
+  
+  // 설정 변경
+  html += '<div style="margin-top:20px;padding:12px;background:#f0f0f0;border-radius:6px;">';
+  html += '<h4 style="margin-top:0;">⚙️ 알림 기준 설정</h4>';
+  html += '<label>가속도 최소: <input id="set-accel" type="number" value="' + window.ALERT_THRESHOLD.accelMin + '" style="width:80px;padding:4px;"></label> ';
+  html += '<label style="margin-left:15px;">BSA 최소: <input id="set-bsa" type="number" value="' + window.ALERT_THRESHOLD.bsaMin + '" style="width:80px;padding:4px;"></label> ';
+  html += '<button id="save-threshold" style="margin-left:15px;padding:6px 14px;background:#2196f3;color:white;border:none;border-radius:4px;cursor:pointer;">저장</button>';
+  html += '</div>';
+  
+  const modal = document.createElement('div');
+  modal.id = 'strong-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;overflow:auto;';
+  const inner = document.createElement('div');
+  inner.style.cssText = 'background:white;border-radius:12px;padding:24px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;position:relative;';
+  inner.innerHTML = html + '<button id="strong-close" style="position:absolute;top:12px;right:12px;padding:6px 14px;background:#dc3545;color:white;border:none;border-radius:6px;cursor:pointer;">✕ 닫기</button>';
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  document.getElementById('strong-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  
+  document.getElementById('save-threshold').onclick = () => {
+    const a = parseFloat(document.getElementById('set-accel').value);
+    const b = parseFloat(document.getElementById('set-bsa').value);
+    if(!isNaN(a) && !isNaN(b)){
+      window.ALERT_THRESHOLD = {accelMin: a, bsaMin: b};
+      localStorage.setItem('alert_threshold', JSON.stringify(window.ALERT_THRESHOLD));
+      showToast('✅ 기준 저장됨: 가속도≥' + a + ', BSA≥' + b, 'success');
+      modal.remove();
+      setTimeout(() => showStrongCandidates(), 300);
+    }
+  };
+};
+
+// 저장된 기준 불러오기
+(function loadThreshold(){
+  try {
+    const saved = localStorage.getItem('alert_threshold');
+    if(saved) window.ALERT_THRESHOLD = JSON.parse(saved);
+  } catch(e) {}
+})();
+
+// === 백테스트 완료 시 자동 강력 후보 알림 ===
+(function setupAutoStrongAlert(){
+  const STORAGE_KEY = 'bsa_daily_log';
+  const originalSetItem = localStorage.setItem.bind(localStorage);
+  
+  localStorage.setItem = function(key, value){
+    const result = originalSetItem(key, value);
+    if(key === STORAGE_KEY){
+      setTimeout(() => {
+        const strong = scanStrongCandidates(true);
+        if(strong && strong.length > 0){
+          const names = strong.slice(0, 3).map(s => s.name).join(', ');
+          const more = strong.length > 3 ? ' 외 ' + (strong.length-3) + '개' : '';
+          showToast('🚨 강력 후보 ' + strong.length + '개 발견!<br>' + names + more, 'warning', 8000);
+        }
+      }, 800);
+    }
+    return result;
+  };
+  console.log('✅ 자동 강력 후보 알림 활성화');
+})();
+
+// === 강력 후보 떠다니는 버튼 ===
+(function createFloatingStrongButton(){
+  function addButton(){
+    if(document.getElementById('floating-strong-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'floating-strong-btn';
+    btn.innerHTML = '🚨<br>강력';
+    btn.title = '강력 후보 종목 (가속도+BSA)';
+    btn.style.cssText = `
+      position: fixed;
+      bottom: 500px;
+      right: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #ee0979 0%, #ff6a00 100%);
+      color: white;
+      border: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: bold;
+      line-height: 1.2;
+      z-index: 9998;
+      transition: transform 0.2s;
+      animation: strongPulse 2s infinite;
+    `;
+    
+    // 펄스 애니메이션
+    if(!document.getElementById('strong-pulse-style')){
+      const style = document.createElement('style');
+      style.id = 'strong-pulse-style';
+      style.textContent = `
+        @keyframes strongPulse {
+          0%, 100% { box-shadow: 0 4px 12px rgba(238,9,121,0.4); }
+          50% { box-shadow: 0 4px 20px rgba(238,9,121,0.8); }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    
+    btn.onmouseover = function(){ btn.style.transform = 'scale(1.1)'; };
+    btn.onmouseout = function(){ btn.style.transform = 'scale(1)'; };
+    btn.onclick = function(){ showStrongCandidates(); };
+    document.body.appendChild(btn);
+    console.log('✅ 강력 버튼 생성됨');
+  }
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', addButton);
+  } else {
+    setTimeout(addButton, 1100);
+  }
+})();
+
+
+// === 데이터 자동 백업 시스템 ===
+
+// JSON 백업 다운로드
+window.backupAllData = function(silent){
+  const backup = {
+    version: '1.0',
+    exportDate: new Date().toISOString(),
+    kstDate: new Date(Date.now()+9*3600000).toISOString().slice(0,10),
+    data: {}
+  };
+  
+  // 백업할 키 목록
+  const keys = [
+    'bsa_daily_log',
+    'ls_config',
+    'avKey',
+    'dart_api_key',
+    'alert_threshold',
+    'ls_token',
+    'ls_token_time'
+  ];
+  
+  keys.forEach(k => {
+    const v = localStorage.getItem(k);
+    if(v !== null) backup.data[k] = v;
+  });
+  
+  // 통계
+  let logCount = 0;
+  try {
+    const log = JSON.parse(backup.data.bsa_daily_log || '[]');
+    logCount = log.length;
+  } catch(e){}
+  backup.stats = {
+    logDays: logCount,
+    totalKeys: Object.keys(backup.data).length
+  };
+  
+  const json = JSON.stringify(backup, null, 2);
+  const blob = new Blob([json], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'BSA_백업_' + backup.kstDate + '.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  
+  if(!silent){
+    showToast('✅ 백업 완료: ' + logCount + '일치 로그, ' + backup.stats.totalKeys + '개 키', 'success', 4000);
+  }
+  console.log('✅ 백업 다운로드:', a.download);
+  return backup;
+};
+
+// JSON 백업 복원
+window.restoreFromBackup = function(){
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.onchange = (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const backup = JSON.parse(ev.target.result);
+        if(!backup.data || !backup.version){
+          alert('올바른 백업 파일이 아닙니다.');
+          return;
+        }
+        
+        const logCount = backup.stats?.logDays || 0;
+        const confirmMsg = '복원하시겠습니까?\n\n' +
+          '📅 백업 날짜: ' + (backup.kstDate || '?') + '\n' +
+          '📊 로그 일수: ' + logCount + '일\n' +
+          '🔑 키 개수: ' + Object.keys(backup.data).length + '개\n\n' +
+          '⚠️ 현재 데이터가 덮어쓰여집니다.';
+        
+        if(!confirm(confirmMsg)) return;
+        
+        // 복원
+        let restoredCount = 0;
+        Object.entries(backup.data).forEach(([k,v]) => {
+          localStorage.setItem(k, v);
+          restoredCount++;
+        });
+        
+        showToast('✅ 복원 완료: ' + restoredCount + '개 키. 1초 후 새로고침', 'success', 2000);
+        setTimeout(() => location.reload(), 1500);
+      } catch(err){
+        alert('복원 실패: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+};
+
+// 백업 관리 모달
+window.showBackupManager = function(){
+  const existing = document.getElementById('backup-modal');
+  if(existing) existing.remove();
+  
+  // 마지막 자동 백업 정보
+  const lastAutoBackup = localStorage.getItem('last_auto_backup_date') || '없음';
+  const autoBackupEnabled = localStorage.getItem('auto_backup_enabled') !== 'false';
+  
+  let logCount = 0;
+  try {
+    const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+    logCount = log.length;
+  } catch(e){}
+  
+  let html = '<h2 style="margin-top:0;color:#333;">💾 데이터 백업 관리</h2>';
+  html += '<div style="padding:12px;background:#e8f5e9;border-radius:6px;margin-bottom:15px;border-left:4px solid #4caf50;">';
+  html += '<strong>📊 현재 데이터:</strong><br>';
+  html += '• 일별 로그: <strong>' + logCount + '일</strong><br>';
+  html += '• 마지막 자동 백업: <strong>' + lastAutoBackup + '</strong>';
+  html += '</div>';
+  
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">';
+  html += '<button id="btn-backup-now" style="padding:16px;background:linear-gradient(135deg,#11998e,#38ef7d);color:white;border:none;border-radius:8px;cursor:pointer;font-size:15px;font-weight:bold;">📤 지금 백업<br><small style="font-weight:normal;">JSON 파일 다운로드</small></button>';
+  html += '<button id="btn-restore" style="padding:16px;background:linear-gradient(135deg,#f12711,#f5af19);color:white;border:none;border-radius:8px;cursor:pointer;font-size:15px;font-weight:bold;">📥 복원하기<br><small style="font-weight:normal;">JSON 파일 선택</small></button>';
+  html += '</div>';
+  
+  html += '<div style="padding:12px;background:#f0f0f0;border-radius:6px;">';
+  html += '<h4 style="margin-top:0;">⚙️ 자동 백업 설정</h4>';
+  html += '<label style="display:flex;align-items:center;gap:8px;">';
+  html += '<input id="auto-backup-check" type="checkbox"' + (autoBackupEnabled ? ' checked' : '') + ' style="width:18px;height:18px;">';
+  html += '<span>백테스트 완료 시 자동 백업 다운로드 (하루 1회)</span>';
+  html += '</label>';
+  html += '<p style="font-size:12px;color:#666;margin-top:10px;margin-bottom:0;">💡 매일 같은 날짜에는 중복 백업을 막아 다운로드 폴더가 지저분해지지 않습니다.</p>';
+  html += '</div>';
+  
+  html += '<div style="padding:12px;background:#fff3e0;border-radius:6px;margin-top:15px;font-size:13px;">';
+  html += '<strong>📌 백업에 포함되는 데이터:</strong><br>';
+  html += '• bsa_daily_log (백테스트 일별 결과)<br>';
+  html += '• ls_config (LS증권 키)<br>';
+  html += '• dart_api_key, avKey (API 키)<br>';
+  html += '• alert_threshold (알림 기준)<br>';
+  html += '• ls_token, ls_token_time (LS 토큰)';
+  html += '</div>';
+  
+  const modal = document.createElement('div');
+  modal.id = 'backup-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;overflow:auto;';
+  const inner = document.createElement('div');
+  inner.style.cssText = 'background:white;border-radius:12px;padding:24px;max-width:700px;width:100%;max-height:90vh;overflow-y:auto;position:relative;';
+  inner.innerHTML = html + '<button id="backup-close" style="position:absolute;top:12px;right:12px;padding:6px 14px;background:#dc3545;color:white;border:none;border-radius:6px;cursor:pointer;">✕ 닫기</button>';
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  
+  document.getElementById('backup-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  document.getElementById('btn-backup-now').onclick = () => { backupAllData(); };
+  document.getElementById('btn-restore').onclick = () => { restoreFromBackup(); };
+  document.getElementById('auto-backup-check').onchange = (e) => {
+    localStorage.setItem('auto_backup_enabled', e.target.checked ? 'true' : 'false');
+    showToast(e.target.checked ? '✅ 자동 백업 켜짐' : '⛔ 자동 백업 꺼짐', 'info', 2500);
+  };
+};
+
+// === 백테스트 완료 시 자동 백업 ===
+(function setupAutoBackup(){
+  const STORAGE_KEY = 'bsa_daily_log';
+  const originalSetItem = localStorage.setItem.bind(localStorage);
+  
+  localStorage.setItem = function(key, value){
+    const result = originalSetItem(key, value);
+    if(key === STORAGE_KEY){
+      setTimeout(() => {
+        try {
+          const enabled = localStorage.getItem('auto_backup_enabled') !== 'false';
+          if(!enabled) return;
+          
+          const today = new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+          const lastBackup = localStorage.getItem('last_auto_backup_date');
+          
+          // 오늘 이미 백업했으면 스킵
+          if(lastBackup === today) return;
+          
+          backupAllData(true);
+          originalSetItem('last_auto_backup_date', today);
+          showToast('💾 자동 백업 완료 (' + today + ')', 'info', 4000);
+        } catch(e){
+          console.log('자동 백업 오류:', e.message);
+        }
+      }, 1500);
+    }
+    return result;
+  };
+  console.log('✅ 자동 백업 활성화');
+})();
+
+// === 백업 떠다니는 버튼 ===
+(function createFloatingBackupButton(){
+  function addButton(){
+    if(document.getElementById('floating-backup-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'floating-backup-btn';
+    btn.innerHTML = '💾<br>백업';
+    btn.title = '데이터 백업/복원';
+    btn.style.cssText = `
+      position: fixed;
+      bottom: 570px;
+      right: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #614385 0%, #516395 100%);
+      color: white;
+      border: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: bold;
+      line-height: 1.2;
+      z-index: 9998;
+      transition: transform 0.2s;
+    `;
+    btn.onmouseover = function(){ btn.style.transform = 'scale(1.1)'; };
+    btn.onmouseout = function(){ btn.style.transform = 'scale(1)'; };
+    btn.onclick = function(){ showBackupManager(); };
+    document.body.appendChild(btn);
+    console.log('✅ 백업 버튼 생성됨');
+  }
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', addButton);
+  } else {
+    setTimeout(addButton, 1200);
+  }
+})();
+
+// === 종목 클릭 시 상세 히스토리 (자동 연결) ===
+(function setupStockClickHandlers(){
+  
+  // 종목명을 클릭 가능한 링크로 변환하는 헬퍼
+  window.makeStockClickable = function(html, stockNames){
+    let result = html;
+    stockNames.forEach(name => {
+      if(!name) return;
+      // <strong>종목명</strong> 패턴을 클릭 가능한 링크로 변환
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp('<strong>' + escaped + '</strong>', 'g');
+      result = result.replace(re, 
+        '<strong class="stock-clickable" data-stock="' + name + 
+        '" style="color:#1976d2;cursor:pointer;text-decoration:underline dotted;">' + 
+        name + '</strong>'
+      );
+    });
+    return result;
+  };
+  
+  // 클릭 이벤트 위임 (모달 안 어디든 종목명 클릭 시 처리)
+  document.addEventListener('click', function(e){
+    if(e.target.classList && e.target.classList.contains('stock-clickable')){
+      const stockName = e.target.getAttribute('data-stock');
+      if(stockName){
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // 일별 로그에 있으면 추적 차트, 없으면 단순 정보
+        const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+        const hasHistory = log.some(d => 
+          (d.top5||[]).some(s => s.name === stockName)
+        );
+        
+        if(hasHistory){
+          showStockTracker(stockName);
+        } else {
+          // 메모리에서 찾기
+          const vb = window._validBackup;
+          if(vb){
+            const stock = vb.find(s => s.name === stockName);
+            if(stock){
+              showSingleStockInfo(stock);
+              return;
+            }
+          }
+          showToast('📌 ' + stockName + ': 추적 데이터가 아직 없습니다', 'info', 3000);
+        }
+      }
+    }
+  });
+  
+  // 단일 종목 상세 정보 (히스토리 없을 때)
+  window.showSingleStockInfo = function(stock){
+    const existing = document.getElementById('single-stock-modal');
+    if(existing) existing.remove();
+    
+    const accel = typeof stock.accel === 'number' ? stock.accel : 0;
+    let evalText, evalColor;
+    if(accel > 20 && stock.bsa >= 55){
+      evalText = '🚀 강력 매수 후보';
+      evalColor = '#4caf50';
+    } else if(accel > 10){
+      evalText = '📈 상승 모멘텀';
+      evalColor = '#2196f3';
+    } else if(accel < -10){
+      evalText = '📉 모멘텀 약화';
+      evalColor = '#f44336';
+    } else {
+      evalText = '➡️ 관망';
+      evalColor = '#666';
+    }
+    
+    let html = '<h2 style="margin-top:0;color:#333;">📊 ' + stock.name + ' 상세 정보</h2>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:15px;">';
+    html += '<div style="padding:12px;background:#e3f2fd;border-radius:6px;"><strong>섹터:</strong><br><span style="font-size:18px;color:#1976d2;">' + (stock.sector||'-') + '</span></div>';
+    html += '<div style="padding:12px;background:#fff3e0;border-radius:6px;"><strong>코드:</strong><br><span style="font-size:18px;color:#ff6f00;">' + (stock.code||'-') + '</span></div>';
+    html += '<div style="padding:12px;background:#fce4ec;border-radius:6px;"><strong>BSA:</strong><br><span style="font-size:24px;color:#c2185b;font-weight:bold;">' + (stock.bsa||0) + '</span></div>';
+    html += '<div style="padding:12px;background:#e8f5e9;border-radius:6px;"><strong>가속도:</strong><br><span style="font-size:24px;color:' + (accel>0?'#4caf50':'#f44336') + ';font-weight:bold;">' + accel.toFixed(1) + '</span></div>';
+    html += '</div>';
+    
+    if(stock.bullB !== undefined || stock.bullBSector !== undefined){
+      html += '<div style="padding:12px;background:#f3e5f5;border-radius:6px;margin-bottom:15px;">';
+      html += '<strong>📊 세부 점수:</strong><br>';
+      if(stock.bullB !== undefined) html += '• BullB: ' + stock.bullB + '<br>';
+      if(stock.bullBSector !== undefined) html += '• BullBSector: ' + stock.bullBSector + '<br>';
+      if(stock.price) html += '• 현재가: ' + stock.price.toLocaleString() + '원<br>';
+      if(stock.ret30AtRec !== undefined) html += '• 30일 수익률: ' + stock.ret30AtRec + '%';
+      html += '</div>';
+    }
+    
+    html += '<div style="padding:14px;background:' + evalColor + '22;border-radius:6px;border-left:4px solid ' + evalColor + ';">';
+    html += '<strong style="color:' + evalColor + ';font-size:18px;">' + evalText + '</strong>';
+    html += '</div>';
+    
+    const modal = document.createElement('div');
+    modal.id = 'single-stock-modal';
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;';
+    const inner = document.createElement('div');
+    inner.style.cssText = 'background:white;border-radius:12px;padding:24px;max-width:600px;width:100%;max-height:90vh;overflow-y:auto;position:relative;';
+    inner.innerHTML = html + '<button id="single-stock-close" style="position:absolute;top:12px;right:12px;padding:6px 14px;background:#dc3545;color:white;border:none;border-radius:6px;cursor:pointer;">✕ 닫기</button>';
+    modal.appendChild(inner);
+    document.body.appendChild(modal);
+    document.getElementById('single-stock-close').onclick = () => modal.remove();
+    modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  };
+  
+  // 모달 표시 후 종목명 자동 변환 (DOM 변경 감지)
+  const observer = new MutationObserver(function(mutations){
+    mutations.forEach(m => {
+      m.addedNodes.forEach(node => {
+        if(node.nodeType === 1 && (
+          node.id === 'changes-modal' || 
+          node.id === 'watch-modal' || 
+          node.id === 'strong-modal'
+        )){
+          // 모달 안의 <strong>...</strong> 중 종목명을 클릭 가능하게
+          processStockNamesInModal(node);
+        }
+      });
+    });
+  });
+  observer.observe(document.body, {childList: true, subtree: false});
+  
+  function processStockNamesInModal(modal){
+    // 일별 로그 + 메모리에서 모든 종목명 수집
+    const stockNames = new Set();
+    
+    try {
+      const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+      log.forEach(d => (d.top5||[]).forEach(s => stockNames.add(s.name)));
+    } catch(e){}
+    
+    if(window._validBackup){
+      window._validBackup.forEach(s => stockNames.add(s.name));
+    }
+    
+    // 모달 내 모든 strong 태그를 검사해서 종목명이면 클릭 가능하게 변경
+    const strongs = modal.querySelectorAll('strong');
+    strongs.forEach(el => {
+      const text = el.textContent.trim();
+      if(stockNames.has(text) && !el.classList.contains('stock-clickable')){
+        el.classList.add('stock-clickable');
+        el.setAttribute('data-stock', text);
+        el.style.color = '#1976d2';
+        el.style.cursor = 'pointer';
+        el.style.textDecoration = 'underline dotted';
+        el.title = '클릭: 상세 정보 보기';
+      }
+    });
+  }
+  
+  console.log('✅ 종목 클릭 핸들러 활성화');
+})();
+
+
+
 console.log('💡 주목 종목: showWatchList() 또는 🔭 버튼 클릭');
-
-
-
 
 
 // === 변화 분석 모달 (예쁘게 표시) ===
