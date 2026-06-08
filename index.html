@@ -1856,7 +1856,8 @@ window.fetchMacroData = async function(){
     'VIX': '%5EVIX',
     'DXY': 'DX-Y.NYB',
     'WTI': 'CL=F',
-    'GOLD': 'GC=F'
+    'GOLD': 'GC=F',
+'KR10Y': '365780.KS'
   };
   
   const results = {};
@@ -2858,6 +2859,493 @@ window.showTop5Flow = async function(){
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', addButton);
   else setTimeout(addButton, 1200);
 })();
+// === 백테스트 정확도 검증 ===
+
+// 야후에서 N일 후 실제 종가 조회
+window.fetchActualPrice = async function(code, dateStr){
+  // dateStr: "2026-06-07" 형식
+  const cacheKey = 'actual_price_' + code + '_' + dateStr;
+  const cached = localStorage.getItem(cacheKey);
+  if(cached){
+    try {
+      const c = JSON.parse(cached);
+      if(Date.now() - c.timestamp < 86400000){ // 24시간 캐시
+        return c.price;
+      }
+    } catch(e){}
+  }
+  
+  try {
+    // 한국 주식은 .KS (코스피) 또는 .KQ (코스닥) 접미사 필요
+    const symbol = code + '.KS';
+    const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + symbol + '?interval=1d&range=30d';
+    const r = await fetch('https://stock-proxy.kgwsw.workers.dev/proxy?url=' + encodeURIComponent(url));
+    const d = await r.json();
+    const result = d.chart?.result?.[0];
+    if(!result) return null;
+    
+    const timestamps = result.timestamp || [];
+    const closes = result.indicators?.quote?.[0]?.close || [];
+    
+    // dateStr에 해당하는 날짜의 종가 찾기
+    const targetDate = new Date(dateStr).getTime() / 1000;
+    let closestIdx = -1;
+    let closestDiff = Infinity;
+    
+    for(let i = 0; i < timestamps.length; i++){
+      const diff = Math.abs(timestamps[i] - targetDate);
+      if(diff < closestDiff && closes[i] != null){
+        closestDiff = diff;
+        closestIdx = i;
+      }
+    }
+    
+    if(closestIdx >= 0){
+      const price = closes[closestIdx];
+      const actualDate = new Date(timestamps[closestIdx] * 1000).toISOString().slice(0,10);
+      localStorage.setItem(cacheKey, JSON.stringify({
+        timestamp: Date.now(),
+        price: price,
+        actualDate: actualDate
+      }));
+      return price;
+    }
+    return null;
+  } catch(e){
+    console.log('❌ 가격 조회 실패 ('+code+', '+dateStr+'):', e.message);
+    return null;
+  }
+};
+
+// N일 전 Top5의 N일 후 실제 수익률 계산
+window.validateBacktest = async function(daysAfter){
+  daysAfter = daysAfter || 1;
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  if(log.length < 2){
+    return { error: '검증에 최소 2일치 데이터가 필요합니다. 현재: '+log.length+'일' };
+  }
+  
+  const results = [];
+  
+  // 각 일별로 Top5의 추천 시점 가격 → daysAfter일 후 실제 가격 비교
+  for(let i = 0; i < log.length - daysAfter; i++){
+    const recDay = log[i];
+    const targetDateIdx = i + daysAfter;
+    const targetDate = log[targetDateIdx]?.date;
+    if(!targetDate) continue;
+    
+    if(!recDay.top5) continue;
+    
+    for(const stock of recDay.top5){
+      const recPrice = stock.price;
+      const futurePrice = await fetchActualPrice(stock.code, targetDate);
+      
+      if(recPrice && futurePrice){
+        const actualReturn = ((futurePrice - recPrice) / recPrice) * 100;
+        results.push({
+          recDate: recDay.date,
+          targetDate: targetDate,
+          name: stock.name,
+          code: stock.code,
+          rank: recDay.top5.indexOf(stock) + 1,
+          bsa: stock.bsa,
+          accel: stock.accel,
+          recPrice: recPrice,
+          futurePrice: futurePrice,
+          actualReturn: actualReturn,
+          hit: actualReturn > 0
+        });
+      }
+    }
+  }
+  
+  return results;
+};
+
+// 전체 검증 실행 + 통계
+window.runFullValidation = async function(daysAfter){
+  daysAfter = daysAfter || 1;
+  const results = await validateBacktest(daysAfter);
+  if(results.error) return results;
+  if(results.length === 0) return { error: '검증할 데이터 부족' };
+  
+  // 통계 계산
+  const totalCount = results.length;
+  const hitCount = results.filter(r => r.hit).length;
+  const hitRate = (hitCount / totalCount * 100).toFixed(1);
+  const avgReturn = (results.reduce((s,r) => s+r.actualReturn, 0) / totalCount).toFixed(2);
+  
+  // 순위별 통계
+  const rankStats = {};
+  for(let i = 1; i <= 5; i++){
+    const rankResults = results.filter(r => r.rank === i);
+    if(rankResults.length > 0){
+      rankStats[i] = {
+        count: rankResults.length,
+        hitRate: (rankResults.filter(r => r.hit).length / rankResults.length * 100).toFixed(1),
+        avgReturn: (rankResults.reduce((s,r) => s+r.actualReturn, 0) / rankResults.length).toFixed(2),
+        maxReturn: Math.max(...rankResults.map(r => r.actualReturn)).toFixed(2),
+        minReturn: Math.min(...rankResults.map(r => r.actualReturn)).toFixed(2)
+      };
+    }
+  }
+  
+  // BSA 구간별 통계
+  const bsaBuckets = {
+    '70+': results.filter(r => r.bsa >= 70),
+    '60-69': results.filter(r => r.bsa >= 60 && r.bsa < 70),
+    '50-59': results.filter(r => r.bsa >= 50 && r.bsa < 60),
+    '<50': results.filter(r => r.bsa < 50)
+  };
+  const bsaStats = {};
+  Object.entries(bsaBuckets).forEach(([k, arr]) => {
+    if(arr.length > 0){
+      bsaStats[k] = {
+        count: arr.length,
+        hitRate: (arr.filter(r=>r.hit).length / arr.length * 100).toFixed(1),
+        avgReturn: (arr.reduce((s,r)=>s+r.actualReturn,0) / arr.length).toFixed(2)
+      };
+    }
+  });
+  
+  return {
+    daysAfter: daysAfter,
+    totalCount: totalCount,
+    hitCount: hitCount,
+    hitRate: hitRate,
+    avgReturn: avgReturn,
+    rankStats: rankStats,
+    bsaStats: bsaStats,
+    results: results
+  };
+};
+
+// 검증 결과 모달
+window.showValidation = async function(){
+  document.getElementById('val-modal')?.remove();
+  
+  const modal = document.createElement('div');
+  modal.id = 'val-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML = `
+    <div style="background:white;border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;padding:24px;position:relative;">
+      <button id="val-close" style="position:absolute;top:12px;right:12px;background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>
+      <h2 style="margin:0 0 16px;color:#1f2937;">🎯 백테스트 정확도 검증</h2>
+      <div style="background:#f9fafb;padding:12px;border-radius:8px;margin-bottom:16px;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;">검증 기간:
+          <select id="val-days" style="padding:4px 8px;border:1px solid #d1d5db;border-radius:4px;">
+            <option value="1" selected>1일 후</option>
+            <option value="3">3일 후</option>
+            <option value="5">5일 후</option>
+            <option value="7">7일 후</option>
+          </select>
+          <button id="val-run" style="padding:6px 16px;background:linear-gradient(135deg,#8b5cf6,#7c3aed);color:white;border:none;border-radius:4px;font-weight:bold;cursor:pointer;">▶ 검증 실행</button>
+        </label>
+      </div>
+      <div id="val-content" style="color:#6b7280;text-align:center;padding:32px;">기간을 선택하고 ▶ 검증 실행을 누르세요.<br><br>💡 야후 파이낸스에서 실제 종가를 조회해 BSA 추천의 실제 정확도를 계산합니다.</div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById('val-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  
+  document.getElementById('val-run').onclick = async () => {
+    const days = parseInt(document.getElementById('val-days').value);
+    const content = document.getElementById('val-content');
+    content.innerHTML = '⏳ 야후에서 실제 종가 조회 중... (약 10-30초 소요)';
+    
+    const r = await runFullValidation(days);
+    if(r.error){
+      content.innerHTML = '<div style="color:#ef4444;padding:16px;background:#fef2f2;border-radius:6px;">❌ '+r.error+'</div>';
+      return;
+    }
+    
+    const hitColor = parseFloat(r.hitRate) >= 60 ? '#10b981' : parseFloat(r.hitRate) >= 40 ? '#f59e0b' : '#ef4444';
+    const returnColor = parseFloat(r.avgReturn) >= 0 ? '#10b981' : '#ef4444';
+    
+    let html = `
+      <div style="background:linear-gradient(135deg,#f0fdf4,#dbeafe);padding:16px;border-radius:8px;margin-bottom:16px;">
+        <div style="font-size:18px;font-weight:bold;color:#1f2937;">📊 ${r.daysAfter}일 후 정확도 (총 ${r.totalCount}건)</div>
+        <div style="margin-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+          <div style="background:white;padding:12px;border-radius:6px;text-align:center;">
+            <div style="font-size:12px;color:#6b7280;">적중률</div>
+            <div style="font-size:24px;font-weight:bold;color:${hitColor};">${r.hitRate}%</div>
+            <div style="font-size:11px;color:#9ca3af;">${r.hitCount}/${r.totalCount}</div>
+          </div>
+          <div style="background:white;padding:12px;border-radius:6px;text-align:center;">
+            <div style="font-size:12px;color:#6b7280;">평균 수익률</div>
+            <div style="font-size:24px;font-weight:bold;color:${returnColor};">${r.avgReturn}%</div>
+          </div>
+          <div style="background:white;padding:12px;border-radius:6px;text-align:center;">
+            <div style="font-size:12px;color:#6b7280;">평가</div>
+            <div style="font-size:18px;font-weight:bold;color:${hitColor};">${parseFloat(r.hitRate)>=60?'🎯 우수':parseFloat(r.hitRate)>=40?'⚠️ 보통':'❌ 부진'}</div>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    // 순위별 통계
+    html += '<h3 style="margin:16px 0 8px;color:#1f2937;">📋 순위별 정확도</h3>';
+    html += '<table style="width:100%;font-size:13px;border-collapse:collapse;"><thead style="background:#f3f4f6;"><tr><th style="padding:6px;">순위</th><th>표본수</th><th>적중률</th><th>평균수익률</th><th>최대</th><th>최저</th></tr></thead><tbody>';
+    Object.entries(r.rankStats).forEach(([rank, s]) => {
+      const c = parseFloat(s.avgReturn) >= 0 ? '#10b981' : '#ef4444';
+      html += `<tr style="border-top:1px solid #e5e7eb;"><td style="padding:6px;text-align:center;font-weight:bold;">${rank}위</td><td style="text-align:center;">${s.count}</td><td style="text-align:center;">${s.hitRate}%</td><td style="text-align:center;color:${c};font-weight:bold;">${s.avgReturn}%</td><td style="text-align:center;color:#10b981;">+${s.maxReturn}%</td><td style="text-align:center;color:#ef4444;">${s.minReturn}%</td></tr>`;
+    });
+    html += '</tbody></table>';
+    
+    // BSA 구간별 통계
+    html += '<h3 style="margin:16px 0 8px;color:#1f2937;">📊 BSA 점수별 정확도</h3>';
+    html += '<table style="width:100%;font-size:13px;border-collapse:collapse;"><thead style="background:#f3f4f6;"><tr><th style="padding:6px;">BSA 구간</th><th>표본수</th><th>적중률</th><th>평균수익률</th></tr></thead><tbody>';
+    Object.entries(r.bsaStats).forEach(([bucket, s]) => {
+      const c = parseFloat(s.avgReturn) >= 0 ? '#10b981' : '#ef4444';
+      html += `<tr style="border-top:1px solid #e5e7eb;"><td style="padding:6px;text-align:center;font-weight:bold;">${bucket}</td><td style="text-align:center;">${s.count}</td><td style="text-align:center;">${s.hitRate}%</td><td style="text-align:center;color:${c};font-weight:bold;">${s.avgReturn}%</td></tr>`;
+    });
+    html += '</tbody></table>';
+    
+    // 상세 내역
+    html += '<h3 style="margin:16px 0 8px;color:#1f2937;">📝 상세 내역</h3>';
+    html += '<div style="max-height:300px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px;">';
+    html += '<table style="width:100%;font-size:12px;border-collapse:collapse;"><thead style="background:#f3f4f6;position:sticky;top:0;"><tr><th style="padding:6px;">추천일</th><th>순위</th><th>종목</th><th>BSA</th><th>추천가</th><th>실제가</th><th>수익률</th></tr></thead><tbody>';
+    r.results.forEach(row => {
+      const c = row.actualReturn >= 0 ? '#10b981' : '#ef4444';
+      const icon = row.actualReturn >= 0 ? '✅' : '❌';
+      html += `<tr style="border-top:1px solid #e5e7eb;"><td style="padding:6px;">${row.recDate}</td><td style="text-align:center;">${row.rank}</td><td style="font-weight:bold;">${row.name}</td><td style="text-align:center;">${row.bsa}</td><td style="text-align:right;">${row.recPrice?.toLocaleString()}</td><td style="text-align:right;">${row.futurePrice?.toLocaleString()}</td><td style="text-align:right;color:${c};font-weight:bold;">${icon} ${row.actualReturn>=0?'+':''}${row.actualReturn.toFixed(2)}%</td></tr>`;
+    });
+    html += '</tbody></table></div>';
+    
+    content.innerHTML = html;
+  };
+};
+
+// 떠다니는 검증 버튼
+(function createFloatingValidationButton(){
+  function addButton(){
+    if(document.getElementById('floating-val-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'floating-val-btn';
+    btn.innerHTML = '🎯<br>검증';
+    btn.title = '백테스트 정확도 검증';
+    btn.style.cssText = `position:fixed;bottom:850px;right:20px;width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6 0%,#7c3aed 100%);color:white;border:none;box-shadow:0 4px 12px rgba(0,0,0,0.3);cursor:pointer;font-size:11px;font-weight:bold;line-height:1.2;z-index:9998;transition:transform 0.2s;`;
+    btn.onmouseover = ()=>{ btn.style.transform='scale(1.1)'; };
+    btn.onmouseout = ()=>{ btn.style.transform='scale(1)'; };
+    btn.onclick = ()=>{ if(typeof showValidation==='function') showValidation(); };
+    document.body.appendChild(btn);
+    console.log('✅ 검증 버튼 생성됨');
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', addButton);
+  else setTimeout(addButton, 1300);
+})();
+// === 시장 국면 5단계 분류 ===
+window.analyzeMarketRegime = async function(){
+  // 1. KOSPI30 점수 (일일 로그에서)
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  const today = log[log.length-1];
+  const kospi30 = today?.kospi30 || 0;
+  
+  // 2. 매크로 데이터 (캐시 또는 신규 조회)
+  let macroData = null;
+  try {
+    const cached = localStorage.getItem('macro_data');
+    if(cached){
+      macroData = JSON.parse(cached);
+      // 1시간 이상 지났으면 재조회
+      const cacheAge = Date.now() - new Date(macroData.timestamp).getTime();
+      if(cacheAge > 3600000 && typeof fetchMacroData === 'function'){
+        macroData = await fetchMacroData();
+      }
+    } else if(typeof fetchMacroData === 'function'){
+      macroData = await fetchMacroData();
+    }
+  } catch(e){ console.log('매크로 데이터 로드 실패:', e.message); }
+  
+  const vix = macroData?.['VIX']?.value || null;
+  const usdKrw = macroData?.['USD/KRW']?.value || null;
+  const usdKrwChg = macroData?.['USD/KRW']?.changePct || 0;
+  const us10y = macroData?.['US10Y']?.value || null;
+  const kr10yChg = macroData?.['KR10Y']?.changePct || 0;
+  
+  // 3. 점수 계산 (각 항목 -2~+2점, 총 -10~+10)
+  let score = 0;
+  const factors = [];
+  
+  // KOSPI30 점수 (가중치 가장 큼)
+  let kospiScore = 0;
+  if(kospi30 >= 40){ kospiScore = 2; factors.push({name:'KOSPI30 강세', value:kospi30.toFixed(1), score:2}); }
+  else if(kospi30 >= 20){ kospiScore = 1; factors.push({name:'KOSPI30 양호', value:kospi30.toFixed(1), score:1}); }
+  else if(kospi30 >= 0){ kospiScore = 0; factors.push({name:'KOSPI30 중립', value:kospi30.toFixed(1), score:0}); }
+  else if(kospi30 >= -20){ kospiScore = -1; factors.push({name:'KOSPI30 약세', value:kospi30.toFixed(1), score:-1}); }
+  else { kospiScore = -2; factors.push({name:'KOSPI30 극약세', value:kospi30.toFixed(1), score:-2}); }
+  score += kospiScore * 2; // KOSPI30 가중치 2배
+  
+  // VIX 점수
+  if(vix != null){
+    if(vix < 15){ score += 2; factors.push({name:'VIX 안정', value:vix.toFixed(1), score:2}); }
+    else if(vix < 20){ score += 1; factors.push({name:'VIX 양호', value:vix.toFixed(1), score:1}); }
+    else if(vix < 25){ factors.push({name:'VIX 중립', value:vix.toFixed(1), score:0}); }
+    else if(vix < 30){ score -= 1; factors.push({name:'VIX 불안', value:vix.toFixed(1), score:-1}); }
+    else { score -= 2; factors.push({name:'VIX 공포', value:vix.toFixed(1), score:-2}); }
+  }
+  
+  // 원달러 점수 (1300 미만=강세, 1400 미만=중립, 1500 이상=약세)
+  if(usdKrw != null){
+    if(usdKrw < 1300){ score += 1; factors.push({name:'원화 강세', value:usdKrw.toFixed(0), score:1}); }
+    else if(usdKrw < 1400){ factors.push({name:'환율 중립', value:usdKrw.toFixed(0), score:0}); }
+    else if(usdKrw < 1500){ score -= 1; factors.push({name:'원화 약세', value:usdKrw.toFixed(0), score:-1}); }
+    else { score -= 2; factors.push({name:'원화 극약세', value:usdKrw.toFixed(0), score:-2}); }
+  }
+  
+  // US10Y 점수 (4% 미만=유리, 4.5% 미만=중립, 5% 이상=부담)
+  if(us10y != null){
+    if(us10y < 4.0){ score += 1; factors.push({name:'미국 저금리', value:us10y.toFixed(2)+'%', score:1}); }
+    else if(us10y < 4.5){ factors.push({name:'미국 금리 중립', value:us10y.toFixed(2)+'%', score:0}); }
+    else if(us10y < 5.0){ score -= 1; factors.push({name:'미국 고금리', value:us10y.toFixed(2)+'%', score:-1}); }
+    else { score -= 2; factors.push({name:'미국 극고금리', value:us10y.toFixed(2)+'%', score:-2}); }
+  }
+  
+  // KR10Y 변화 (ETF 상승=금리 하락 우호, 하락=금리 상승 부담)
+  if(kr10yChg != 0){
+    if(kr10yChg > 0.3){ score += 1; factors.push({name:'한국 채권 강세', value:'+'+kr10yChg.toFixed(2)+'%', score:1}); }
+    else if(kr10yChg < -0.3){ score -= 1; factors.push({name:'한국 채권 약세', value:kr10yChg.toFixed(2)+'%', score:-1}); }
+  }
+  
+  // 4. 국면 분류 (총점 기준)
+  let regime, label, color, strategy, action;
+  if(score >= 7){
+    regime = 'strong_bull'; label = '🚀 극강세'; color = '#10b981';
+    strategy = '풀투자 적극 운용';
+    action = 'BSA Top5 풀비중 매수, 가속도 +30 이상 종목 추가 매수, 현금 비중 0~10%';
+  } else if(score >= 3){
+    regime = 'bull'; label = '🟢 강세'; color = '#22c55e';
+    strategy = '정상 운용';
+    action = 'BSA Top5 균등 매수, 현금 비중 10~20%, 수급 좋은 종목 우선';
+  } else if(score >= -2){
+    regime = 'neutral'; label = '🟡 중립'; color = '#f59e0b';
+    strategy = '선별 매수';
+    action = 'BSA 70+ 종목만 선별, 외국인 매수 종목 우선, 현금 비중 30~50%';
+  } else if(score >= -6){
+    regime = 'bear'; label = '🟠 약세'; color = '#f97316';
+    strategy = '방어 모드';
+    action = '신규 매수 자제, 보유 종목 중 BSA<60 또는 가속도 음전환 종목 매도, 현금 비중 60~80%';
+  } else {
+    regime = 'strong_bear'; label = '🔴 극약세'; color = '#ef4444';
+    strategy = '전량 현금';
+    action = '매수 중단, 보유 종목 전량 매도 검토, 현금 100% 유지, 매크로 회복 신호 대기';
+  }
+  
+  return {
+    score: score,
+    regime: regime,
+    label: label,
+    color: color,
+    strategy: strategy,
+    action: action,
+    factors: factors,
+    inputs: {
+      kospi30: kospi30,
+      vix: vix,
+      usdKrw: usdKrw,
+      us10y: us10y,
+      kr10yChg: kr10yChg
+    },
+    timestamp: new Date().toISOString()
+  };
+};
+
+window.showMarketRegime = async function(){
+  document.getElementById('regime-modal')?.remove();
+  
+  const modal = document.createElement('div');
+  modal.id = 'regime-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML = `
+    <div style="background:white;border-radius:12px;max-width:800px;width:100%;max-height:90vh;overflow-y:auto;padding:24px;position:relative;">
+      <button id="reg-close" style="position:absolute;top:12px;right:12px;background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>
+      <h2 style="margin:0 0 16px;color:#1f2937;">🌡️ 시장 국면 분석</h2>
+      <div id="reg-content" style="text-align:center;padding:32px;color:#6b7280;">⏳ 분석 중...</div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById('reg-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  
+  const r = await analyzeMarketRegime();
+  const content = document.getElementById('reg-content');
+  
+  // 점수 게이지 (-10 ~ +10)
+  const gaugePercent = ((r.score + 10) / 20) * 100;
+  
+  let html = `
+    <div style="background:linear-gradient(135deg,${r.color}22,${r.color}11);border:2px solid ${r.color};padding:24px;border-radius:12px;margin-bottom:16px;text-align:center;">
+      <div style="font-size:32px;font-weight:bold;color:${r.color};margin-bottom:8px;">${r.label}</div>
+      <div style="font-size:18px;font-weight:bold;color:#374151;margin-bottom:12px;">종합 점수: ${r.score>=0?'+':''}${r.score} / 10</div>
+      <div style="background:#e5e7eb;height:24px;border-radius:12px;overflow:hidden;position:relative;">
+        <div style="background:${r.color};height:100%;width:${gaugePercent}%;transition:width 0.3s;"></div>
+        <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:11px;font-weight:bold;color:#374151;">-10 ←  ${r.score>=0?'+':''}${r.score}  → +10</div>
+      </div>
+      <div style="margin-top:16px;font-size:16px;font-weight:bold;color:${r.color};">💡 ${r.strategy}</div>
+    </div>
+    
+    <div style="background:#f9fafb;padding:16px;border-radius:8px;margin-bottom:16px;">
+      <div style="font-size:14px;font-weight:bold;margin-bottom:8px;color:#1f2937;">🎯 권장 행동</div>
+      <div style="font-size:13px;color:#374151;line-height:1.6;">${r.action}</div>
+    </div>
+  `;
+  
+  // 요인별 점수
+  html += '<h3 style="margin:16px 0 8px;color:#1f2937;">📊 점수 구성</h3>';
+  html += '<table style="width:100%;font-size:13px;border-collapse:collapse;"><thead style="background:#f3f4f6;"><tr><th style="padding:8px;text-align:left;">요인</th><th>값</th><th>점수</th></tr></thead><tbody>';
+  r.factors.forEach(f => {
+    const c = f.score > 0 ? '#10b981' : f.score < 0 ? '#ef4444' : '#6b7280';
+    const sign = f.score > 0 ? '+' : '';
+    html += `<tr style="border-top:1px solid #e5e7eb;"><td style="padding:8px;">${f.name}</td><td style="text-align:center;font-weight:bold;">${f.value}</td><td style="text-align:center;color:${c};font-weight:bold;">${sign}${f.score}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  
+  // 5단계 기준표
+  html += '<h3 style="margin:16px 0 8px;color:#1f2937;">📋 5단계 분류 기준</h3>';
+  html += '<div style="font-size:12px;background:#f9fafb;padding:12px;border-radius:6px;">';
+  const levels = [
+    {label:'🚀 극강세', range:'+7 이상', color:'#10b981', desc:'풀투자'},
+    {label:'🟢 강세', range:'+3 ~ +6', color:'#22c55e', desc:'정상 운용'},
+    {label:'🟡 중립', range:'-2 ~ +2', color:'#f59e0b', desc:'선별 매수'},
+    {label:'🟠 약세', range:'-6 ~ -3', color:'#f97316', desc:'방어 모드'},
+    {label:'🔴 극약세', range:'-7 이하', color:'#ef4444', desc:'전량 현금'}
+  ];
+  levels.forEach(l => {
+    const isCurrent = l.label === r.label;
+    const bgStyle = isCurrent ? `background:${l.color}22;font-weight:bold;` : '';
+    html += `<div style="display:flex;justify-content:space-between;padding:6px 8px;border-radius:4px;${bgStyle}"><span style="color:${l.color};">${l.label} ${isCurrent?'← 현재':''}</span><span>${l.range}</span><span>${l.desc}</span></div>`;
+  });
+  html += '</div>';
+  
+  content.innerHTML = html;
+};
+
+// 떠다니는 국면 버튼
+(function createFloatingRegimeButton(){
+  function addButton(){
+    if(document.getElementById('floating-regime-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'floating-regime-btn';
+    btn.innerHTML = '🌡️<br>국면';
+    btn.title = '시장 국면 5단계 분석';
+    btn.style.cssText = `position:fixed;bottom:920px;right:20px;width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,#ec4899 0%,#db2777 100%);color:white;border:none;box-shadow:0 4px 12px rgba(0,0,0,0.3);cursor:pointer;font-size:11px;font-weight:bold;line-height:1.2;z-index:9998;transition:transform 0.2s;`;
+    btn.onmouseover = ()=>{ btn.style.transform='scale(1.1)'; };
+    btn.onmouseout = ()=>{ btn.style.transform='scale(1)'; };
+    btn.onclick = ()=>{ if(typeof showMarketRegime==='function') showMarketRegime(); };
+    document.body.appendChild(btn);
+    console.log('✅ 국면 버튼 생성됨');
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', addButton);
+  else setTimeout(addButton, 1400);
+})();
+console.log('💡 시장 국면: showMarketRegime() 또는 🌡️ 버튼 클릭');
+
+
+
+console.log('💡 검증: showValidation() 또는 🎯 버튼 클릭');
+
+
 console.log('💡 수급: showTop5Flow() 또는 🌊 버튼 클릭, 개별 종목: showFlowModal(code, name)');
 
 
@@ -9296,6 +9784,955 @@ root.render(<App/>);</script>
     });
   }
 })();
+// === 떠다니는 버튼 12개를 메뉴로 통합 ===
+(function(){
+  // 1. 기존 떠다니는 버튼 모두 숨기기
+  const btnIds = [
+    'floating-macro-btn', 'floating-chart-btn', 'floating-change-btn',
+    'floating-csv-btn', 'floating-watch-btn', 'floating-tracker-btn',
+    'floating-sector-btn', 'floating-strong-btn', 'floating-backup-btn',
+    'floating-simulator-btn', 'floating-watchlist-btn', 'floating-flow-btn',
+    'floating-validation-btn', 'floating-regime-btn'
+  ];
+  btnIds.forEach(id => {
+    const b = document.getElementById(id);
+    if(b) b.style.display = 'none';
+  });
+  
+  // 2. 통합 메뉴 버튼 생성
+  const menuBtn = document.createElement('button');
+  menuBtn.id = 'floating-menu-btn';
+  menuBtn.innerHTML = '📋<br><span style="font-size:10px;">메뉴</span>';
+  menuBtn.style.cssText = `
+    position:fixed;bottom:20px;right:20px;width:64px;height:64px;
+    border-radius:50%;background:linear-gradient(135deg,#3b82f6,#1d4ed8);
+    color:white;border:none;cursor:pointer;z-index:9998;
+    box-shadow:0 4px 16px rgba(0,0,0,0.3);font-size:20px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+  `;
+  document.body.appendChild(menuBtn);
+  
+  // 3. 메뉴 패널
+  const items = [
+    {cat:'📊 분석', list:[
+      {icon:'💱', name:'환율/매크로', fn:'showMacroData'},
+      {icon:'🌡️', name:'시장 국면', fn:'showMarketRegime'},
+      {icon:'🎯', name:'백테스트 검증', fn:'showValidation'},
+      {icon:'💸', name:'외국인/기관 수급', fn:'showFlow'},
+    ]},
+    {cat:'📈 차트/추적', list:[
+      {icon:'📊', name:'BSA 차트', fn:'showCharts'},
+      {icon:'📅', name:'일별 변화', fn:'showChange'},
+      {icon:'🏭', name:'섹터 추세', fn:'showSector'},
+      {icon:'📈', name:'종목 추적', fn:'showTracker'},
+    ]},
+    {cat:'⭐ 관리', list:[
+      {icon:'⭐', name:'관심 종목', fn:'showWatchlist'},
+      {icon:'🔭', name:'주목 종목', fn:'showWatch'},
+      {icon:'🚨', name:'강력 후보', fn:'showStrong'},
+      {icon:'💰', name:'시뮬레이터', fn:'showSimulator'},
+    ]},
+    {cat:'💾 데이터', list:[
+      {icon:'📥', name:'CSV 다운로드', fn:'showCsv'},
+      {icon:'💾', name:'백업/복원', fn:'showBackup'},
+    ]}
+  ];
+  
+  let panelHTML = `<div id="menu-panel" style="position:fixed;bottom:96px;right:20px;width:320px;max-height:70vh;overflow-y:auto;background:white;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.25);z-index:9999;padding:16px;display:none;border:1px solid #e5e7eb;">`;
+  panelHTML += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;border-bottom:2px solid #3b82f6;padding-bottom:8px;">
+    <h3 style="margin:0;color:#1f2937;font-size:16px;">📋 전체 메뉴</h3>
+    <button id="menu-close" style="background:#ef4444;color:white;border:none;width:24px;height:24px;border-radius:50%;cursor:pointer;">✕</button>
+  </div>`;
+  items.forEach(g => {
+    panelHTML += `<div style="margin-bottom:12px;">
+      <div style="font-size:12px;font-weight:bold;color:#6b7280;margin-bottom:6px;">${g.cat}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">`;
+    g.list.forEach(it => {
+      panelHTML += `<button class="menu-item" data-fn="${it.fn}" style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;padding:10px 8px;cursor:pointer;text-align:left;font-size:12px;display:flex;align-items:center;gap:6px;transition:all 0.2s;">
+        <span style="font-size:18px;">${it.icon}</span><span>${it.name}</span>
+      </button>`;
+    });
+    panelHTML += `</div></div>`;
+  });
+  panelHTML += `</div>`;
+  document.body.insertAdjacentHTML('beforeend', panelHTML);
+  
+  const panel = document.getElementById('menu-panel');
+  
+  // 4. 이벤트 연결
+  menuBtn.onclick = () => {
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  };
+  document.getElementById('menu-close').onclick = () => panel.style.display = 'none';
+  document.querySelectorAll('.menu-item').forEach(b => {
+    b.onmouseenter = () => b.style.background = '#dbeafe';
+    b.onmouseleave = () => b.style.background = '#f3f4f6';
+    b.onclick = () => {
+      const fnName = b.dataset.fn;
+      panel.style.display = 'none';
+      if(typeof window[fnName] === 'function'){
+        window[fnName]();
+      } else {
+        alert(`${fnName} 함수가 정의되지 않았습니다`);
+      }
+    };
+  });
+  
+  // 5. 외부 클릭 시 닫기
+  document.addEventListener('click', (e) => {
+    if(!panel.contains(e.target) && e.target !== menuBtn && !menuBtn.contains(e.target)){
+      panel.style.display = 'none';
+    }
+  });
+  
+  console.log('✅ 통합 메뉴 시스템 활성화 (14개 기능)');
+})();
+// === 섹터 로테이션 감지 ===
+window.analyzeSectorRotation = function(periodDays = 5){
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log') || '[]');
+  if(log.length < 2){
+    return { error: '최소 2일 이상의 데이터가 필요합니다 (현재 ' + log.length + '일)' };
+  }
+  
+  // 기간 분할: 최근 N일 vs 이전 N일
+  const recent = log.slice(-periodDays);
+  const previous = log.slice(-periodDays * 2, -periodDays);
+  
+  // 섹터별 데이터 집계 함수
+  function aggregate(days){
+    const sectors = {};
+    days.forEach(day => {
+      (day.top5 || []).forEach((s, rank) => {
+        const sec = s.sector || '기타';
+        if(!sectors[sec]) sectors[sec] = { bsaSum: 0, count: 0, rankSum: 0, stocks: new Set() };
+        sectors[sec].bsaSum += (s.bsa || 0);
+        sectors[sec].count++;
+        sectors[sec].rankSum += (rank + 1);
+        sectors[sec].stocks.add(s.name);
+      });
+    });
+    // 평균 계산
+    Object.keys(sectors).forEach(k => {
+      const s = sectors[k];
+      s.avgBSA = s.count > 0 ? s.bsaSum / s.count : 0;
+      s.avgRank = s.count > 0 ? s.rankSum / s.count : 0;
+      s.frequency = s.count;
+      s.stockList = Array.from(s.stocks);
+    });
+    return sectors;
+  }
+  
+  const recentData = aggregate(recent);
+  const previousData = aggregate(previous);
+  
+  // 모든 섹터 합치기
+  const allSectors = new Set([...Object.keys(recentData), ...Object.keys(previousData)]);
+  const rotation = [];
+  
+  allSectors.forEach(sec => {
+    const r = recentData[sec] || { avgBSA: 0, frequency: 0, avgRank: 99, stockList: [] };
+    const p = previousData[sec] || { avgBSA: 0, frequency: 0, avgRank: 99, stockList: [] };
+    
+    const bsaChange = r.avgBSA - p.avgBSA;
+    const freqChange = r.frequency - p.frequency;
+    
+    // 종합 점수 (BSA 변화 70% + 빈도 변화 30%)
+    const score = bsaChange * 0.7 + freqChange * 3;
+    
+    rotation.push({
+      sector: sec,
+      recentBSA: r.avgBSA,
+      previousBSA: p.avgBSA,
+      bsaChange,
+      recentFreq: r.frequency,
+      previousFreq: p.frequency,
+      freqChange,
+      score,
+      stocks: r.stockList,
+      signal: score > 5 ? '🔥 강한 유입' : score > 1 ? '📈 유입' : score < -5 ? '❄️ 강한 이탈' : score < -1 ? '📉 이탈' : '➖ 보합'
+    });
+  });
+  
+  // 점수 내림차순 정렬
+  rotation.sort((a, b) => b.score - a.score);
+  
+  return {
+    period: periodDays,
+    totalDays: log.length,
+    recentRange: recent.length > 0 ? `${recent[0].date} ~ ${recent[recent.length-1].date}` : '-',
+    previousRange: previous.length > 0 ? `${previous[0].date} ~ ${previous[previous.length-1].date}` : '데이터 부족',
+    rotation,
+    inflow: rotation.filter(r => r.score > 1).slice(0, 5),
+    outflow: rotation.filter(r => r.score < -1).slice(-5).reverse()
+  };
+};
+
+window.showSectorRotation = async function(){
+  document.getElementById('rotation-modal')?.remove();
+  
+  const modal = document.createElement('div');
+  modal.id = 'rotation-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML = `
+    <div style="background:white;border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;padding:24px;position:relative;">
+      <button id="rot-close" style="position:absolute;top:12px;right:12px;background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>
+      <h2 style="margin:0 0 16px;color:#1f2937;">🌀 섹터 로테이션 분석</h2>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:13px;color:#6b7280;margin-right:8px;">비교 기간:</label>
+        <select id="rot-period" style="padding:4px 8px;border-radius:6px;border:1px solid #d1d5db;">
+          <option value="3">3일</option>
+          <option value="5" selected>5일</option>
+          <option value="10">10일</option>
+        </select>
+        <button id="rot-run" style="margin-left:8px;background:#3b82f6;color:white;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;">▶ 분석</button>
+      </div>
+      <div id="rot-content" style="padding:16px;color:#6b7280;text-align:center;">⏳ 로딩 중...</div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById('rot-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  
+  function render(){
+    const period = parseInt(document.getElementById('rot-period').value);
+    const result = window.analyzeSectorRotation(period);
+    const content = document.getElementById('rot-content');
+    
+    if(result.error){
+      content.innerHTML = `<div style="padding:20px;color:#ef4444;">⚠️ ${result.error}</div>`;
+      return;
+    }
+    
+    let html = `
+      <div style="background:#f3f4f6;padding:12px;border-radius:8px;margin-bottom:16px;font-size:13px;color:#374151;">
+        📅 최근 기간: <b>${result.recentRange}</b> | 이전 기간: <b>${result.previousRange}</b> | 총 ${result.totalDays}일 누적
+      </div>
+    `;
+    
+    // 강한 유입 섹터
+    html += `<div style="margin-bottom:20px;">
+      <h3 style="color:#10b981;margin:0 0 10px;font-size:15px;">🔥 자금 유입 섹터 (상위 ${result.inflow.length}개)</h3>`;
+    if(result.inflow.length === 0){
+      html += `<div style="color:#9ca3af;font-size:13px;padding:8px;">유입 섹터 없음</div>`;
+    } else {
+      result.inflow.forEach(r => {
+        html += `<div style="background:linear-gradient(90deg,#d1fae5,#fff);padding:10px;border-left:4px solid #10b981;border-radius:6px;margin-bottom:6px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div><b style="color:#065f46;">${r.signal} ${r.sector}</b></div>
+            <div style="font-size:12px;color:#6b7280;">점수: <b style="color:#10b981;">+${r.score.toFixed(1)}</b></div>
+          </div>
+          <div style="font-size:12px;color:#374151;margin-top:4px;">
+            BSA: ${r.previousBSA.toFixed(1)} → ${r.recentBSA.toFixed(1)} (${r.bsaChange >= 0 ? '+' : ''}${r.bsaChange.toFixed(1)}) | 
+            빈도: ${r.previousFreq}회 → ${r.recentFreq}회 (${r.freqChange >= 0 ? '+' : ''}${r.freqChange})
+          </div>
+          ${r.stocks.length > 0 ? `<div style="font-size:11px;color:#6b7280;margin-top:4px;">📌 ${r.stocks.slice(0, 5).join(', ')}</div>` : ''}
+        </div>`;
+      });
+    }
+    html += `</div>`;
+    
+    // 강한 이탈 섹터
+    html += `<div style="margin-bottom:20px;">
+      <h3 style="color:#ef4444;margin:0 0 10px;font-size:15px;">❄️ 자금 이탈 섹터 (${result.outflow.length}개)</h3>`;
+    if(result.outflow.length === 0){
+      html += `<div style="color:#9ca3af;font-size:13px;padding:8px;">이탈 섹터 없음</div>`;
+    } else {
+      result.outflow.forEach(r => {
+        html += `<div style="background:linear-gradient(90deg,#fee2e2,#fff);padding:10px;border-left:4px solid #ef4444;border-radius:6px;margin-bottom:6px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div><b style="color:#991b1b;">${r.signal} ${r.sector}</b></div>
+            <div style="font-size:12px;color:#6b7280;">점수: <b style="color:#ef4444;">${r.score.toFixed(1)}</b></div>
+          </div>
+          <div style="font-size:12px;color:#374151;margin-top:4px;">
+            BSA: ${r.previousBSA.toFixed(1)} → ${r.recentBSA.toFixed(1)} (${r.bsaChange.toFixed(1)}) | 
+            빈도: ${r.previousFreq}회 → ${r.recentFreq}회 (${r.freqChange})
+          </div>
+        </div>`;
+      });
+    }
+    html += `</div>`;
+    
+    // 전체 섹터 표
+    html += `<h3 style="color:#374151;margin:16px 0 10px;font-size:15px;">📊 전체 섹터 변화</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;">
+          <th style="padding:8px;text-align:left;">섹터</th>
+          <th style="padding:8px;text-align:right;">최근 BSA</th>
+          <th style="padding:8px;text-align:right;">변화</th>
+          <th style="padding:8px;text-align:right;">빈도</th>
+          <th style="padding:8px;text-align:center;">시그널</th>
+        </tr></thead><tbody>`;
+    result.rotation.forEach(r => {
+      const arrow = r.bsaChange > 0 ? '🔺' : r.bsaChange < 0 ? '🔻' : '➖';
+      const color = r.score > 1 ? '#10b981' : r.score < -1 ? '#ef4444' : '#6b7280';
+      html += `<tr style="border-bottom:1px solid #f3f4f6;">
+        <td style="padding:8px;"><b>${r.sector}</b></td>
+        <td style="padding:8px;text-align:right;">${r.recentBSA.toFixed(1)}</td>
+        <td style="padding:8px;text-align:right;color:${color};">${arrow} ${r.bsaChange >= 0 ? '+' : ''}${r.bsaChange.toFixed(1)}</td>
+        <td style="padding:8px;text-align:right;">${r.recentFreq}회</td>
+        <td style="padding:8px;text-align:center;font-size:11px;">${r.signal}</td>
+      </tr>`;
+    });
+    html += `</tbody></table>
+      <div style="margin-top:14px;padding:10px;background:#fef3c7;border-radius:6px;font-size:12px;color:#92400e;">
+        💡 <b>해석</b>: 점수가 양수면 자금이 해당 섹터로 유입, 음수면 이탈을 의미합니다. 
+        최소 10일 이상 데이터가 누적되면 더 신뢰할 수 있는 패턴이 보입니다.
+      </div>`;
+    
+    content.innerHTML = html;
+  }
+  
+  document.getElementById('rot-run').onclick = render;
+  render();
+};
+
+console.log('✅ 섹터 로테이션 기능 로드 완료');
+
+// =============================================
+// === BSA 보정 시스템 (외국인 수급 가중치) ===
+// =============================================
+
+const FLOW_WORKER_URL = 'https://stock-proxy.kgwsw.workers.dev/naver/frgn?code=';
+
+window.getFlowData = async function(code, forceRefresh = false){
+  const cacheKey = 'flow_cache_' + code;
+  const TTL = 6 * 60 * 60 * 1000;
+  if(!forceRefresh){
+    const cached = localStorage.getItem(cacheKey);
+    if(cached){
+      try{
+        const parsed = JSON.parse(cached);
+        if(Date.now() - parsed.timestamp < TTL) return parsed.data;
+      }catch(e){}
+    }
+  }
+  try{
+    const r = await fetch(FLOW_WORKER_URL + code);
+    const d = await r.json();
+    if(d.success && d.data){
+      localStorage.setItem(cacheKey, JSON.stringify({timestamp: Date.now(), data: d.data}));
+      return d.data;
+    }
+  }catch(e){ console.warn('수급 수집 실패:', code, e.message); }
+  return null;
+};
+
+window.calculateFlowSignal = function(flowArray){
+  if(!flowArray || flowArray.length === 0){
+    return { foreignNet5d:0, instNet5d:0, bonus:0, signal:'데이터없음', color:'#9ca3af', foreignSignal:'', instSignal:'' };
+  }
+  const recent5 = flowArray.slice(0, 5);
+  const foreignNet5d = recent5.reduce((s,d) => s + (Number(d.foreign)||0), 0);
+  const instNet5d = recent5.reduce((s,d) => s + (Number(d.inst)||0), 0);
+  
+  let foreignBonus = 0, foreignSignal = '';
+  if(foreignNet5d >= 1000000){ foreignBonus = 7; foreignSignal = '🔥 강한 매수'; }
+  else if(foreignNet5d >= 100000){ foreignBonus = 4; foreignSignal = '📈 매수'; }
+  else if(foreignNet5d >= -100000){ foreignBonus = 0; foreignSignal = '➖ 중립'; }
+  else if(foreignNet5d >= -1000000){ foreignBonus = -4; foreignSignal = '📉 매도'; }
+  else { foreignBonus = -7; foreignSignal = '❄️ 강한 매도'; }
+  
+  let instBonus = 0, instSignal = '';
+  if(instNet5d >= 1000000){ instBonus = 3; instSignal = '🔥 매수'; }
+  else if(instNet5d >= 100000){ instBonus = 2; instSignal = '📈 매수'; }
+  else if(instNet5d >= -100000){ instBonus = 0; instSignal = '➖ 중립'; }
+  else if(instNet5d >= -1000000){ instBonus = -2; instSignal = '📉 매도'; }
+  else { instBonus = -3; instSignal = '❄️ 매도'; }
+  
+  const totalBonus = foreignBonus + instBonus;
+  let signal, color;
+  if(totalBonus >= 7){ signal = '🔥 강한 매수'; color = '#10b981'; }
+  else if(totalBonus >= 3){ signal = '📈 매수 우세'; color = '#34d399'; }
+  else if(totalBonus >= -2){ signal = '➖ 중립'; color = '#6b7280'; }
+  else if(totalBonus >= -6){ signal = '📉 매도 우세'; color = '#f87171'; }
+  else{ signal = '❄️ 강한 매도'; color = '#ef4444'; }
+  
+  return { foreignNet5d, instNet5d, foreignBonus, instBonus, foreignSignal, instSignal, bonus: totalBonus, signal, color };
+};
+
+window.calculateAdjustedBSA = function(stock, flowSignal){
+  if(!flowSignal || flowSignal.signal === '데이터없음'){
+    return { adjustedBSA: stock.bsa, flowBonus: 0, flowSignal: '데이터없음', flowColor: '#9ca3af', foreignNet5d: 0, instNet5d: 0, foreignSignal: '', instSignal: '' };
+  }
+  return {
+    adjustedBSA: Math.max(0, Math.min(100, stock.bsa + flowSignal.bonus)),
+    flowBonus: flowSignal.bonus,
+    flowSignal: flowSignal.signal,
+    flowColor: flowSignal.color,
+    foreignNet5d: flowSignal.foreignNet5d,
+    instNet5d: flowSignal.instNet5d,
+    foreignSignal: flowSignal.foreignSignal,
+    instSignal: flowSignal.instSignal
+  };
+};
+
+window.enrichTop5WithFlow = async function(top5){
+  if(!Array.isArray(top5) || top5.length === 0) return top5;
+  console.log('🔄 Top5 수급 데이터 수집 중...');
+  for(let i = 0; i < top5.length; i++){
+    const stock = top5[i];
+    const flowData = await window.getFlowData(stock.code);
+    const flowSignal = window.calculateFlowSignal(flowData);
+    const enriched = window.calculateAdjustedBSA(stock, flowSignal);
+    Object.assign(stock, enriched);
+    console.log(`  ${i+1}. ${stock.name}: BSA ${stock.bsa} → ${stock.adjustedBSA} (${stock.flowSignal})`);
+  }
+  console.log('✅ 수급 데이터 통합 완료');
+  return top5;
+};
+
+window.AUTO_FLOW_ENRICH = true;
+
+(function(){
+  function tryHook(retries = 20){
+    if(typeof window.runBacktest === 'function'){
+      const originalRunBacktest = window.runBacktest;
+      window.runBacktest = async function(...args){
+        const result = await originalRunBacktest.apply(this, args);
+        if(!window.AUTO_FLOW_ENRICH){ console.log('⏸ 수급 자동 수집 OFF'); return result; }
+        try{
+          const log = JSON.parse(localStorage.getItem('bsa_daily_log') || '[]');
+          if(log.length > 0){
+            const latest = log[log.length - 1];
+            if(latest.top5 && Array.isArray(latest.top5)){
+              await window.enrichTop5WithFlow(latest.top5);
+              localStorage.setItem('bsa_daily_log', JSON.stringify(log));
+              console.log('💾 bsa_daily_log 수급 병합 저장 완료');
+            }
+          }
+        }catch(e){ console.error('❌ 수급 자동 수집 에러:', e.message); }
+        return result;
+      };
+      console.log('✅ runBacktest 후킹 완료 (수급 자동 수집 ON)');
+    } else if(retries > 0){
+      // 함수가 아직 정의되지 않았으면 0.5초 후 재시도
+      setTimeout(() => tryHook(retries - 1), 500);
+    } else {
+      console.warn('⚠️ runBacktest 후킹 최종 실패 (10초 대기 후에도 함수 없음)');
+    }
+  }
+  // DOMContentLoaded 이후, 또는 1초 후 시도
+  if(document.readyState === 'complete'){
+    setTimeout(tryHook, 100);
+  } else {
+    window.addEventListener('load', () => setTimeout(tryHook, 100));
+  }
+})();
+
+window.enrichExistingLogs = async function(){
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log') || '[]');
+  if(log.length === 0){ console.log('❌ 로그 없음'); return; }
+  console.log(`🔄 기존 ${log.length}일 데이터에 수급 정보 추가 중...`);
+  for(const day of log){
+    if(day.top5 && Array.isArray(day.top5)){
+      console.log(`📅 ${day.date}:`);
+      await window.enrichTop5WithFlow(day.top5);
+    }
+  }
+  localStorage.setItem('bsa_daily_log', JSON.stringify(log));
+  console.log('✅ 모든 로그 갱신 완료');
+  return log;
+};
+
+// === D-3: 메뉴에 자동수집 토글 + D-2: 시뮬레이터 보정BSA 옵션 ===
+
+// 시뮬레이터에 보정BSA 옵션 후킹
+(function(){
+  function trySimHook(retries = 20){
+    if(typeof window.showSimulator === 'function' && typeof window.runSimulation === 'function'){
+      // runSimulation 후킹: useAdjustedBSA 옵션 지원
+      const originalRun = window.runSimulation;
+      window.runSimulation = function(options = {}){
+        const useAdj = options.useAdjustedBSA || false;
+        if(useAdj){
+          // 임시로 log의 top5를 adjustedBSA 내림차순으로 재정렬
+          const logKey = 'bsa_daily_log';
+          const original = localStorage.getItem(logKey);
+          try{
+            const log = JSON.parse(original || '[]');
+            const reordered = log.map(day => {
+              if(!day.top5) return day;
+              const sorted = [...day.top5].sort((a,b) => 
+                (b.adjustedBSA ?? b.bsa) - (a.adjustedBSA ?? a.bsa)
+              );
+              return { ...day, top5: sorted };
+            });
+            localStorage.setItem(logKey, JSON.stringify(reordered));
+            const result = originalRun.call(this, options);
+            // 원복
+            localStorage.setItem(logKey, original);
+            console.log('🎯 보정BSA 기준 시뮬레이션 실행');
+            return result;
+          }catch(e){
+            console.error('보정BSA 시뮬 에러:', e);
+            return originalRun.call(this, options);
+          }
+        }
+        return originalRun.call(this, options);
+      };
+      
+     // showSimulator UI에 체크박스 추가
+const originalShow = window.showSimulator;
+window.showSimulator = function(...args){
+  const result = originalShow.apply(this, args);
+  setTimeout(() => {
+    if(document.getElementById('sim-use-adj')) return;
+    const modal = document.getElementById('simulator-modal');
+    const runBtn = document.getElementById('sim-run');
+    if(!modal || !runBtn) return;
+    
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'background:#fef3c7;border:1px solid #fbbf24;border-radius:6px;padding:10px;margin:8px 0;font-size:13px;';
+    wrap.innerHTML = `
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" id="sim-use-adj" style="cursor:pointer;">
+        <span><b>🎯 보정BSA 기준 매수</b> (외국인 수급 가중치 반영)</span>
+      </label>
+      <div style="font-size:11px;color:#92400e;margin-top:4px;margin-left:22px;">
+        체크 시 보정BSA 점수 상위 5개를 매수합니다.
+      </div>
+    `;
+    runBtn.parentNode.insertBefore(wrap, runBtn);
+    
+    const origClick = runBtn.onclick;
+    runBtn.onclick = function(e){
+      const useAdj = document.getElementById('sim-use-adj')?.checked || false;
+      if(useAdj){
+        console.log('🎯 보정BSA 모드 실행');
+        window.runSimulation({useAdjustedBSA: true});
+        return;
+      }
+      if(origClick) return origClick.call(this, e);
+    };
+  }, 100);
+  return result;
+};
+
+      
+      console.log('✅ 시뮬레이터 보정BSA 옵션 추가 완료');
+    } else if(retries > 0){
+      setTimeout(() => trySimHook(retries - 1), 500);
+    }
+  }
+  if(document.readyState === 'complete') setTimeout(trySimHook, 200);
+  else window.addEventListener('load', () => setTimeout(trySimHook, 200));
+})();
+
+// 메뉴에 토글 + 통계 표시
+(function(){
+  function tryMenuHook(retries = 30){
+    const panel = document.getElementById('menu-panel');
+    if(panel && !document.getElementById('flow-toggle-section')){
+      // 패널 하단에 토글 섹션 추가
+      const section = document.createElement('div');
+      section.id = 'flow-toggle-section';
+      section.style.cssText = 'margin-top:14px;padding:12px;background:#f0f9ff;border-radius:8px;border:1px solid #bae6fd;';
+      section.innerHTML = `
+        <div style="font-size:12px;font-weight:bold;color:#0369a1;margin-bottom:8px;">⚙️ 수급 보정 설정</div>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#1f2937;">
+          <input type="checkbox" id="flow-auto-toggle" ${window.AUTO_FLOW_ENRICH ? 'checked' : ''} style="cursor:pointer;">
+          <span>백테스트 시 수급 자동 수집</span>
+        </label>
+        <div style="margin-top:8px;display:flex;gap:6px;">
+          <button id="flow-refresh-btn" style="flex:1;background:#3b82f6;color:white;border:none;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:11px;">🔄 기존 로그 갱신</button>
+          <button id="flow-stats-btn" style="flex:1;background:#10b981;color:white;border:none;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:11px;">📊 통계 보기</button>
+        </div>
+      `;
+      panel.appendChild(section);
+      
+      document.getElementById('flow-auto-toggle').onchange = (e) => {
+        window.AUTO_FLOW_ENRICH = e.target.checked;
+        console.log('수급 자동 수집:', window.AUTO_FLOW_ENRICH ? 'ON' : 'OFF');
+      };
+      
+      document.getElementById('flow-refresh-btn').onclick = async () => {
+        const btn = document.getElementById('flow-refresh-btn');
+        btn.textContent = '🔄 수집 중...';
+        btn.disabled = true;
+        await window.enrichExistingLogs();
+        btn.textContent = '✅ 완료';
+        setTimeout(() => { btn.textContent = '🔄 기존 로그 갱신'; btn.disabled = false; }, 2000);
+      };
+      
+      document.getElementById('flow-stats-btn').onclick = () => {
+        const log = JSON.parse(localStorage.getItem('bsa_daily_log') || '[]');
+        if(log.length === 0){ alert('데이터 없음'); return; }
+        let total = 0, withAdj = 0, buy = 0, sell = 0, neutral = 0;
+        log.forEach(day => {
+          (day.top5 || []).forEach(s => {
+            total++;
+            if(s.adjustedBSA !== undefined){
+              withAdj++;
+              if(s.flowBonus >= 3) buy++;
+              else if(s.flowBonus <= -3) sell++;
+              else neutral++;
+            }
+          });
+        });
+        alert(`📊 수급 보정 통계\n\n총 종목: ${total}개\n보정완료: ${withAdj}개 (${(withAdj/total*100).toFixed(0)}%)\n\n🔥 매수 신호: ${buy}개\n➖ 중립: ${neutral}개\n❄️ 매도 신호: ${sell}개`);
+      };
+// === D-1: 검증 모달에 보정BSA 비교 기능 추가 ===
+
+// runFullValidation 후킹: 보정BSA 모드 지원
+(function(){
+  function tryValHook(retries = 30){
+    if(typeof window.runFullValidation === 'function' && typeof window.showValidation === 'function'){
+      // 원본 보존
+      const origValidation = window.runFullValidation;
+      
+      // 새 함수: 보정BSA 기준으로 재정렬 후 검증
+      // Top N + adjusted/original 통합 검증 함수
+window.runFullValidationByRank = async function(daysAfter, useAdj, topN){
+  const logKey = 'bsa_daily_log';
+  const original = localStorage.getItem(logKey);
+  try{
+    const log = JSON.parse(original || '[]');
+    const reordered = log.map(day => {
+      if(!day.top5) return day;
+      let sorted = [...day.top5];
+      if(useAdj){
+        sorted = sorted.map(s => ({...s, _origBSA: s.bsa, bsa: s.adjustedBSA ?? s.bsa}))
+                       .sort((a,b) => b.bsa - a.bsa);
+      }
+      sorted = sorted.slice(0, topN);
+      return { ...day, top5: sorted };
+    });
+    localStorage.setItem(logKey, JSON.stringify(reordered));
+    const result = await window.runFullValidation(daysAfter);
+    localStorage.setItem(logKey, original);
+    if(result && !result.error) result._mode = useAdj ? 'adjusted' : 'original';
+    return result;
+  }catch(e){
+    localStorage.setItem(logKey, original);
+    return { error: '검증 실패: ' + e.message };
+  }
+};
+
+// 기존 runFullValidationAdjusted (호환성 유지)
+window.runFullValidationAdjusted = async function(daysAfter){
+  return await window.runFullValidationByRank(daysAfter, true, 5);
+};
+
+      
+      // showValidation 후킹: 모달에 비교 버튼 추가
+      const origShow = window.showValidation;
+      window.showValidation = async function(...args){
+        const result = await origShow.apply(this, args);
+        
+        setTimeout(() => {
+          const modal = document.getElementById('val-modal');
+          if(!modal || document.getElementById('val-mode-toggle')) return;
+          
+          const runBtn = document.getElementById('val-run');
+          if(!runBtn) return;
+          
+          // 모드 토글 UI 삽입
+          const toggleDiv = document.createElement('div');
+          toggleDiv.id = 'val-mode-toggle';
+          toggleDiv.style.cssText = 'margin-top:10px;padding:10px;background:#fef3c7;border:1px solid #fbbf24;border-radius:6px;';
+          toggleDiv.innerHTML = `
+  <div style="font-size:12px;font-weight:bold;color:#92400e;margin-bottom:6px;">🎯 검증 모드</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;">
+      <input type="radio" name="val-mode" value="original" checked>
+      <span>기존 BSA</span>
+    </label>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;">
+      <input type="radio" name="val-mode" value="adjusted">
+      <span><b>🎯 보정 BSA</b></span>
+    </label>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;">
+      <input type="radio" name="val-mode" value="compare">
+      <span><b>📊 양쪽 비교</b></span>
+    </label>
+  </div>
+  <div style="font-size:12px;font-weight:bold;color:#92400e;margin-bottom:6px;border-top:1px solid #fbbf24;padding-top:8px;">📏 평가 범위</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;">
+      <input type="radio" name="val-topn" value="1">
+      <span><b>Top1만</b></span>
+    </label>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;">
+      <input type="radio" name="val-topn" value="3">
+      <span>Top3</span>
+    </label>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;">
+      <input type="radio" name="val-topn" value="5" checked>
+      <span>Top5 (전체)</span>
+    </label>
+  </div>
+  <div style="font-size:11px;color:#92400e;margin-top:6px;">
+    💡 <b>Top1 모드</b>에서 보정 BSA 효과가 가장 명확합니다.
+  </div>
+`;
+
+          runBtn.parentNode.parentNode.insertBefore(toggleDiv, runBtn.parentNode.nextSibling);
+          
+          // 실행 버튼 후킹
+          const origClick = runBtn.onclick;
+          runBtn.onclick = async function(e){
+            const mode = document.querySelector('input[name="val-mode"]:checked')?.value || 'original';
+            const days = parseInt(document.getElementById('val-days').value);
+            const content = document.getElementById('val-content');
+       const topN = parseInt(document.querySelector('input[name="val-topn"]:checked')?.value || '5');
+            
+            if(mode === 'original'){
+              return origClick.call(this, e);
+            }
+            
+            if(mode === 'adjusted'){
+              content.innerHTML = '⏳ 보정BSA 기준 검증 중...';
+              const r = await window.runFullValidationByRank(days, true, topN);
+              if(r.error){
+                content.innerHTML = `<div style="color:#ef4444;padding:16px;background:#fef2f2;border-radius:6px;">❌ ${r.error}</div>`;
+                return;
+              }
+              renderResult(content, r, '🎯 보정 BSA (외국인 수급 반영)', '#10b981');
+              return;
+            }
+            
+            if(mode === 'compare'){
+              content.innerHTML = '⏳ 양쪽 모드 검증 중... (약 30-60초)';
+              const [rOrig, rAdj] = await Promise.all([
+  window.runFullValidationByRank(days, false, topN),
+  window.runFullValidationByRank(days, true, topN)
+]);
+              renderComparison(content, rOrig, rAdj, days);
+              return;
+            }
+          };
+          
+          console.log('✅ 검증 모달 보정BSA 비교 추가 완료');
+        }, 100);
+        
+        return result;
+      };
+      
+      // 결과 렌더링 헬퍼
+      function renderResult(content, r, title, color){
+        const hitColor = parseFloat(r.hitRate) >= 60 ? '#10b981' : parseFloat(r.hitRate) >= 40 ? '#f59e0b' : '#ef4444';
+        const retColor = parseFloat(r.avgReturn) >= 0 ? '#10b981' : '#ef4444';
+        content.innerHTML = `
+          <div style="background:linear-gradient(135deg,${color}11,${color}22);border:2px solid ${color};padding:16px;border-radius:8px;margin-bottom:16px;">
+            <div style="font-size:16px;font-weight:bold;color:${color};">${title}</div>
+            <div style="font-size:12px;color:#6b7280;margin-top:4px;">${r.daysAfter}일 후, 총 ${r.totalCount}건</div>
+            <div style="margin-top:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+              <div style="background:white;padding:12px;border-radius:6px;text-align:center;">
+                <div style="font-size:11px;color:#6b7280;">적중률</div>
+                <div style="font-size:24px;font-weight:bold;color:${hitColor};">${r.hitRate}%</div>
+              </div>
+              <div style="background:white;padding:12px;border-radius:6px;text-align:center;">
+                <div style="font-size:11px;color:#6b7280;">평균 수익률</div>
+                <div style="font-size:24px;font-weight:bold;color:${retColor};">${parseFloat(r.avgReturn) >= 0 ? '+' : ''}${r.avgReturn}%</div>
+              </div>
+              <div style="background:white;padding:12px;border-radius:6px;text-align:center;">
+                <div style="font-size:11px;color:#6b7280;">검증 종목</div>
+                <div style="font-size:24px;font-weight:bold;color:#1f2937;">${r.totalCount}</div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      
+      function renderComparison(content, rOrig, rAdj, days){
+        if(rOrig.error || rAdj.error){
+          content.innerHTML = `<div style="color:#ef4444;padding:16px;">❌ ${rOrig.error || rAdj.error}</div>`;
+          return;
+        }
+        const hitDiff = parseFloat(rAdj.hitRate) - parseFloat(rOrig.hitRate);
+        const retDiff = parseFloat(rAdj.avgReturn) - parseFloat(rOrig.avgReturn);
+        const winner = retDiff > 0 ? 'adjusted' : retDiff < 0 ? 'original' : 'tie';
+        
+        let html = `
+          <div style="background:#f0f9ff;border:2px solid #0ea5e9;padding:16px;border-radius:8px;margin-bottom:16px;text-align:center;">
+            <div style="font-size:18px;font-weight:bold;color:#0c4a6e;">📊 ${days}일 후 비교 결과 (${rOrig.totalCount}건)</div>
+            ${winner === 'adjusted' ? `<div style="margin-top:8px;color:#10b981;font-weight:bold;">🏆 보정 BSA 우세 (+${retDiff.toFixed(2)}%p)</div>` :
+              winner === 'original' ? `<div style="margin-top:8px;color:#ef4444;font-weight:bold;">기존 BSA 우세 (${retDiff.toFixed(2)}%p)</div>` :
+              `<div style="margin-top:8px;color:#6b7280;font-weight:bold;">🤝 동률</div>`}
+          </div>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px;">
+            <thead><tr style="background:#f3f4f6;">
+              <th style="padding:10px;text-align:left;border:1px solid #e5e7eb;">지표</th>
+              <th style="padding:10px;text-align:center;border:1px solid #e5e7eb;">기존 BSA</th>
+              <th style="padding:10px;text-align:center;border:1px solid #e5e7eb;background:#fef3c7;">🎯 보정 BSA</th>
+              <th style="padding:10px;text-align:center;border:1px solid #e5e7eb;">차이</th>
+            </tr></thead><tbody>
+              <tr>
+                <td style="padding:10px;border:1px solid #e5e7eb;"><b>적중률</b></td>
+                <td style="padding:10px;border:1px solid #e5e7eb;text-align:center;">${rOrig.hitRate}%</td>
+                <td style="padding:10px;border:1px solid #e5e7eb;text-align:center;background:#fef3c7;"><b>${rAdj.hitRate}%</b></td>
+                <td style="padding:10px;border:1px solid #e5e7eb;text-align:center;color:${hitDiff > 0 ? '#10b981' : hitDiff < 0 ? '#ef4444' : '#6b7280'};">
+                  ${hitDiff > 0 ? '+' : ''}${hitDiff.toFixed(1)}%p
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:10px;border:1px solid #e5e7eb;"><b>평균 수익률</b></td>
+                <td style="padding:10px;border:1px solid #e5e7eb;text-align:center;color:${parseFloat(rOrig.avgReturn) >= 0 ? '#10b981' : '#ef4444'};">${parseFloat(rOrig.avgReturn) >= 0 ? '+' : ''}${rOrig.avgReturn}%</td>
+                <td style="padding:10px;border:1px solid #e5e7eb;text-align:center;background:#fef3c7;color:${parseFloat(rAdj.avgReturn) >= 0 ? '#10b981' : '#ef4444'};"><b>${parseFloat(rAdj.avgReturn) >= 0 ? '+' : ''}${rAdj.avgReturn}%</b></td>
+                <td style="padding:10px;border:1px solid #e5e7eb;text-align:center;color:${retDiff > 0 ? '#10b981' : retDiff < 0 ? '#ef4444' : '#6b7280'};">
+                  ${retDiff > 0 ? '+' : ''}${retDiff.toFixed(2)}%p
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div style="padding:12px;background:#f9fafb;border-radius:6px;font-size:12px;color:#374151;">
+            💡 <b>해석</b>: 보정 BSA는 외국인 수급 가중치(±10점)를 반영한 점수입니다. 
+            ${rOrig.totalCount < 20 ? '⚠️ 표본이 적어(' + rOrig.totalCount + '건) 통계적 신뢰도가 낮습니다. 7일 이상 누적 후 재검증을 권장합니다.' : '두 모드의 차이가 클수록 수급 데이터의 예측력이 강합니다.'}
+          </div>
+        `;
+        content.innerHTML = html;
+      }
+      
+    } else if(retries > 0){
+      setTimeout(() => tryValHook(retries - 1), 500);
+    } else {
+      console.warn('⚠️ 검증 모달 후킹 실패');
+    }
+  }
+  if(document.readyState === 'complete') setTimeout(tryValHook, 300);
+  else window.addEventListener('load', () => setTimeout(tryValHook, 300));
+})();
+
+      
+      console.log('✅ 메뉴에 수급 보정 섹션 추가 완료');
+    } else if(retries > 0){
+      setTimeout(() => tryMenuHook(retries - 1), 300);
+    }
+  }
+  if(document.readyState === 'complete') setTimeout(tryMenuHook, 500);
+  else window.addEventListener('load', () => setTimeout(tryMenuHook, 500));
+})();
+
+console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 ±10점)');
+
+
+// === 통합 메뉴 시스템 (14개 기능) ===
+(function(){
+  // 1. 기존 떠다니는 버튼 모두 숨김
+  const btnIds = [
+    'floating-chart-btn','floating-change-btn','floating-csv-btn',
+    'floating-watch-btn','floating-tracker-btn','floating-sector-btn',
+    'floating-strong-btn','floating-backup-btn','floating-macro-btn',
+    'floating-sim-btn','floating-watchlist-btn','floating-flow-btn',
+    'floating-val-btn','floating-regime-btn'
+  ];
+  function hideOldBtns(){
+    btnIds.forEach(id => {
+      const b = document.getElementById(id);
+      if(b) b.style.display = 'none';
+    });
+  }
+  hideOldBtns();
+  // 다른 스크립트가 나중에 버튼을 생성할 수 있으므로 주기적으로 숨김 확인 (5초간)
+  let hideCount = 0;
+  const hideTimer = setInterval(() => {
+    hideOldBtns();
+    if(++hideCount > 10) clearInterval(hideTimer);
+  }, 500);
+  
+  // 2. 메뉴 항목 정의
+  const items = [
+    {cat:'📊 분석', color:'#3b82f6', list:[
+      {icon:'💱', name:'환율/매크로', fn:'showMacroData'},
+      {icon:'🌡️', name:'시장 국면', fn:'showMarketRegime'},
+      {icon:'🎯', name:'백테스트 검증', fn:'showValidation'},
+      {icon:'🌊', name:'외국인/기관 수급', fn:'showTop5Flow'},
+      {icon:'🌀', name:'섹터 로테이션', fn:'showSectorRotation'},
+    ]},
+    {cat:'📈 차트/추세', color:'#10b981', list:[
+      {icon:'📊', name:'BSA 차트', fn:'showBSACharts'},
+      {icon:'📅', name:'일별 변화', fn:'showTodayChangesModal'},
+      {icon:'🏭', name:'섹터 추세', fn:'showSectorTrendChart'},
+      {icon:'📈', name:'종목 추적', fn:'showStockTracker'},
+    ]},
+    {cat:'⭐ 종목 관리', color:'#f59e0b', list:[
+      {icon:'⭐', name:'관심 종목', fn:'showWatchlist'},
+      {icon:'🔭', name:'주목 종목', fn:'showWatchList'},
+      {icon:'🚨', name:'강력 후보', fn:'showStrongCandidates'},
+      {icon:'💰', name:'시뮬레이터', fn:'showSimulator'},
+    ]},
+    {cat:'💾 데이터', color:'#8b5cf6', list:[
+      {icon:'📥', name:'CSV 다운로드', fn:'exportBSALogToCSV'},
+      {icon:'💾', name:'백업/복원', fn:'showBackupManager'},
+    ]}
+  ];
+  
+  // 3. 메뉴 버튼 생성 (이미 있으면 재사용)
+  let menuBtn = document.getElementById('floating-menu-btn');
+  if(!menuBtn){
+    menuBtn = document.createElement('button');
+    menuBtn.id = 'floating-menu-btn';
+    menuBtn.innerHTML = '📋<div style="font-size:10px;margin-top:2px;">메뉴</div>';
+    menuBtn.style.cssText = `
+      position:fixed;bottom:20px;right:20px;width:64px;height:64px;
+      border-radius:50%;background:linear-gradient(135deg,#3b82f6,#1d4ed8);
+      color:white;border:none;cursor:pointer;z-index:9998;
+      box-shadow:0 4px 16px rgba(0,0,0,0.3);font-size:22px;
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      transition:transform 0.2s;
+    `;
+    menuBtn.onmouseenter = () => menuBtn.style.transform = 'scale(1.1)';
+    menuBtn.onmouseleave = () => menuBtn.style.transform = 'scale(1)';
+    document.body.appendChild(menuBtn);
+  }
+  
+  // 4. 메뉴 패널 생성
+  document.getElementById('menu-panel')?.remove();
+  let panelHTML = `<div id="menu-panel" style="position:fixed;bottom:96px;right:20px;width:340px;max-height:75vh;overflow-y:auto;background:white;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,0.25);z-index:9999;padding:16px;display:none;border:1px solid #e5e7eb;">`;
+  panelHTML += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-bottom:2px solid #3b82f6;padding-bottom:10px;">
+    <h3 style="margin:0;color:#1f2937;font-size:17px;">📋 전체 메뉴 (14)</h3>
+    <button id="menu-close" style="background:#ef4444;color:white;border:none;width:28px;height:28px;border-radius:50%;cursor:pointer;font-size:14px;">✕</button>
+  </div>`;
+  
+  items.forEach(g => {
+    panelHTML += `<div style="margin-bottom:14px;">
+      <div style="font-size:12px;font-weight:bold;color:${g.color};margin-bottom:8px;padding-left:4px;border-left:3px solid ${g.color};">${g.cat}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">`;
+    g.list.forEach(it => {
+      panelHTML += `<button class="menu-item" data-fn="${it.fn}" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px 8px;cursor:pointer;text-align:left;font-size:12px;display:flex;align-items:center;gap:6px;transition:all 0.15s;color:#1f2937;">
+        <span style="font-size:18px;">${it.icon}</span><span>${it.name}</span>
+      </button>`;
+    });
+    panelHTML += `</div></div>`;
+  });
+  panelHTML += `</div>`;
+  document.body.insertAdjacentHTML('beforeend', panelHTML);
+  
+  const panel = document.getElementById('menu-panel');
+  
+  // 5. 이벤트 핸들러
+  menuBtn.onclick = (e) => {
+    e.stopPropagation();
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  };
+  document.getElementById('menu-close').onclick = () => panel.style.display = 'none';
+  
+  document.querySelectorAll('.menu-item').forEach(b => {
+    b.onmouseenter = () => { b.style.background = '#dbeafe'; b.style.borderColor = '#3b82f6'; };
+    b.onmouseleave = () => { b.style.background = '#f9fafb'; b.style.borderColor = '#e5e7eb'; };
+    b.onclick = () => {
+      const fnName = b.dataset.fn;
+      panel.style.display = 'none';
+      if(typeof window[fnName] === 'function'){
+        try { window[fnName](); }
+        catch(err){ console.error(fnName, '에러:', err); alert(`${fnName} 실행 중 오류:\n${err.message}`); }
+      } else {
+        alert(`❌ ${fnName} 함수가 정의되지 않았습니다`);
+      }
+    };
+  });
+  
+  // 6. 외부 클릭 시 패널 닫기
+  document.addEventListener('click', (e) => {
+    if(panel.style.display === 'block' && !panel.contains(e.target) && e.target !== menuBtn && !menuBtn.contains(e.target)){
+      panel.style.display = 'none';
+    }
+  });
+  
+  console.log('✅ 통합 메뉴 시스템 활성화 (14개 기능)');
+})();
+
+
 </script>
 </body>
 </html>
