@@ -1845,6 +1845,253 @@ window.showBackupManager = function(){
   console.log('✅ 종목 클릭 핸들러 활성화');
 })();
 
+// === 환율 & 금리 데이터 수집 ===
+window.fetchMacroData = async function(){
+  const PROXY = 'https://stock-proxy.kgwsw.workers.dev/proxy?url=';
+  const symbols = {
+    'USD/KRW': 'KRW=X',
+    'JPY/KRW': 'JPYKRW=X',
+    'EUR/KRW': 'EURKRW=X',
+    'US10Y': '%5ETNX',
+    'VIX': '%5EVIX',
+    'DXY': 'DX-Y.NYB',
+    'WTI': 'CL=F',
+    'GOLD': 'GC=F'
+  };
+  
+  const results = {};
+  
+  for(const [name, sym] of Object.entries(symbols)){
+    try {
+      const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + sym + '?interval=1d&range=5d';
+      const resp = await fetch(PROXY + encodeURIComponent(url));
+      const data = await resp.json();
+      const result = data.chart?.result?.[0];
+      if(result){
+        const closes = result.indicators?.quote?.[0]?.close || [];
+        const validCloses = closes.filter(v => v !== null && v !== undefined);
+        const latest = validCloses[validCloses.length-1];
+        const prev = validCloses[validCloses.length-2];
+        const change = latest && prev ? ((latest - prev) / prev * 100) : 0;
+        
+        results[name] = {
+  symbol: sym,
+  value: name.startsWith('JPY/KRW') ? latest * 100 : latest,
+  prev: name.startsWith('JPY/KRW') ? prev * 100 : prev,
+  changePct: change,
+  history: validCloses.slice(-5)
+        };
+      }
+    } catch(e){
+      console.log('실패:', name, e.message);
+    }
+  }
+  
+  results.timestamp = new Date().toISOString();
+  results.kstDate = new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+  
+  // localStorage 캐시 (1시간)
+  localStorage.setItem('macro_data', JSON.stringify(results));
+  return results;
+};
+
+// 매크로 데이터 모달
+window.showMacroData = async function(){
+  // 캐시 확인 (1시간 이내면 사용)
+  let data;
+  try {
+    const cached = JSON.parse(localStorage.getItem('macro_data')||'null');
+    if(cached && cached.timestamp){
+      const age = (Date.now() - new Date(cached.timestamp).getTime()) / 60000; // 분
+      if(age < 60){
+        data = cached;
+      }
+    }
+  } catch(e){}
+  
+  // 모달 띄우기 (로딩 표시)
+  const existing = document.getElementById('macro-modal');
+  if(existing) existing.remove();
+  
+  const modal = document.createElement('div');
+  modal.id = 'macro-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;overflow:auto;';
+  const inner = document.createElement('div');
+  inner.style.cssText = 'background:white;border-radius:12px;padding:24px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;position:relative;';
+  inner.innerHTML = '<h2 style="margin-top:0;color:#333;">💱 글로벌 매크로 지표</h2><div id="macro-content" style="text-align:center;padding:40px;">⏳ 데이터 로딩 중...</div><button id="macro-close" style="position:absolute;top:12px;right:12px;padding:6px 14px;background:#dc3545;color:white;border:none;border-radius:6px;cursor:pointer;">✕ 닫기</button>';
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  document.getElementById('macro-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  
+  // 데이터 가져오기
+  if(!data){
+    data = await fetchMacroData();
+  }
+  
+  // 렌더링
+  const content = document.getElementById('macro-content');
+  if(!content) return;
+  
+  const formatValue = (name, v) => {
+    if(v === null || v === undefined) return '-';
+    if(name.includes('KRW')) return v.toFixed(2);
+    if(name === 'VIX' || name === 'US10Y') return v.toFixed(2);
+    return v.toFixed(2);
+  };
+  
+  const getEmoji = (name, change) => {
+    if(name === 'USD/KRW' || name === 'JPY/KRW' || name === 'EUR/KRW' || name === 'DXY'){
+      return change > 0.3 ? '⬆️' : change < -0.3 ? '⬇️' : '➡️';
+    }
+    if(name === 'VIX'){
+      return change > 5 ? '🚨' : change < -5 ? '😌' : '➡️';
+    }
+    return change > 0 ? '⬆️' : change < 0 ? '⬇️' : '➡️';
+  };
+  
+  const interpret = {
+    'USD/KRW': (v, c) => {
+      if(c > 0.5) return '🔴 원화 약세 (외국인 매도 압력 ↑)';
+      if(c < -0.5) return '🟢 원화 강세 (외국인 매수 유리)';
+      return '🟡 안정';
+    },
+    'JPY/KRW': (v, c) => c > 0.5 ? '엔화 강세' : c < -0.5 ? '엔화 약세' : '안정',
+    'US10Y': (v, c) => {
+      if(v > 4.5) return '🔴 고금리 (위험자산 부담)';
+      if(v < 3.5) return '🟢 저금리 (위험자산 우호)';
+      return '🟡 중립';
+    },
+    'VIX': (v, c) => {
+      if(v > 25) return '🚨 공포 (시장 불안)';
+      if(v < 15) return '🟢 안정 (낙관)';
+      return '🟡 보통';
+    },
+    'DXY': (v, c) => c > 0.5 ? '달러 강세 (신흥국 부담)' : c < -0.5 ? '달러 약세 (신흥국 우호)' : '안정',
+    'WTI': (v, c) => c > 2 ? '유가 급등' : c < -2 ? '유가 급락' : '안정',
+    'GOLD': (v, c) => c > 1 ? '금 상승 (안전자산 선호)' : '안정'
+  };
+  
+  let html = '<div style="padding:12px;background:#e3f2fd;border-radius:6px;margin-bottom:15px;font-size:13px;">';
+  html += '<strong>📅 기준:</strong> ' + (data.kstDate || '-') + ' | <strong>업데이트:</strong> ' + new Date(data.timestamp).toLocaleString();
+  html += '</div>';
+  
+  html += '<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:12px;">';
+  
+  const order = ['USD/KRW','JPY/KRW','EUR/KRW','US10Y','VIX','DXY','WTI','GOLD'];
+  const labels = {
+    'USD/KRW': '💵 원달러',
+    'JPY/KRW': '💴 원엔(100)',
+    'EUR/KRW': '💶 원유로',
+    'US10Y': '📊 미국 10년 국채',
+    'VIX': '😰 VIX 공포지수',
+    'DXY': '💲 달러 인덱스',
+    'WTI': '🛢️ WTI 유가',
+    'GOLD': '🥇 금 가격'
+  };
+  
+  order.forEach(name => {
+    const d = data[name];
+    if(!d || d.value === null || d.value === undefined) return;
+    
+    const change = d.changePct || 0;
+    const emoji = getEmoji(name, change);
+    const color = change > 0 ? '#f44336' : change < 0 ? '#2196f3' : '#666';
+    const intp = interpret[name] ? interpret[name](d.value, change) : '';
+    
+    html += '<div style="padding:14px;background:#f9f9f9;border-radius:8px;border-left:4px solid ' + color + ';">';
+    html += '<div style="font-size:13px;color:#666;margin-bottom:4px;">' + labels[name] + '</div>';
+    html += '<div style="font-size:24px;font-weight:bold;color:#333;">' + formatValue(name, d.value) + '</div>';
+    html += '<div style="font-size:14px;color:' + color + ';margin-top:4px;">' + emoji + ' ' + (change>=0?'+':'') + change.toFixed(2) + '%</div>';
+    if(intp) html += '<div style="font-size:11px;color:#555;margin-top:6px;">' + intp + '</div>';
+    html += '</div>';
+  });
+  html += '</div>';
+  
+  // 종합 시장 환경 진단
+  const usdkrw = data['USD/KRW']?.value || 0;
+  const vix = data['VIX']?.value || 0;
+  const us10y = data['US10Y']?.value || 0;
+  
+  let envScore = 0;
+  const envFactors = [];
+  
+  if(usdkrw > 1400){ envScore -= 2; envFactors.push('원달러 1400 돌파 (외인 매도 위험)'); }
+  else if(usdkrw < 1300){ envScore += 1; envFactors.push('원화 강세 (외인 매수 유리)'); }
+  
+  if(vix > 25){ envScore -= 2; envFactors.push('VIX 공포 (변동성 ↑)'); }
+  else if(vix < 15){ envScore += 1; envFactors.push('VIX 안정'); }
+  
+  if(us10y > 4.5){ envScore -= 1; envFactors.push('고금리 부담'); }
+  else if(us10y < 3.5){ envScore += 1; envFactors.push('저금리 우호'); }
+  
+  let envLabel, envColor;
+  if(envScore >= 2){ envLabel = '🟢 우호적'; envColor = '#4caf50'; }
+  else if(envScore <= -2){ envLabel = '🔴 부정적'; envColor = '#f44336'; }
+  else { envLabel = '🟡 중립'; envColor = '#ff9800'; }
+  
+  html += '<div style="margin-top:20px;padding:16px;background:' + envColor + '22;border-radius:8px;border-left:4px solid ' + envColor + ';">';
+  html += '<h3 style="margin-top:0;color:' + envColor + ';">🌍 종합 매크로 환경: ' + envLabel + '</h3>';
+  if(envFactors.length > 0){
+    html += '<ul style="margin:0;padding-left:20px;">';
+    envFactors.forEach(f => { html += '<li>' + f + '</li>'; });
+    html += '</ul>';
+  } else {
+    html += '<p>특이사항 없음. 중립적 환경입니다.</p>';
+  }
+  html += '</div>';
+  
+  html += '<div style="margin-top:15px;text-align:center;">';
+  html += '<button id="macro-refresh" style="padding:8px 20px;background:#2196f3;color:white;border:none;border-radius:6px;cursor:pointer;">🔄 새로고침 (캐시 무시)</button>';
+  html += '</div>';
+  
+  content.innerHTML = html;
+  
+  document.getElementById('macro-refresh').onclick = async () => {
+    content.innerHTML = '<div style="text-align:center;padding:40px;">⏳ 새로고침 중...</div>';
+    localStorage.removeItem('macro_data');
+    showMacroData();
+  };
+};
+
+// === 매크로 떠다니는 버튼 ===
+(function createFloatingMacroButton(){
+  function addButton(){
+    if(document.getElementById('floating-macro-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'floating-macro-btn';
+    btn.innerHTML = '💱<br>환율';
+    btn.title = '환율/금리/매크로 지표';
+    btn.style.cssText = `
+      position: fixed;
+      bottom: 640px;
+      right: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%);
+      color: white;
+      border: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: bold;
+      line-height: 1.2;
+      z-index: 9998;
+      transition: transform 0.2s;
+    `;
+    btn.onmouseover = function(){ btn.style.transform = 'scale(1.1)'; };
+    btn.onmouseout = function(){ btn.style.transform = 'scale(1)'; };
+    btn.onclick = function(){ showMacroData(); };
+    document.body.appendChild(btn);
+    console.log('✅ 환율 버튼 생성됨');
+  }
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', addButton);
+  } else {
+    setTimeout(addButton, 1300);
+  }
+})();
 
 
 console.log('💡 주목 종목: showWatchList() 또는 🔭 버튼 클릭');
