@@ -2092,6 +2092,523 @@ window.showMacroData = async function(){
     setTimeout(addButton, 1300);
   }
 })();
+// === 매도/매수 시뮬레이터 ===
+// === 매도/매수 시뮬레이터 (개선판: 이탈 시 보유 유지) ===
+window.runSimulation = function(options){
+  options = options || {};
+  const initialCash = options.initialCash || 10000000;
+  const sellOnExit = options.sellOnExit === true;  // 기본 false (이탈해도 보유)
+  const sellOnNegAccel = options.sellOnNegAccel !== false;
+  const sellOnLowBSA = options.sellOnLowBSA !== false;
+  const minBSA = options.minBSA || 60;
+  const maxHoldDays = options.maxHoldDays || 0;
+  const fee = 0.0015;
+  const tax = 0.0023;
+  const slippage = 0.003;
+
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  if(log.length < 2){
+    return { error: '시뮬레이션에 최소 2일치 데이터가 필요합니다. 현재: '+log.length+'일' };
+  }
+
+  let cash = initialCash;
+  const positions = {}; // {code: {name, buyPrice, qty, buyDate, holdDays, lastPrice, lastBSA, lastAccel, daysOutOfTop5}}
+  const trades = [];
+  const dailyValue = [];
+
+  log.forEach((day, dayIdx) => {
+    const top5 = day.top5 || [];
+    const top5Map = {};
+    top5.forEach(s => { top5Map[s.code] = s; });
+
+    // 1️⃣ 매도 판단
+    Object.keys(positions).forEach(code => {
+      const pos = positions[code];
+      pos.holdDays = (pos.holdDays || 0) + 1;
+      const currentStock = top5Map[code];
+      let sellReason = null;
+      let currentPrice = pos.lastPrice || pos.buyPrice;
+
+      if(currentStock){
+        // Top5 내 → 데이터 업데이트
+        currentPrice = currentStock.price || currentPrice;
+        pos.lastPrice = currentPrice;
+        pos.lastBSA = currentStock.bsa;
+        pos.lastAccel = currentStock.accel;
+        pos.daysOutOfTop5 = 0;
+        if(sellOnNegAccel && currentStock.accel < 0) sellReason = '가속도 음전환 ('+currentStock.accel.toFixed(1)+')';
+        else if(sellOnLowBSA && currentStock.bsa < minBSA) sellReason = 'BSA 하락 ('+currentStock.bsa+'<'+minBSA+')';
+      } else {
+        // Top5 이탈 → 보유 유지 (마지막 가격 유지)
+        pos.daysOutOfTop5 = (pos.daysOutOfTop5 || 0) + 1;
+        if(sellOnExit) sellReason = 'Top5 이탈';
+      }
+      if(maxHoldDays > 0 && pos.holdDays > maxHoldDays){
+        sellReason = sellReason || (maxHoldDays+'일 초과');
+      }
+
+      if(sellReason){
+        const sellPrice = currentPrice * (1 - slippage);
+        const proceeds = sellPrice * pos.qty * (1 - fee - tax);
+        const profit = proceeds - (pos.buyPrice * pos.qty);
+        const profitPct = (profit / (pos.buyPrice * pos.qty)) * 100;
+        cash += proceeds;
+        trades.push({
+          date: day.date, type: '매도', name: pos.name, code: code,
+          price: Math.round(sellPrice), qty: pos.qty,
+          profit: Math.round(profit), profitPct: profitPct.toFixed(2),
+          reason: sellReason, holdDays: pos.holdDays
+        });
+        delete positions[code];
+      }
+    });
+
+    // 2️⃣ 매수 판단 (마지막 날 제외)
+    if(dayIdx < log.length - 1){
+      const newCandidates = top5.filter(s => !positions[s.code]);
+      const slots = 5 - Object.keys(positions).length;
+      const toBuy = newCandidates.slice(0, slots);
+      if(toBuy.length > 0 && cash > 0){
+        const perStock = cash / toBuy.length;
+        toBuy.forEach(s => {
+          const buyPrice = (s.price || 0) * (1 + slippage);
+          if(buyPrice <= 0) return;
+          const cost = perStock / (1 + fee);
+          const qty = Math.floor(cost / buyPrice);
+          if(qty <= 0) return;
+          const actualCost = qty * buyPrice * (1 + fee);
+          cash -= actualCost;
+          positions[s.code] = {
+            name: s.name, buyPrice: buyPrice, qty: qty,
+            buyDate: day.date, holdDays: 0,
+            lastPrice: s.price, lastBSA: s.bsa, lastAccel: s.accel,
+            daysOutOfTop5: 0
+          };
+          trades.push({
+            date: day.date, type: '매수', name: s.name, code: s.code,
+            price: Math.round(buyPrice), qty: qty,
+            cost: Math.round(actualCost), reason: 'Top'+(top5.indexOf(s)+1)+' 진입'
+          });
+        });
+      }
+    }
+
+    // 3️⃣ 일별 평가금액 (마지막 알려진 가격 사용)
+    let positionValue = 0;
+    Object.entries(positions).forEach(([code, pos]) => {
+      const currentStock = top5Map[code];
+      const currentPrice = currentStock?.price || pos.lastPrice || pos.buyPrice;
+      positionValue += currentPrice * pos.qty;
+    });
+    dailyValue.push({
+      date: day.date,
+      cash: Math.round(cash),
+      positions: Math.round(positionValue),
+      total: Math.round(cash + positionValue),
+      holdCount: Object.keys(positions).length
+    });
+  });
+
+  const finalValue = dailyValue[dailyValue.length-1]?.total || initialCash;
+  const totalReturn = ((finalValue - initialCash) / initialCash) * 100;
+  const buyCount = trades.filter(t => t.type === '매수').length;
+  const sellCount = trades.filter(t => t.type === '매도').length;
+  const winTrades = trades.filter(t => t.type === '매도' && t.profit > 0).length;
+  const winRate = sellCount > 0 ? (winTrades / sellCount * 100) : 0;
+
+  return {
+    summary: {
+      initialCash: initialCash,
+      finalValue: finalValue,
+      totalReturn: totalReturn.toFixed(2),
+      days: log.length,
+      buyCount: buyCount,
+      sellCount: sellCount,
+      winRate: winRate.toFixed(1),
+      openPositions: Object.keys(positions).length
+    },
+    trades: trades,
+    dailyValue: dailyValue,
+    positions: positions
+  };
+};
+
+window.showSimulator = function(){
+  // 기존 모달 제거
+  document.getElementById('simulator-modal')?.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'simulator-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.innerHTML = `
+    <div style="background:white;border-radius:12px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;padding:24px;position:relative;">
+      <button id="sim-close" style="position:absolute;top:12px;right:12px;background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>
+      <h2 style="margin:0 0 16px;color:#1f2937;">💰 매도/매수 시뮬레이터</h2>
+      <div style="background:#f9fafb;padding:16px;border-radius:8px;margin-bottom:16px;">
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;font-size:14px;">
+          <label>초기 자본 (원)<input id="sim-cash" type="number" value="10000000" style="width:100%;padding:6px;margin-top:4px;border:1px solid #d1d5db;border-radius:4px;"></label>
+          <label>최소 BSA (매도 기준)<input id="sim-bsa" type="number" value="60" style="width:100%;padding:6px;margin-top:4px;border:1px solid #d1d5db;border-radius:4px;"></label>
+          <label style="display:flex;align-items:center;gap:6px;"><input id="sim-exit" type="checkbox"> Top5 이탈 시 매도 (비추천)</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input id="sim-accel" type="checkbox" checked> 가속도 음전환 시 매도</label>
+          <label style="display:flex;align-items:center;gap:6px;"><input id="sim-lowbsa" type="checkbox" checked> BSA 하락 시 매도</label>
+          <label>최대 보유일 (0=무제한)<input id="sim-hold" type="number" value="0" style="width:100%;padding:6px;margin-top:4px;border:1px solid #d1d5db;border-radius:4px;"></label>
+        </div>
+        <button id="sim-run" style="margin-top:12px;width:100%;padding:10px;background:linear-gradient(135deg,#10b981,#059669);color:white;border:none;border-radius:6px;font-weight:bold;cursor:pointer;">▶ 시뮬레이션 실행</button>
+      </div>
+      <div id="sim-result" style="font-size:13px;color:#6b7280;">설정을 확인하고 ▶ 실행 버튼을 누르세요.</div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById('sim-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+
+  document.getElementById('sim-run').onclick = () => {
+    const opts = {
+      initialCash: parseInt(document.getElementById('sim-cash').value) || 10000000,
+      minBSA: parseInt(document.getElementById('sim-bsa').value) || 60,
+      sellOnExit: document.getElementById('sim-exit').checked,
+      sellOnNegAccel: document.getElementById('sim-accel').checked,
+      sellOnLowBSA: document.getElementById('sim-lowbsa').checked,
+      maxHoldDays: parseInt(document.getElementById('sim-hold').value) || 0
+    };
+    const r = runSimulation(opts);
+    const resultDiv = document.getElementById('sim-result');
+    if(r.error){
+      resultDiv.innerHTML = '<div style="color:#ef4444;padding:12px;background:#fef2f2;border-radius:6px;">❌ '+r.error+'</div>';
+      return;
+    }
+    const s = r.summary;
+    const returnColor = s.totalReturn >= 0 ? '#10b981' : '#ef4444';
+    const returnIcon = s.totalReturn >= 0 ? '📈' : '📉';
+    let html = `
+      <div style="background:linear-gradient(135deg,#f0fdf4,#dbeafe);padding:16px;border-radius:8px;margin-bottom:16px;">
+        <div style="font-size:18px;font-weight:bold;color:${returnColor};">${returnIcon} 총 수익률: ${s.totalReturn}%</div>
+        <div style="margin-top:8px;display:grid;grid-template-columns:repeat(2,1fr);gap:6px;font-size:13px;color:#374151;">
+          <div>초기 자본: ${s.initialCash.toLocaleString()}원</div>
+          <div>최종 평가: ${s.finalValue.toLocaleString()}원</div>
+          <div>시뮬 기간: ${s.days}일</div>
+          <div>거래: ${s.buyCount}매수 / ${s.sellCount}매도</div>
+          <div>승률: ${s.winRate}%</div>
+          <div>보유 중: ${s.openPositions}종목</div>
+        </div>
+      </div>
+    `;
+    if(r.trades.length > 0){
+      html += '<h3 style="margin:16px 0 8px;color:#1f2937;">📋 거래 내역 (최근 20개)</h3>';
+      html += '<div style="max-height:300px;overflow-y:auto;border:1px solid #e5e7eb;border-radius:6px;">';
+      html += '<table style="width:100%;font-size:12px;border-collapse:collapse;">';
+      html += '<thead style="background:#f3f4f6;position:sticky;top:0;"><tr><th style="padding:6px;text-align:left;">날짜</th><th>구분</th><th>종목</th><th>가격</th><th>수익</th><th>사유</th></tr></thead><tbody>';
+      r.trades.slice(-20).reverse().forEach(t => {
+        const typeColor = t.type === '매수' ? '#3b82f6' : '#ef4444';
+        const profitStr = t.type === '매도' ? `${t.profit>=0?'+':''}${t.profit?.toLocaleString()}원 (${t.profitPct}%)` : '-';
+        const profitColor = t.type === '매도' ? (t.profit>=0?'#10b981':'#ef4444') : '#6b7280';
+        html += `<tr style="border-top:1px solid #e5e7eb;"><td style="padding:6px;">${t.date}</td><td style="color:${typeColor};font-weight:bold;text-align:center;">${t.type}</td><td>${t.name}</td><td style="text-align:right;">${t.price?.toLocaleString()}</td><td style="text-align:right;color:${profitColor};">${profitStr}</td><td style="font-size:11px;color:#6b7280;">${t.reason}</td></tr>`;
+      });
+      html += '</tbody></table></div>';
+    }
+    if(Object.keys(r.positions).length > 0){
+      html += '<h3 style="margin:16px 0 8px;color:#1f2937;">📦 현재 보유 종목</h3>';
+      html += '<ul style="margin:0;padding-left:20px;font-size:13px;">';
+      Object.entries(r.positions).forEach(([code, p]) => {
+        html += `<li>${p.name} (${code}) - ${p.qty}주 @ ${Math.round(p.buyPrice).toLocaleString()}원, 보유 ${p.holdDays}일</li>`;
+      });
+      html += '</ul>';
+    }
+    resultDiv.innerHTML = html;
+  };
+};
+
+// 떠다니는 시뮬레이터 버튼
+(function createFloatingSimulatorButton(){
+  function addButton(){
+    if(document.getElementById('floating-sim-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'floating-sim-btn';
+    btn.innerHTML = '💰<br>시뮬';
+    btn.title = '매도/매수 시뮬레이터';
+    btn.style.cssText = `position:fixed;bottom:640px;right:20px;width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,#10b981 0%,#059669 100%);color:white;border:none;box-shadow:0 4px 12px rgba(0,0,0,0.3);cursor:pointer;font-size:11px;font-weight:bold;line-height:1.2;z-index:9998;transition:transform 0.2s;`;
+    btn.onmouseover = ()=>{ btn.style.transform='scale(1.1)'; };
+    btn.onmouseout = ()=>{ btn.style.transform='scale(1)'; };
+    btn.onclick = ()=>{ if(typeof showSimulator==='function') showSimulator(); else alert('시뮬레이터 함수가 로드되지 않았습니다.'); };
+    document.body.appendChild(btn);
+    console.log('✅ 시뮬 버튼 생성됨');
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', addButton);
+  else setTimeout(addButton, 1000);
+})();
+// === 워치리스트 (관심 종목 추적) ===
+window.getWatchlist = function(){
+  try { return JSON.parse(localStorage.getItem('watchlist')||'[]'); }
+  catch(e){ return []; }
+};
+window.setWatchlist = function(list){
+  localStorage.setItem('watchlist', JSON.stringify(list));
+};
+window.addToWatchlist = function(code, name){
+  const list = getWatchlist();
+  if(list.find(w => w.code === code)){
+    if(typeof showToast === 'function') showToast(name+' 이미 등록됨', 'warning');
+    return false;
+  }
+  list.push({code: code, name: name, addedAt: new Date().toISOString()});
+  setWatchlist(list);
+  if(typeof showToast === 'function') showToast('⭐ '+name+' 추가됨', 'success');
+  return true;
+};
+window.removeFromWatchlist = function(code){
+  const list = getWatchlist().filter(w => w.code !== code);
+  setWatchlist(list);
+  if(typeof showToast === 'function') showToast('🗑 워치리스트에서 제거됨', 'info');
+};
+
+// 워치리스트 상태 조회 (현재 백테스트 데이터 기준)
+window.getWatchlistStatus = function(){
+  const watchlist = getWatchlist();
+  if(watchlist.length === 0) return [];
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  const valid = window._validBackup || [];
+  const today = log[log.length-1];
+  const yesterday = log[log.length-2];
+  return watchlist.map(w => {
+    const todayInTop5 = today?.top5?.findIndex(s => s.code === w.code);
+    const yesterdayInTop5 = yesterday?.top5?.findIndex(s => s.code === w.code);
+    const fullData = valid.find(s => s.code === w.code);
+    return {
+      code: w.code,
+      name: w.name,
+      todayRank: todayInTop5 >= 0 ? todayInTop5+1 : null,
+      yesterdayRank: yesterdayInTop5 >= 0 ? yesterdayInTop5+1 : null,
+      todayData: todayInTop5 >= 0 ? today.top5[todayInTop5] : null,
+      fullData: fullData,
+      change: yesterdayInTop5 >= 0 && todayInTop5 >= 0 ? yesterdayInTop5 - todayInTop5 : null
+    };
+  });
+};
+
+// 워치리스트 알림 체크 (백테스트 완료 후 자동 호출)
+window.checkWatchlistAlerts = function(){
+  const status = getWatchlistStatus();
+  if(status.length === 0) return;
+  const alerts = [];
+  status.forEach(s => {
+    if(s.todayRank && !s.yesterdayRank){
+      alerts.push({type:'enter', msg:'🎯 '+s.name+' Top5 신규 진입! ('+s.todayRank+'위)'});
+    } else if(!s.todayRank && s.yesterdayRank){
+      alerts.push({type:'exit', msg:'👋 '+s.name+' Top5 이탈 (어제 '+s.yesterdayRank+'위)'});
+    } else if(s.change && s.change >= 2){
+      alerts.push({type:'up', msg:'📈 '+s.name+' '+s.yesterdayRank+'→'+s.todayRank+'위 상승 ('+s.change+'단계)'});
+    } else if(s.change && s.change <= -2){
+      alerts.push({type:'down', msg:'📉 '+s.name+' '+s.yesterdayRank+'→'+s.todayRank+'위 하락 ('+Math.abs(s.change)+'단계)'});
+    }
+    // 강력 후보 조건
+    if(s.todayData && s.todayData.accel >= 30 && s.todayData.bsa >= 60){
+      alerts.push({type:'strong', msg:'🚀 '+s.name+' 강력 후보! (BSA '+s.todayData.bsa+', 가속도 +'+s.todayData.accel.toFixed(1)+')'});
+    }
+  });
+  if(alerts.length > 0){
+    alerts.forEach((a, i) => {
+      setTimeout(() => {
+        if(typeof showToast === 'function'){
+          const type = a.type === 'enter' ? 'success' : a.type === 'exit' ? 'warning' : a.type === 'strong' ? 'danger' : 'info';
+          showToast(a.msg, type, 5000);
+        } else { console.log(a.msg); }
+      }, i * 600);
+    });
+  }
+  return alerts;
+};
+
+// 워치리스트 모달
+window.showWatchlist = function(){
+  document.getElementById('watchlist-modal')?.remove();
+  const status = getWatchlistStatus();
+  const valid = window._validBackup || [];
+  
+  const modal = document.createElement('div');
+  modal.id = 'watchlist-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  
+  let listHtml = '';
+  if(status.length === 0){
+    listHtml = '<div style="text-align:center;padding:32px;color:#9ca3af;">⭐ 관심 종목이 없습니다.<br>아래에서 종목을 추가하세요.</div>';
+  } else {
+    listHtml = '<table style="width:100%;font-size:13px;border-collapse:collapse;"><thead style="background:#f3f4f6;"><tr><th style="padding:8px;text-align:left;">종목</th><th>코드</th><th>오늘</th><th>어제</th><th>BSA</th><th>가속도</th><th>변화</th><th></th></tr></thead><tbody>';
+    status.forEach(s => {
+      const rankToday = s.todayRank ? '<span style="color:#10b981;font-weight:bold;">'+s.todayRank+'위</span>' : '-';
+      const rankYesterday = s.yesterdayRank ? s.yesterdayRank+'위' : '-';
+      const bsa = s.todayData?.bsa || s.fullData?.bsa || '-';
+      const accel = s.todayData?.accel || s.fullData?.accel;
+      const accelStr = accel != null ? (accel>=0?'+':'')+accel.toFixed(1) : '-';
+      const accelColor = accel >= 30 ? '#ef4444' : accel >= 0 ? '#10b981' : '#6b7280';
+      let changeStr = '-';
+      if(s.change != null){
+        changeStr = s.change > 0 ? '⬆️ +'+s.change : s.change < 0 ? '⬇️ '+s.change : '➡️';
+      } else if(s.todayRank && !s.yesterdayRank){
+        changeStr = '🆕 진입';
+      } else if(!s.todayRank && s.yesterdayRank){
+        changeStr = '❌ 이탈';
+      }
+      listHtml += `<tr style="border-top:1px solid #e5e7eb;"><td style="padding:8px;font-weight:bold;">${s.name}</td><td style="color:#6b7280;font-size:11px;">${s.code}</td><td style="text-align:center;">${rankToday}</td><td style="text-align:center;color:#6b7280;">${rankYesterday}</td><td style="text-align:center;">${bsa}</td><td style="text-align:center;color:${accelColor};font-weight:bold;">${accelStr}</td><td style="text-align:center;">${changeStr}</td><td><button onclick="removeFromWatchlist('${s.code}');showWatchlist();" style="background:#ef4444;color:white;border:none;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px;">삭제</button></td></tr>`;
+    });
+    listHtml += '</tbody></table>';
+  }
+  
+  // 추가 가능한 종목 옵션 (메모리 + 일일 로그 모두 활용)
+let addOptions = '<option value="">-- 종목 선택 --</option>';
+const watchedCodes = new Set(status.map(s => s.code));
+const candidates = {};
+
+// 1. 메모리의 백테스트 데이터 (있으면 BSA 포함)
+if(valid.length > 0){
+  valid.forEach(s => {
+    if(!watchedCodes.has(s.code)){
+      candidates[s.code] = { name: s.name, code: s.code, bsa: s.bsa, sector: s.sector };
+    }
+  });
+}
+
+// 2. 일일 로그의 Top5 종목들 (누적된 모든 종목)
+const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+log.forEach(day => {
+  (day.top5 || []).forEach(s => {
+    if(!watchedCodes.has(s.code) && !candidates[s.code]){
+      candidates[s.code] = { name: s.name, code: s.code, bsa: s.bsa, sector: s.sector };
+    }
+  });
+});
+
+// 3. 한국 주요 종목 기본 옵션 (백테스트 안 했을 때 대비)
+const defaultStocks = [
+  {code:'005930', name:'삼성전자'},
+  {code:'000660', name:'SK하이닉스'},
+  {code:'373220', name:'LG에너지솔루션'},
+  {code:'207940', name:'삼성바이오로직스'},
+  {code:'005380', name:'현대차'},
+  {code:'000270', name:'기아'},
+  {code:'005490', name:'POSCO홀딩스'},
+  {code:'035420', name:'네이버'},
+  {code:'035720', name:'카카오'},
+  {code:'051910', name:'LG화학'},
+  {code:'006400', name:'삼성SDI'},
+  {code:'068270', name:'셀트리온'},
+  {code:'066570', name:'LG전자'},
+  {code:'011070', name:'LG이노텍'},
+  {code:'034730', name:'SK'},
+  {code:'105560', name:'KB금융'},
+  {code:'055550', name:'신한지주'},
+  {code:'096770', name:'SK이노베이션'},
+  {code:'017670', name:'SK텔레콤'},
+  {code:'030200', name:'KT'},
+  {code:'012330', name:'현대모비스'},
+  {code:'003670', name:'포스코퓨처엠'},
+  {code:'009150', name:'삼성전기'},
+  {code:'329180', name:'HD현대중공업'},
+  {code:'010130', name:'고려아연'}
+];
+defaultStocks.forEach(s => {
+  if(!watchedCodes.has(s.code) && !candidates[s.code]){
+    candidates[s.code] = { name: s.name, code: s.code, bsa: null, sector: null };
+  }
+});
+
+// 정렬: BSA 높은 순, 그 다음 이름순
+const sortedCandidates = Object.values(candidates).sort((a, b) => {
+  if(a.bsa != null && b.bsa != null) return b.bsa - a.bsa;
+  if(a.bsa != null) return -1;
+  if(b.bsa != null) return 1;
+  return a.name.localeCompare(b.name);
+});
+
+sortedCandidates.slice(0, 50).forEach(s => {
+  const bsaStr = s.bsa != null ? ' - BSA ' + s.bsa : '';
+  addOptions += `<option value="${s.code}|${s.name}">${s.name} (${s.code})${bsaStr}</option>`;
+});
+
+console.log('워치리스트 드롭다운:', sortedCandidates.length+'개 종목 표시');
+
+  
+  modal.innerHTML = `
+    <div style="background:white;border-radius:12px;max-width:850px;width:100%;max-height:90vh;overflow-y:auto;padding:24px;position:relative;">
+      <button id="wl-close" style="position:absolute;top:12px;right:12px;background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>
+      <h2 style="margin:0 0 16px;color:#1f2937;">⭐ 워치리스트 (${status.length}개)</h2>
+      <div style="background:#f9fafb;padding:16px;border-radius:8px;margin-bottom:16px;">
+        ${listHtml}
+      </div>
+      <div style="background:#fef3c7;padding:12px;border-radius:8px;">
+        <div style="font-size:13px;font-weight:bold;margin-bottom:8px;">➕ 종목 추가</div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <select id="wl-select" style="flex:1;padding:6px;border:1px solid #d1d5db;border-radius:4px;">${addOptions}</select>
+          <button id="wl-add" style="padding:6px 16px;background:#10b981;color:white;border:none;border-radius:4px;cursor:pointer;font-weight:bold;">추가</button>
+        </div>
+        <div style="font-size:11px;color:#92400e;margin-top:6px;">※ ${sortedCandidates.length}개 종목 (백테스트 실행 시 더 많은 종목과 BSA 점수 표시)</div>
+      </div>
+      <div style="background:#eff6ff;padding:12px;border-radius:8px;margin-top:12px;font-size:12px;color:#1e40af;">
+        💡 백테스트 완료 시 워치리스트 종목의 Top5 진입/이탈, 강력 후보 조건 시 자동 토스트 알림이 표시됩니다.
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById('wl-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  document.getElementById('wl-add').onclick = () => {
+    const val = document.getElementById('wl-select').value;
+    if(!val){ alert('종목을 선택하세요'); return; }
+    const [code, name] = val.split('|');
+    addToWatchlist(code, name);
+    showWatchlist();
+  };
+};
+
+// 백테스트 완료 자동 감지 (워치리스트 알림)
+(function setupWatchlistAutoAlert(){
+  const STORAGE_KEY = 'bsa_daily_log';
+  let lastSeenCount = 0;
+  function initBaseline(){
+    try { const log = JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]'); lastSeenCount = log.length; } catch(e){}
+  }
+  const originalSetItem = localStorage.setItem.bind(localStorage);
+  const wrappedSetItem = localStorage.setItem;
+  // 이미 다른 곳에서 setItem이 래핑되어 있으므로, 새로운 체크는 setTimeout으로 처리
+  function checkUpdate(){
+    try {
+      const log = JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]');
+      if(log.length > lastSeenCount){
+        lastSeenCount = log.length;
+        setTimeout(() => {
+          if(typeof checkWatchlistAlerts === 'function') checkWatchlistAlerts();
+        }, 1500); // 변화 모달 후에 표시
+      }
+    } catch(e){}
+  }
+  window.addEventListener('storage', e => { if(e.key === STORAGE_KEY) checkUpdate(); });
+  setInterval(checkUpdate, 3000); // 3초마다 체크
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initBaseline);
+  else initBaseline();
+  console.log('✅ 워치리스트 자동 알림 활성화');
+})();
+
+// 떠다니는 워치리스트 버튼
+(function createFloatingWatchlistButton(){
+  function addButton(){
+    if(document.getElementById('floating-watchlist-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'floating-watchlist-btn';
+    btn.innerHTML = '⭐<br>관심';
+    btn.title = '워치리스트';
+    btn.style.cssText = `position:fixed;bottom:710px;right:20px;width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,#fbbf24 0%,#f59e0b 100%);color:white;border:none;box-shadow:0 4px 12px rgba(0,0,0,0.3);cursor:pointer;font-size:11px;font-weight:bold;line-height:1.2;z-index:9998;transition:transform 0.2s;`;
+    btn.onmouseover = ()=>{ btn.style.transform='scale(1.1)'; };
+    btn.onmouseout = ()=>{ btn.style.transform='scale(1)'; };
+    btn.onclick = ()=>{ if(typeof showWatchlist==='function') showWatchlist(); };
+    document.body.appendChild(btn);
+    console.log('✅ 워치리스트 버튼 생성됨');
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', addButton);
+  else setTimeout(addButton, 1100);
+})();
+console.log('💡 워치리스트: showWatchlist() 실행 또는 ⭐ 버튼 클릭');
+
+
+console.log('💡 시뮬레이터: showSimulator() 실행 또는 💰 버튼 클릭');
 
 
 console.log('💡 주목 종목: showWatchList() 또는 🔭 버튼 클릭');
