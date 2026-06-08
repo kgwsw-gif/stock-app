@@ -527,6 +527,198 @@ console.log('💡 차트 보기: showBSACharts() 실행');
   }
 })();
 
+// === 전일 대비 변화 분석 ===
+window.showTodayChanges = function(){
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  if(log.length === 0){
+    console.log('❌ 데이터가 없습니다.');
+    return;
+  }
+  if(log.length === 1){
+    console.log('=== 📅 오늘 Top 5 ('+log[0].date+') ===');
+    console.log('⚠️ 비교할 어제 데이터가 없어 신규 표시만 가능합니다.\n');
+    (log[0].top5||[]).forEach((s, i) => {
+      console.log('  🆕 '+(i+1)+'위. '+s.name+' ('+s.sector+') BSA '+s.bsa+' 가속 '+(s.accel?.toFixed?.(1)||s.accel));
+    });
+    return;
+  }
+  
+  const today = log[log.length-1];
+  const yesterday = log[log.length-2];
+  
+  console.log('=== 📅 '+today.date+' vs '+yesterday.date+' 변화 ===\n');
+  console.log('📊 시장: KOSPI30 '+yesterday.kospi30+' → '+today.kospi30+
+    ' ('+(today.kospi30 > yesterday.kospi30 ? '⬆️ +' : '⬇️ ')+
+    (today.kospi30 - yesterday.kospi30).toFixed(2)+')\n');
+  
+  // 어제 Top5 코드 매핑 (순위)
+  const yesterdayMap = {};
+  (yesterday.top5||[]).forEach((s, i) => { yesterdayMap[s.code || s.name] = i + 1; });
+  
+  console.log('🏆 오늘 Top 5:');
+  (today.top5||[]).forEach((s, i) => {
+    const key = s.code || s.name;
+    const todayRank = i + 1;
+    const yRank = yesterdayMap[key];
+    let mark;
+    if(!yRank){
+      mark = '🆕 신규';
+    } else if(yRank > todayRank){
+      mark = '⬆️ '+yRank+'위→'+todayRank+'위 (+' +(yRank-todayRank)+')';
+    } else if(yRank < todayRank){
+      mark = '⬇️ '+yRank+'위→'+todayRank+'위 (-' +(todayRank-yRank)+')';
+    } else {
+      mark = '➡️ 유지';
+    }
+    const accel = typeof s.accel === 'number' ? s.accel.toFixed(1) : (s.accel||0);
+    console.log('  '+todayRank+'위. '+s.name+' ('+s.sector+') BSA '+s.bsa+' 가속 '+accel+' | '+mark);
+  });
+  
+  // 탈락 종목
+  const todayCodes = new Set((today.top5||[]).map(s => s.code || s.name));
+  const dropped = (yesterday.top5||[]).filter(s => !todayCodes.has(s.code || s.name));
+  if(dropped.length > 0){
+    console.log('\n❌ 탈락 종목 (어제는 Top5):');
+    dropped.forEach(s => {
+      const yRank = yesterdayMap[s.code || s.name];
+      console.log('  '+yRank+'위였던 '+s.name+' ('+s.sector+') BSA '+s.bsa);
+    });
+  }
+  
+  return {today: today.top5, yesterday: yesterday.top5};
+};
+console.log('💡 변화 분석: showTodayChanges() 실행');
+
+// === 떠다니는 변화 버튼 추가 ===
+(function createFloatingChangeButton(){
+  function addButton(){
+    if(document.getElementById('floating-change-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'floating-change-btn';
+    btn.innerHTML = '📅<br>변화';
+    btn.title = '전일 대비 Top5 변화 보기';
+    btn.style.cssText = `
+      position: fixed;
+      bottom: 150px;
+      right: 20px;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+      color: white;
+      border: none;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: bold;
+      line-height: 1.2;
+      z-index: 9998;
+      transition: transform 0.2s, box-shadow 0.2s;
+    `;
+    btn.onmouseover = function(){ btn.style.transform = 'scale(1.1)'; };
+    btn.onmouseout = function(){ btn.style.transform = 'scale(1)'; };
+    btn.onclick = function(){
+      if(typeof showTodayChangesModal === 'function'){
+        showTodayChangesModal();
+      } else {
+        showTodayChanges();
+        alert('변화 분석이 콘솔(F12)에 출력되었습니다.');
+      }
+    };
+    document.body.appendChild(btn);
+    console.log('✅ 변화 버튼 생성됨');
+  }
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', addButton);
+  } else {
+    setTimeout(addButton, 600);
+  }
+})();
+
+// === 변화 분석 모달 (예쁘게 표시) ===
+window.showTodayChangesModal = function(){
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  if(log.length === 0){
+    alert('데이터가 없습니다.');
+    return;
+  }
+  
+  const existing = document.getElementById('changes-modal');
+  if(existing) existing.remove();
+  
+  const today = log[log.length-1];
+  const yesterday = log.length >= 2 ? log[log.length-2] : null;
+  
+  let html = '<h2 style="margin-top:0;color:#333;">📅 Top 5 변화 분석</h2>';
+  html += '<div style="padding:10px;background:#f0f8ff;border-radius:6px;margin-bottom:15px;">';
+  
+  if(yesterday){
+    const diff = today.kospi30 - yesterday.kospi30;
+    const arrow = diff > 0 ? '⬆️' : (diff < 0 ? '⬇️' : '➡️');
+    html += '<strong>📊 시장:</strong> KOSPI30 '+yesterday.kospi30+' → <strong>'+today.kospi30+'</strong> '+arrow+' '+diff.toFixed(2);
+    html += '<br><strong>📅 비교:</strong> '+yesterday.date+' → '+today.date;
+  } else {
+    html += '<strong>📅 오늘:</strong> '+today.date+' (어제 데이터 없음)';
+  }
+  html += '</div>';
+  
+  // 어제 매핑
+  const yesterdayMap = {};
+  if(yesterday){
+    (yesterday.top5||[]).forEach((s, i) => { yesterdayMap[s.code || s.name] = i + 1; });
+  }
+  
+  html += '<h3 style="color:#555;">🏆 오늘 Top 5</h3>';
+  html += '<table style="width:100%;border-collapse:collapse;font-size:14px;">';
+  html += '<tr style="background:#f5f5f5;"><th style="padding:8px;border:1px solid #ddd;">순위</th><th style="padding:8px;border:1px solid #ddd;">종목</th><th style="padding:8px;border:1px solid #ddd;">섹터</th><th style="padding:8px;border:1px solid #ddd;">BSA</th><th style="padding:8px;border:1px solid #ddd;">가속</th><th style="padding:8px;border:1px solid #ddd;">변화</th></tr>';
+  
+  (today.top5||[]).forEach((s, i) => {
+    const todayRank = i + 1;
+    const yRank = yesterdayMap[s.code || s.name];
+    let mark, color;
+    if(!yesterday){ mark = '—'; color = '#999'; }
+    else if(!yRank){ mark = '🆕 신규'; color = '#4caf50'; }
+    else if(yRank > todayRank){ mark = '⬆️ '+yRank+'→'+todayRank; color = '#2196f3'; }
+    else if(yRank < todayRank){ mark = '⬇️ '+yRank+'→'+todayRank; color = '#ff9800'; }
+    else { mark = '➡️ 유지'; color = '#666'; }
+    const accel = typeof s.accel === 'number' ? s.accel.toFixed(1) : (s.accel||0);
+    html += '<tr><td style="padding:8px;border:1px solid #ddd;text-align:center;">'+todayRank+'</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;"><strong>'+s.name+'</strong></td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;">'+s.sector+'</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;text-align:right;">'+s.bsa+'</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;text-align:right;">'+accel+'</td>';
+    html += '<td style="padding:8px;border:1px solid #ddd;color:'+color+';font-weight:bold;">'+mark+'</td></tr>';
+  });
+  html += '</table>';
+  
+  // 탈락 종목
+  if(yesterday){
+    const todayCodes = new Set((today.top5||[]).map(s => s.code || s.name));
+    const dropped = (yesterday.top5||[]).filter(s => !todayCodes.has(s.code || s.name));
+    if(dropped.length > 0){
+      html += '<h3 style="color:#555;margin-top:20px;">❌ 탈락 종목</h3>';
+      html += '<ul style="line-height:1.8;">';
+      dropped.forEach(s => {
+        const yRank = yesterdayMap[s.code || s.name];
+        html += '<li><strong>'+yRank+'위였던 '+s.name+'</strong> ('+s.sector+', BSA '+s.bsa+')</li>';
+      });
+      html += '</ul>';
+    }
+  }
+  
+  const modal = document.createElement('div');
+  modal.id = 'changes-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;justify-content:center;align-items:center;padding:20px;overflow:auto;';
+  const inner = document.createElement('div');
+  inner.style.cssText = 'background:white;border-radius:12px;padding:24px;max-width:800px;width:100%;max-height:90vh;overflow-y:auto;position:relative;';
+  inner.innerHTML = html + '<button id="changes-close" style="position:absolute;top:12px;right:12px;padding:6px 14px;background:#dc3545;color:white;border:none;border-radius:6px;cursor:pointer;">✕ 닫기</button>';
+  modal.appendChild(inner);
+  document.body.appendChild(modal);
+  document.getElementById('changes-close').onclick = () => modal.remove();
+  modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+};
+
+
 
 
 /* ============================================
