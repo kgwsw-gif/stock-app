@@ -121,6 +121,113 @@
   } catch(e){ console.log('❌ 재발급 오류:', e.message); }
 })();
 
+// === BSA 일일 로그 CSV 내보내기 ===
+window.exportBSALogToCSV = function(){
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  if(log.length === 0){
+    alert('내보낼 데이터가 없습니다. 백테스트를 먼저 실행하세요.');
+    return;
+  }
+  
+  const headers = ['날짜','KOSPI30','시장상태','순위','종목명','코드','BSA','BullB섹터','BullB','가속도','섹터','현재가','ret30'];
+  const rows = [headers.join(',')];
+  
+  log.forEach(day => {
+    if(day.top5 && day.top5.length > 0){
+      day.top5.forEach((stock, idx) => {
+        const row = [
+          day.date,
+          day.kospi30 ?? '',
+          day.regime || day.label || '',
+          idx + 1,
+          '"' + (stock.name||'') + '"',
+          stock.code || '',
+          stock.bsa ?? '',
+          stock.bullBSector ?? '',
+          stock.bullB ?? '',
+          (stock.accel ?? '').toString().slice(0,8),
+          '"' + (stock.sector||'') + '"',
+          stock.price ?? '',
+          stock.ret30AtRec ?? ''
+        ];
+        rows.push(row.join(','));
+      });
+    }
+  });
+  
+  const csv = '\uFEFF' + rows.join('\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const today = new Date(Date.now()+9*3600000).toISOString().slice(0,10);
+  a.href = url;
+  a.download = 'BSA_백테스트_'+today+'.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+  console.log('✅ CSV 내보내기 완료:', log.length+'일치, '+(rows.length-1)+'행');
+};
+console.log('💡 CSV 내보내기: 콘솔에서 exportBSALogToCSV() 실행');
+
+// === 섹터별 강세 트래킹 ===
+window.analyzeSectorTrend = function(days){
+  const log = JSON.parse(localStorage.getItem('bsa_daily_log')||'[]');
+  if(log.length === 0){
+    console.log('❌ 분석할 데이터가 없습니다.');
+    return;
+  }
+  
+  const N = days || log.length;
+  const recent = log.slice(-N);
+  
+  // 섹터별 집계
+  const sectorStats = {};
+  const sectorBSA = {};
+  
+  recent.forEach(day => {
+    if(!day.top5) return;
+    day.top5.forEach((stock, idx) => {
+      const sector = stock.sector || '미분류';
+      if(!sectorStats[sector]){
+        sectorStats[sector] = {count:0, top1:0, top3:0, stocks:new Set(), bsaSum:0};
+      }
+      sectorStats[sector].count++;
+      if(idx === 0) sectorStats[sector].top1++;
+      if(idx < 3) sectorStats[sector].top3++;
+      sectorStats[sector].stocks.add(stock.name);
+      sectorStats[sector].bsaSum += (stock.bsa || 0);
+    });
+  });
+  
+  // 정렬
+  const sorted = Object.entries(sectorStats)
+    .map(([sector, s]) => ({
+      섹터: sector,
+      등장횟수: s.count,
+      Top1: s.top1,
+      Top3: s.top3,
+      평균BSA: (s.bsaSum / s.count).toFixed(1),
+      종목수: s.stocks.size,
+      종목: Array.from(s.stocks).slice(0,3).join(', ')
+    }))
+    .sort((a,b) => b.등장횟수 - a.등장횟수);
+  
+  console.log('=== 섹터별 강세 분석 ('+N+'일) ===');
+  console.table(sorted);
+  
+  // 1위 섹터 강조
+  if(sorted[0]){
+    const total = recent.length * 5;
+    const pct = (sorted[0].등장횟수 / total * 100).toFixed(1);
+    console.log('🏆 최강 섹터:', sorted[0].섹터, 
+      '('+sorted[0].등장횟수+'/'+total+'회, '+pct+'%)');
+  }
+  
+  return sorted;
+};
+console.log('💡 섹터 분석: analyzeSectorTrend() 또는 analyzeSectorTrend(7) [최근 7일]');
+
+
+
 
 /* ============================================
    v5: LRU Cache Manager
