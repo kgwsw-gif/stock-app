@@ -9867,13 +9867,44 @@ root.render(<App/>);</script>
   document.querySelectorAll('.menu-item').forEach(b => {
     b.onmouseenter = () => b.style.background = '#dbeafe';
     b.onmouseleave = () => b.style.background = '#f3f4f6';
-    b.onclick = () => {
+       b.onclick = () => {
       const fnName = b.dataset.fn;
       panel.style.display = 'none';
       if(typeof window[fnName] === 'function'){
-        window[fnName]();
+        try {
+          window[fnName]();
+          setTimeout(() => {
+            const modals = Array.from(document.querySelectorAll('div')).filter(el => {
+              const s = getComputedStyle(el);
+              if(s.position !== 'fixed') return false;
+              if(parseInt(s.zIndex) < 9999) return false;
+              if(el.id === 'menu-panel' || el.id === 'floating-menu-btn') return false;
+              if(s.display === 'none' || s.visibility === 'hidden') return false;
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            });
+            const modal = modals[modals.length - 1];
+            if(modal){
+              const iv = setInterval(() => {
+                const visible = document.body.contains(modal)
+                  && getComputedStyle(modal).display !== 'none'
+                  && getComputedStyle(modal).visibility !== 'hidden'
+                  && modal.getBoundingClientRect().width > 0;
+                if(!visible){ clearInterval(iv); panel.style.display = 'block'; }
+              }, 200);
+              setTimeout(() => clearInterval(iv), 60000);
+            } else {
+              panel.style.display = 'block';
+            }
+          }, 500);
+        } catch(e){
+          console.error(fnName, '에러:', e);
+          alert(fnName + ' 실행 중 오류:\n' + e.message);
+          panel.style.display = 'block';
+        }
       } else {
-        alert(`${fnName} 함수가 정의되지 않았습니다`);
+        alert(fnName + ' 함수가 정의되지 않았습니다');
+        panel.style.display = 'block';
       }
     };
   });
@@ -10734,5 +10765,77 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
 
 
 </script>
+<script>
+// 메뉴 패널 자동 복원 패치
+(function(){
+  function applyPatch(){
+    const panel = document.getElementById('menu-panel');
+    if(!panel){ setTimeout(applyPatch, 500); return; }
+    
+    const items = document.querySelectorAll('.menu-item');
+    if(items.length === 0){ setTimeout(applyPatch, 500); return; }
+    
+    items.forEach(function(b){
+      var originalClick = b.onclick;
+      b.onclick = function(){
+        var fnName = b.dataset.fn;
+        panel.style.display = 'none';
+        
+        if(typeof window[fnName] === 'function'){
+          try {
+            window[fnName]();
+          } catch(err){
+            console.error(fnName, err);
+            alert(fnName + ' 오류: ' + err.message);
+            panel.style.display = 'block';
+            return;
+          }
+          
+          setTimeout(function(){
+            var modals = Array.prototype.slice.call(document.querySelectorAll('div')).filter(function(el){
+              var s = getComputedStyle(el);
+              if(s.position !== 'fixed') return false;
+              if(parseInt(s.zIndex) < 9999) return false;
+              if(el.id === 'menu-panel' || el.id === 'floating-menu-btn') return false;
+              if(s.display === 'none' || s.visibility === 'hidden') return false;
+              var r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            });
+            var modal = modals[modals.length - 1];
+            
+            if(modal){
+              var iv = setInterval(function(){
+                var visible = document.body.contains(modal)
+                  && getComputedStyle(modal).display !== 'none'
+                  && getComputedStyle(modal).visibility !== 'hidden'
+                  && modal.getBoundingClientRect().width > 0;
+                if(!visible){
+                  clearInterval(iv);
+                  panel.style.display = 'block';
+                }
+              }, 200);
+              setTimeout(function(){ clearInterval(iv); }, 60000);
+            } else {
+              panel.style.display = 'block';
+            }
+          }, 500);
+        } else {
+          alert(fnName + ' 함수가 정의되지 않았습니다');
+          panel.style.display = 'block';
+        }
+      };
+    });
+    
+    console.log('✅ 메뉴 패널 자동 복원 패치 적용 완료 (' + items.length + '개 아이템)');
+  }
+  
+  if(document.readyState === 'complete'){
+    setTimeout(applyPatch, 1000);
+  } else {
+    window.addEventListener('load', function(){ setTimeout(applyPatch, 1000); });
+  }
+})();
+</script>
+
 </body>
 </html>
