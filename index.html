@@ -11568,25 +11568,6 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
             const errMsg = macro.errors.length ? ` (실패: ${macro.errors.join(', ')})` : '';
             statusEl.innerHTML = `✅ 수집 완료 (${time})${errMsg}<br>📊 미증시 평균: <b>${macro.usAvg?.toFixed(2)}%</b> | KOSPI: ${macro.kospi?.toFixed(2)} | USD/KRW: ${macro.usdKrw?.toFixed(2)}`;
             statusEl.style.color = '#10b981';
-
-const autoFetch = async () => {
-  refreshBtn.disabled = true;
-  ...
-  try {
-    const macro = await window.fetchGlobalMacro(false);
-    // 각 input에 값 채우기
-    ...
-    statusEl.innerHTML = '✅ 수집 완료 ...';
-    statusEl.style.color = '#10b981';
-  } catch(e) {
-    statusEl.innerHTML = '❌ 수집 실패...';
-    statusEl.style.color = '#dc2626';
-  } finally {        ← 👈 이 줄 바로 위에 삽입
-    refreshBtn.disabled = false;
-    refreshBtn.textContent = '🔄 자동 수집';
-  }
-};
-
           } catch(e){
             statusEl.innerHTML = '❌ 수집 실패: ' + e.message + '<br>💡 바로가기 버튼으로 값 확인 후 수동 입력하세요.';
             statusEl.style.color = '#dc2626';
