@@ -11496,7 +11496,7 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
         });
         
         // 자동 수집 함수
-               const autoFetch = async () => {
+                       const autoFetch = async () => {
           const refreshBtn = document.getElementById('wtd-macro-refresh');
           const statusEl = document.getElementById('wtd-macro-status');
           refreshBtn.disabled = true;
@@ -11525,13 +11525,14 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
             if(macro.snpChange !== null) document.getElementById('wtd-snp').value = macro.snpChange.toFixed(2);
             if(macro.vix !== null) document.getElementById('wtd-vix').value = macro.vix.toFixed(2);
             if(macro.usdKrwChange !== null) document.getElementById('wtd-usdkrw').value = macro.usdKrwChange.toFixed(2);
-                        // 🆕 반도체
+            
+            // 🆕 반도체
             if(macro.soxChange !== null) document.getElementById('wtd-sox').value = macro.soxChange.toFixed(2);
             if(macro.semiAvg !== null) document.getElementById('wtd-semiavg').value = macro.semiAvg.toFixed(2);
             
             const semiDetailEl = document.getElementById('wtd-semi-detail');
             if(semiDetailEl){
-              const fmt = (name, c) => c !== null ? `${name} ${c >= 0 ? '+' : ''}${c.toFixed(2)}%` : `${name} -`;
+              const fmt = (name, c) => c !== null ? name + ' ' + (c >= 0 ? '+' : '') + c.toFixed(2) + '%' : name + ' -';
               semiDetailEl.innerHTML = '📊 ' + 
                 fmt('NVDA', macro.nvdaChange) + ' | ' + 
                 fmt('MU', macro.muChange) + ' | ' + 
@@ -11540,13 +11541,13 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
             
             const samsungEl = document.getElementById('wtd-samsung');
             if(samsungEl && macro.samsungChange !== null){
-              samsungEl.textContent = `삼성전자 ${macro.samsungChange >= 0 ? '+' : ''}${macro.samsungChange.toFixed(2)}%`;
+              samsungEl.textContent = '삼성전자 ' + (macro.samsungChange >= 0 ? '+' : '') + macro.samsungChange.toFixed(2) + '%';
               samsungEl.style.color = macro.samsungChange >= 0 ? '#10b981' : '#dc2626';
             }
             
             const skHynixEl = document.getElementById('wtd-skhynix');
             if(skHynixEl && macro.skHynixChange !== null){
-              skHynixEl.textContent = `SK하이닉스 ${macro.skHynixChange >= 0 ? '+' : ''}${macro.skHynixChange.toFixed(2)}%`;
+              skHynixEl.textContent = 'SK하이닉스 ' + (macro.skHynixChange >= 0 ? '+' : '') + macro.skHynixChange.toFixed(2) + '%';
               skHynixEl.style.color = macro.skHynixChange >= 0 ? '#10b981' : '#dc2626';
             }
             
@@ -11556,18 +11557,123 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
             
             const futureInfoEl = document.getElementById('wtd-future-info');
             if(futureInfoEl && macro.futureAvg !== null){
-              const sign = macro.futureAvg >= 0 ? '+' : '';
-              const color = macro.futureAvg >= 0 ? '#10b981' : '#dc2626';
-              futureInfoEl.innerHTML = `📊 야간선물 평균: <b style="color:${color};">${sign}${macro.futureAvg.toFixed(2)}%</b>`;
+              const fSign = macro.futureAvg >= 0 ? '+' : '';
+              const fColor = macro.futureAvg >= 0 ? '#10b981' : '#dc2626';
+              futureInfoEl.innerHTML = '📊 야간선물 평균: <b style="color:' + fColor + ';">' + fSign + macro.futureAvg.toFixed(2) + '%</b>';
             }
-
 
             window._lastMacroData = macro;
             
             const time = new Date(macro.timestamp).toLocaleString('ko-KR');
-            const errMsg = macro.errors.length ? ` (실패: ${macro.errors.join(', ')})` : '';
-            statusEl.innerHTML = `✅ 수집 완료 (${time})${errMsg}<br>📊 미증시 평균: <b>${macro.usAvg?.toFixed(2)}%</b> | KOSPI: ${macro.kospi?.toFixed(2)} | USD/KRW: ${macro.usdKrw?.toFixed(2)}`;
+            const errMsg = macro.errors.length ? ' (실패: ' + macro.errors.join(', ') + ')' : '';
+            statusEl.innerHTML = '✅ 수집 완료 (' + time + ')' + errMsg + 
+              '<br>📊 미증시 평균: <b>' + (macro.usAvg != null ? macro.usAvg.toFixed(2) : '-') + '%</b>' +
+              ' | KOSPI: ' + (macro.kospi != null ? macro.kospi.toFixed(2) : '-') +
+              ' | USD/KRW: ' + (macro.usdKrw != null ? macro.usdKrw.toFixed(2) : '-');
             statusEl.style.color = '#10b981';
+            
+            // ===== 📊 AI 자동 인사이트 생성 =====
+            try {
+              const insights = [];
+              let totalSignal = 0;
+              
+              // 1. 미국 시장
+              if(macro.usAvg != null){
+                if(macro.usAvg <= -2){ insights.push({icon:'🔴', text:'미증시 폭락 (평균 ' + macro.usAvg.toFixed(2) + '%) - 위험 회피 심리 강함', score:-15}); totalSignal -= 15; }
+                else if(macro.usAvg <= -1){ insights.push({icon:'🟠', text:'미증시 하락 (평균 ' + macro.usAvg.toFixed(2) + '%) - 조심스러운 접근 필요', score:-8}); totalSignal -= 8; }
+                else if(macro.usAvg >= 2){ insights.push({icon:'🟢', text:'미증시 강세 (평균 ' + macro.usAvg.toFixed(2) + '%) - 위험자산 선호', score:15}); totalSignal += 15; }
+                else if(macro.usAvg >= 1){ insights.push({icon:'🟢', text:'미증시 상승 (평균 ' + macro.usAvg.toFixed(2) + '%) - 우호적 환경', score:8}); totalSignal += 8; }
+                else { insights.push({icon:'🟡', text:'미증시 보합 (평균 ' + macro.usAvg.toFixed(2) + '%) - 방향성 불분명', score:0}); }
+              }
+              
+              // 2. 반도체 섹터
+              const semiChanges = [macro.soxChange, macro.nvdaChange, macro.muChange, macro.tsmChange].filter(v => v != null);
+              if(semiChanges.length > 0){
+                const semiAvg = semiChanges.reduce((a,b)=>a+b,0) / semiChanges.length;
+                if(semiAvg <= -5){ insights.push({icon:'🔴', text:'반도체 섹터 급락 (평균 ' + semiAvg.toFixed(2) + '%) - AI/반도체주 패닉 가능성', score:-12}); totalSignal -= 12; }
+                else if(semiAvg <= -2){ insights.push({icon:'🟠', text:'반도체 약세 (평균 ' + semiAvg.toFixed(2) + '%) - 삼성/하이닉스 부정적 영향 예상', score:-6}); totalSignal -= 6; }
+                else if(semiAvg >= 3){ insights.push({icon:'🟢', text:'반도체 강세 (평균 ' + semiAvg.toFixed(2) + '%) - 한국 반도체주 동반 상승 기대', score:10}); totalSignal += 10; }
+                else if(semiAvg >= 1){ insights.push({icon:'🟢', text:'반도체 상승 (평균 ' + semiAvg.toFixed(2) + '%)', score:5}); totalSignal += 5; }
+                else { insights.push({icon:'🟡', text:'반도체 보합 (평균 ' + semiAvg.toFixed(2) + '%)', score:0}); }
+              }
+              
+              // 3. 한미 반도체 동조화
+              if(macro.soxChange != null && macro.samsungChange != null){
+                const gap = macro.samsungChange - macro.soxChange;
+                if(Math.abs(gap) >= 5){
+                  insights.push({icon:'⚠️', text:'한미 반도체 디커플링 (SOX ' + macro.soxChange.toFixed(1) + '% vs 삼성 ' + macro.samsungChange.toFixed(1) + '%, 격차 ' + gap.toFixed(1) + '%p)', score:0});
+                } else {
+                  insights.push({icon:'✅', text:'한미 반도체 동조화 (격차 ' + gap.toFixed(1) + '%p) - 정상 흐름', score:0});
+                }
+              }
+              
+              // 4. VIX
+              if(macro.vix != null){
+                if(macro.vix >= 30){ insights.push({icon:'🔴', text:'VIX ' + macro.vix.toFixed(1) + ' - 극도의 공포, 변동성 극대화', score:-15}); totalSignal -= 15; }
+                else if(macro.vix >= 20){ insights.push({icon:'🟠', text:'VIX ' + macro.vix.toFixed(1) + ' - 불안 심리 상승, 방어적 자세 필요', score:-8}); totalSignal -= 8; }
+                else if(macro.vix <= 15){ insights.push({icon:'🟢', text:'VIX ' + macro.vix.toFixed(1) + ' - 안정 국면, 위험 선호', score:5}); totalSignal += 5; }
+                else { insights.push({icon:'🟡', text:'VIX ' + macro.vix.toFixed(1) + ' - 평이한 수준', score:0}); }
+              }
+              
+              // 5. 환율
+              if(macro.usdKrwChange != null){
+                if(macro.usdKrwChange >= 10){ insights.push({icon:'🔴', text:'원/달러 +' + macro.usdKrwChange.toFixed(1) + '원 - 원화 약세, 외국인 매도 압력↑', score:-10}); totalSignal -= 10; }
+                else if(macro.usdKrwChange >= 5){ insights.push({icon:'🟠', text:'원/달러 +' + macro.usdKrwChange.toFixed(1) + '원 - 원화 약세 진행', score:-5}); totalSignal -= 5; }
+                else if(macro.usdKrwChange <= -10){ insights.push({icon:'🟢', text:'원/달러 ' + macro.usdKrwChange.toFixed(1) + '원 - 원화 강세, 외국인 매수 유인', score:10}); totalSignal += 10; }
+                else if(macro.usdKrwChange <= -5){ insights.push({icon:'🟢', text:'원/달러 ' + macro.usdKrwChange.toFixed(1) + '원 - 원화 강세 진행', score:5}); totalSignal += 5; }
+                else { insights.push({icon:'🟡', text:'원/달러 ' + (macro.usdKrwChange>=0?'+':'') + macro.usdKrwChange.toFixed(1) + '원 - 환율 안정', score:0}); }
+              }
+              
+              // 6. 야간선물
+              if(macro.futureAvg != null){
+                if(macro.futureAvg <= -1){ insights.push({icon:'🔴', text:'야간선물 평균 ' + macro.futureAvg.toFixed(2) + '% - 내일 한국장 하락 갭 우려', score:-10}); totalSignal -= 10; }
+                else if(macro.futureAvg <= -0.3){ insights.push({icon:'🟠', text:'야간선물 약세 ' + macro.futureAvg.toFixed(2) + '% - 내일 한국장 약세 출발 예상', score:-5}); totalSignal -= 5; }
+                else if(macro.futureAvg >= 1){ insights.push({icon:'🟢', text:'야간선물 강세 +' + macro.futureAvg.toFixed(2) + '% - 내일 한국장 상승 갭 기대', score:10}); totalSignal += 10; }
+                else if(macro.futureAvg >= 0.3){ insights.push({icon:'🟢', text:'야간선물 +' + macro.futureAvg.toFixed(2) + '% - 내일 강세 출발 가능', score:5}); totalSignal += 5; }
+                else { insights.push({icon:'🟡', text:'야간선물 보합 ' + macro.futureAvg.toFixed(2) + '% - 내일 평이한 출발 예상', score:0}); }
+              }
+              
+              // 종합 시그널
+              let summary, sumColor, action;
+              if(totalSignal <= -30){ summary = '🚨 강한 위험 신호'; sumColor = '#dc2626'; action = '현금 비중 확대, 신규 매수 자제, 손절 라인 점검'; }
+              else if(totalSignal <= -15){ summary = '🔴 부정적 환경'; sumColor = '#ea580c'; action = '방어적 포지션, 변동성 확대 대비'; }
+              else if(totalSignal <= -5){ summary = '🟠 다소 약세'; sumColor = '#f59e0b'; action = '관망 권장, 분할 매수 고려'; }
+              else if(totalSignal >= 30){ summary = '🚀 강한 매수 신호'; sumColor = '#16a34a'; action = '적극적 매수 검토, 반도체 등 주도주 주목'; }
+              else if(totalSignal >= 15){ summary = '🟢 우호적 환경'; sumColor = '#22c55e'; action = '점진적 매수, 주도주 추적'; }
+              else if(totalSignal >= 5){ summary = '🟢 다소 강세'; sumColor = '#84cc16'; action = '선별적 매수 가능'; }
+              else { summary = '🟡 중립'; sumColor = '#eab308'; action = '관망, 추세 확인 후 대응'; }
+              
+              // 인사이트 박스 렌더링
+              let insightBox = document.getElementById('wtd-insight-box');
+              if(!insightBox){
+                insightBox = document.createElement('div');
+                insightBox.id = 'wtd-insight-box';
+                statusEl.parentNode.insertBefore(insightBox, statusEl.nextSibling);
+              }
+              insightBox.style.cssText = 'margin-top:12px;padding:14px;border-radius:8px;background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid ' + sumColor + ';';
+              
+              const itemsHtml = insights.map(function(i){
+                const scoreText = i.score !== 0 ? ' <span style="color:#6b7280;font-size:11px;">(' + (i.score>0?'+':'') + i.score + '점)</span>' : '';
+                return '<div style="padding:3px 0;">' + i.icon + ' ' + i.text + scoreText + '</div>';
+              }).join('');
+              
+              insightBox.innerHTML = 
+                '<div style="font-size:16px;font-weight:bold;color:' + sumColor + ';margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid ' + sumColor + ';">' +
+                  '💡 AI 종합 인사이트: ' + summary + ' (' + (totalSignal>0?'+':'') + totalSignal + '점)' +
+                '</div>' +
+                '<div style="font-size:13px;line-height:1.9;color:#1f2937;">' + itemsHtml + '</div>' +
+                '<div style="margin-top:12px;padding:10px;background:white;border-radius:6px;border-left:4px solid ' + sumColor + ';">' +
+                  '<div style="font-size:12px;color:#6b7280;margin-bottom:4px;">📌 권장 행동</div>' +
+                  '<div style="font-size:14px;font-weight:bold;color:#1f2937;">' + action + '</div>' +
+                '</div>' +
+                '<div style="margin-top:8px;font-size:11px;color:#6b7280;text-align:right;">⏰ ' + new Date().toLocaleString('ko-KR') + ' 기준 분석</div>';
+              
+              console.log('✅ AI 인사이트 생성 완료:', summary, totalSignal + '점');
+            } catch(insightErr){
+              console.warn('인사이트 생성 중 오류:', insightErr);
+            }
+            // ===== 인사이트 생성 끝 =====
+            
           } catch(e){
             statusEl.innerHTML = '❌ 수집 실패: ' + e.message + '<br>💡 바로가기 버튼으로 값 확인 후 수동 입력하세요.';
             statusEl.style.color = '#dc2626';
@@ -11576,7 +11682,6 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
             refreshBtn.textContent = '🔄 자동 수집';
           }
         };
-
         
         document.getElementById('wtd-macro-refresh').onclick = autoFetch;
         
