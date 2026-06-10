@@ -11200,7 +11200,8 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
     html += '<button id="wtd-analyze" style="flex:1;background:linear-gradient(135deg,#8b5cf6,#7c3aed);color:white;border:none;padding:10px;border-radius:6px;font-weight:bold;cursor:pointer;">🔍 왝더독 분석 실행</button>';
     html += '<button id="wtd-naver" style="background:#10b981;color:white;border:none;padding:10px 14px;border-radius:6px;cursor:pointer;font-size:12px;">📊 네이버 열기</button>';
     html += '</div>';
-    html += '<div style="font-size:11px;color:#92400e;margin-top:8px;">💡 매도는 음수, 매수는 양수로 입력 (예: 외국인 2965억 매도 → -2965)</div>';
+    html += '<div style="font-size:14px;color:#92400e;margin-top:10px;font-weight:500;">💡 매도는 음수, 매수는 양수로 입력 (예: 외국인 2965억 매도 → -2965)</div>';
+
     html += '</div>';
     
     // 결과 영역
@@ -11254,8 +11255,8 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
       rh += '<div style="background:white;padding:10px;border-radius:6px;font-size:12px;"><b>🔍 분석 근거</b><ul style="margin:6px 0 0;padding-left:20px;">';
       result.factors.forEach(function(f){ rh += '<li>' + f + '</li>'; });
       rh += '</ul></div>';
-      rh += '<div style="margin-top:10px;padding:8px;background:#f9fafb;border-radius:4px;font-size:11px;color:#6b7280;">기본 시그널: ' + result.baseSignal + ' (현물:' + result.spotDir + ', 선물:' + result.futDir + ')</div>';
-      rh += '</div>';
+      rh += '<div style="margin-top:10px;padding:10px;background:#f9fafb;border-radius:4px;font-size:14px;color:#374151;font-weight:500;">기본 시그널: ' + result.baseSignal + ' (현물:' + result.spotDir + ', 선물:' + result.futDir + ')</div>';
+
       document.getElementById('wtd-result').innerHTML = rh;
     };
     
@@ -11329,18 +11330,17 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
     '<button data-url="https://finance.naver.com/sise/sise_index.naver?code=KPI200" style="background:#3b82f6;color:white;border:none;border-radius:4px;padding:8px;cursor:pointer;font-size:11px;font-weight:bold;">📈 KOSPI200 선물</button>' +
     '<button data-url="https://markets.hankyung.com/indices/kospi-future" style="background:#f59e0b;color:white;border:none;border-radius:4px;padding:8px;cursor:pointer;font-size:11px;font-weight:bold;">📰 한경 선물</button>' +
   '</div>' +
-  '<div style="margin-top:10px;padding:10px;background:white;border-radius:4px;font-size:11px;color:#374151;line-height:1.7;">' +
-    '<b style="color:#10b981;">⭐ 권장 입력 절차 (네이버 증권 홈):</b><br>' +
+ '<div style="margin-top:10px;padding:12px;background:white;border-radius:4px;font-size:14px;color:#374151;line-height:1.8;">' +
+    '<b style="color:#10b981;font-size:15px;">⭐ 권장 입력 절차 (네이버 증권 홈):</b><br>' +
     '1️⃣ <b>⭐ 네이버 증권 홈</b> 클릭<br>' +
     '2️⃣ 중앙 <b>"오늘의 증시"</b> 박스 확인<br>' +
-    '3️⃣ <code style="background:#fef3c7;padding:1px 4px;">외국인 -25,388 (억원)</code> 같은 숫자 복사<br>' +
-    '4️⃣ <b>현물 입력칸에 그대로 입력</b>: <code style="background:#fef3c7;padding:1px 4px;">-25388</code><br>' +
+    '3️⃣ <code style="background:#fef3c7;padding:2px 6px;font-size:13px;">외국인 -25,388 (억원)</code> 같은 숫자 복사<br>' +
+    '4️⃣ <b>현물 입력칸에 그대로 입력</b>: <code style="background:#fef3c7;padding:2px 6px;font-size:13px;">-25388</code><br>' +
     '5️⃣ 선물 데이터: <b>📈 KOSPI200 선물</b> 페이지 하단 투자자별 매매 확인<br><br>' +
-    '<b style="color:#dc2626;">⚠️ 단위 주의:</b><br>' +
+    '<b style="color:#dc2626;font-size:15px;">⚠️ 단위 주의:</b><br>' +
     '• 네이버: <b>억원</b> (그대로 입력)<br>' +
     '• KRX: <b>십억원</b> (× 10 해서 입력, 예: -2,775 → -27750)' +
   '</div>';
-
       
       shortcutBar.querySelectorAll('button[data-url]').forEach(btn => {
         btn.onclick = (e) => { e.preventDefault(); window.open(btn.dataset.url, '_blank'); };
@@ -11482,11 +11482,12 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
 
 
           <!-- 바로가기 -->
-          <div style="margin-top:8px;display:grid;grid-template-columns:repeat(3,1fr);gap:4px;">
-            <button data-url="https://finance.naver.com/world/" style="background:#3b82f6;color:white;border:none;border-radius:4px;padding:6px;font-size:10px;cursor:pointer;font-weight:bold;">🇺🇸 세계증시</button>
-            <button data-url="https://finance.naver.com/marketindex/?tabSel=exchange" style="background:#10b981;color:white;border:none;border-radius:4px;padding:6px;font-size:10px;cursor:pointer;font-weight:bold;">💱 환율</button>
-            <button data-url="https://kr.investing.com/economic-calendar/" style="background:#f59e0b;color:white;border:none;border-radius:4px;padding:6px;font-size:10px;cursor:pointer;font-weight:bold;">📅 경제 캘린더</button>
+          <div style="margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:6px;">
+            <button data-url="https://finance.naver.com/world/" style="background:#3b82f6;color:white;border:none;border-radius:4px;padding:10px;font-size:13px;cursor:pointer;font-weight:bold;">🇺🇸 세계증시</button>
+            <button data-url="https://finance.naver.com/marketindex/?tabSel=exchange" style="background:#10b981;color:white;border:none;border-radius:4px;padding:10px;font-size:13px;cursor:pointer;font-weight:bold;">💱 환율</button>
+            <button data-url="https://kr.investing.com/economic-calendar/" style="background:#f59e0b;color:white;border:none;border-radius:4px;padding:10px;font-size:13px;cursor:pointer;font-weight:bold;">📅 경제 캘린더</button>
           </div>
+
         `;
         futGroup.appendChild(macroArea);
         
@@ -11564,12 +11565,12 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
 
             window._lastMacroData = macro;
             
-            const time = new Date(macro.timestamp).toLocaleString('ko-KR');
+                       const time = new Date(macro.timestamp).toLocaleString('ko-KR');
             const errMsg = macro.errors.length ? ' (실패: ' + macro.errors.join(', ') + ')' : '';
-            statusEl.innerHTML = '✅ 수집 완료 (' + time + ')' + errMsg + 
-              '<br>📊 미증시 평균: <b>' + (macro.usAvg != null ? macro.usAvg.toFixed(2) : '-') + '%</b>' +
+            statusEl.innerHTML = '<span style="font-size:14px;">✅ 수집 완료 (' + time + ')' + errMsg + '</span>' + 
+              '<br><span style="font-size:14px;">📊 미증시 평균: <b>' + (macro.usAvg != null ? macro.usAvg.toFixed(2) : '-') + '%</b>' +
               ' | KOSPI: ' + (macro.kospi != null ? macro.kospi.toFixed(2) : '-') +
-              ' | USD/KRW: ' + (macro.usdKrw != null ? macro.usdKrw.toFixed(2) : '-');
+              ' | USD/KRW: ' + (macro.usdKrw != null ? macro.usdKrw.toFixed(2) : '-') + '</span>';
             statusEl.style.color = '#10b981';
             
             // ===== 📊 AI 자동 인사이트 생성 =====
@@ -11700,10 +11701,10 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
                 return '<div style="padding:5px 0;">' + i.icon + ' ' + i.text + scoreText + '</div>';
               }).join('');
               
-                                          insightBox.innerHTML = 
-                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">' +
-                  '<span style="font-size:14px;color:' + sessionColor + ';font-weight:bold;background:rgba(255,255,255,0.8);padding:5px 12px;border-radius:12px;">' + sessionLabel + '</span>' +
-                  '<span style="font-size:13px;color:#4b5563;font-weight:500;">' + now.toLocaleString('ko-KR') + '</span>' +
+                                                        insightBox.innerHTML = 
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">' +
+                  '<span style="font-size:15px;color:' + sessionColor + ';font-weight:bold;background:rgba(255,255,255,0.9);padding:6px 14px;border-radius:14px;">' + sessionLabel + '</span>' +
+                  '<span style="font-size:14px;color:#4b5563;font-weight:600;">' + now.toLocaleString('ko-KR') + '</span>' +
                 '</div>' +
                 '<div style="font-size:19px;font-weight:bold;color:' + sumColor + ';margin-bottom:12px;padding-bottom:10px;border-bottom:2px solid ' + sumColor + ';">' +
                   '💡 AI 종합 인사이트: ' + summary + ' (' + (totalSignal>0?'+':'') + totalSignal + '점)' +
