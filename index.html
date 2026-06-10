@@ -10766,76 +10766,753 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
 
 </script>
 <script>
-// 메뉴 패널 자동 복원 패치
+// === 만기일 캘린더 시스템 ===
 (function(){
-  function applyPatch(){
+  
+  // 1. 만기일 계산 함수
+  window.getExpirationCalendar = function(year){
+    year = year || new Date().getFullYear();
+    const expirations = [];
+    for(let month = 1; month <= 12; month++){
+      const firstDay = new Date(year, month - 1, 1);
+      const firstDayOfWeek = firstDay.getDay();
+      const firstThursday = 1 + ((4 - firstDayOfWeek + 7) % 7);
+      const secondThursday = firstThursday + 7;
+      const date = new Date(year, month - 1, secondThursday);
+      const isQuadruple = [3, 6, 9, 12].indexOf(month) !== -1;
+      const today = new Date();
+      today.setHours(0,0,0,0);
+      const dateNorm = new Date(date);
+      dateNorm.setHours(0,0,0,0);
+      const daysFromToday = Math.round((dateNorm - today) / 86400000);
+      expirations.push({
+        date: year + '-' + String(month).padStart(2,'0') + '-' + String(secondThursday).padStart(2,'0'),
+        month: month,
+        day: secondThursday,
+        isQuadruple: isQuadruple,
+        label: isQuadruple ? '🧙‍♀️ 네마녀의 날' : '📅 선물옵션 만기',
+        daysFromToday: daysFromToday
+      });
+    }
+    return expirations;
+  };
+  
+  window.getNextExpiration = function(){
+    const now = new Date();
+    const thisYear = window.getExpirationCalendar(now.getFullYear());
+    const upcoming = thisYear.filter(function(e){ return e.daysFromToday >= 0; });
+    if(upcoming.length > 0) return upcoming[0];
+    const nextYear = window.getExpirationCalendar(now.getFullYear() + 1);
+    return nextYear[0];
+  };
+  
+  window.getExpirationWarning = function(){
+    const next = window.getNextExpiration();
+    if(!next) return null;
+    const days = next.daysFromToday;
+    let level, msg, color;
+    if(days <= 0){ level='critical'; msg='🚨 만기일 당일'; color='#dc2626'; }
+    else if(days <= 1){ level='high'; msg='🔴 D-1 (내일 만기)'; color='#ef4444'; }
+    else if(days <= 3){ level='medium'; msg='🟠 D-' + days + ' (임박)'; color='#f59e0b'; }
+    else if(days <= 7){ level='low'; msg='🟡 D-' + days; color='#eab308'; }
+    else{ level='safe'; msg='🟢 D-' + days; color='#10b981'; }
+    return {
+      nextDate: next.date,
+      daysLeft: days,
+      isQuadruple: next.isQuadruple,
+      level: level,
+      color: color,
+      message: msg + (next.isQuadruple ? ' ⚠️ 네마녀' : ''),
+      label: next.label
+    };
+  };
+  
+  window.showExpirationCalendar = function(){
+    const oldModal = document.getElementById('expiration-modal');
+    if(oldModal) oldModal.remove();
+    const year = new Date().getFullYear();
+    const cal = window.getExpirationCalendar(year);
+    const calNext = window.getExpirationCalendar(year + 1);
+    const warning = window.getExpirationWarning();
+    
+    const modal = document.createElement('div');
+    modal.id = 'expiration-modal';
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+    
+    let html = '<div style="background:white;border-radius:12px;max-width:700px;width:100%;max-height:90vh;overflow-y:auto;padding:24px;position:relative;">';
+    html += '<button id="exp-close" style="position:absolute;top:12px;right:12px;background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>';
+    html += '<h2 style="margin:0 0 16px;color:#1f2937;">🧙‍♀️ 선물옵션 만기일 캘린더</h2>';
+    
+    if(warning){
+      html += '<div style="background:' + warning.color + '20;border-left:4px solid ' + warning.color + ';padding:14px;border-radius:6px;margin-bottom:16px;">';
+      html += '<div style="font-size:20px;font-weight:bold;color:' + warning.color + ';">' + warning.message + '</div>';
+      html += '<div style="margin-top:6px;color:#374151;font-size:13px;">다음 만기일: <b>' + warning.nextDate + '</b> (' + warning.label + ')</div>';
+      if(warning.isQuadruple && warning.daysLeft <= 7){
+        html += '<div style="margin-top:8px;padding:8px;background:white;border-radius:4px;font-size:12px;color:#991b1b;">';
+        html += '⚡ <b>네마녀의 날 주의사항</b><br>';
+        html += '• 지수선물 + 지수옵션 + 개별주식선물 + 개별주식옵션 동시 만기<br>';
+        html += '• 만기 당일 마감 동시호가 시 프로그램 매물 출회 → 변동성 급증<br>';
+        html += '• 외국인 포지션 청산 압력 → 갭 하락/상승 가능';
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+    
+    html += '<h3 style="margin:16px 0 8px;color:#1f2937;font-size:15px;">📅 ' + year + '년 만기일</h3>';
+    html += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:16px;">';
+    cal.forEach(function(e){
+      const passed = e.daysFromToday < 0;
+      const isNext = e.daysFromToday >= 0 && warning && e.date === warning.nextDate;
+      const bg = passed ? '#f3f4f6' : (isNext ? '#fef3c7' : (e.isQuadruple ? '#fce7f3' : '#dbeafe'));
+      const opacity = passed ? '0.5' : '1';
+      const border = isNext ? '2px solid #f59e0b' : '1px solid #e5e7eb';
+      html += '<div style="background:' + bg + ';border:' + border + ';border-radius:6px;padding:8px 10px;font-size:12px;opacity:' + opacity + ';">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;">';
+      html += '<span><b>' + e.month + '월</b> ' + e.date + ' (목)</span>';
+      html += '<span style="font-size:11px;">' + (e.isQuadruple ? '🧙‍♀️' : '📅') + '</span>';
+      html += '</div>';
+      if(!passed){
+        html += '<div style="font-size:10px;color:#6b7280;margin-top:2px;">D-' + e.daysFromToday + (e.daysFromToday === 0 ? ' (오늘)' : '') + '</div>';
+      } else {
+        html += '<div style="font-size:10px;color:#9ca3af;margin-top:2px;">지남</div>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+    
+    html += '<h3 style="margin:16px 0 8px;color:#1f2937;font-size:15px;">📆 ' + (year+1) + '년 1분기 미리보기</h3>';
+    html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:16px;">';
+    calNext.slice(0,3).forEach(function(e){
+      const bg = e.isQuadruple ? '#fce7f3' : '#dbeafe';
+      html += '<div style="background:' + bg + ';border:1px solid #e5e7eb;border-radius:6px;padding:8px 10px;font-size:12px;">';
+      html += '<div><b>' + e.month + '월</b> ' + e.date + '</div>';
+      html += '<div style="font-size:10px;color:#6b7280;margin-top:2px;">' + (e.isQuadruple ? '🧙‍♀️ 네마녀' : '📅 만기') + '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+    
+    html += '<div style="background:#f9fafb;padding:12px;border-radius:6px;font-size:12px;color:#4b5563;">';
+    html += '<b>💡 만기일 규칙</b><br>';
+    html += '• 매월 둘째 주 목요일: KOSPI200 선물·옵션 동시 만기<br>';
+    html += '• 3·6·9·12월 둘째 주 목요일: 네마녀의 날<br>';
+    html += '&nbsp;&nbsp;→ 지수선물 + 지수옵션 + 개별주식선물 + 개별주식옵션 4종 동시 만기<br>';
+    html += '• 만기일 3일 이내: 외국인 포지션 청산 압력 → 변동성 주의<br>';
+    html += '• 네마녀의 날 D-7부터: 프로그램 매물 누적 가능성 점검';
+    html += '</div>';
+    html += '</div>';
+    
+    modal.innerHTML = html;
+    document.body.appendChild(modal);
+    document.getElementById('exp-close').onclick = function(){ modal.remove(); };
+    modal.onclick = function(e){ if(e.target === modal) modal.remove(); };
+  };
+  
+  function addToMenu(){
     const panel = document.getElementById('menu-panel');
-    if(!panel){ setTimeout(applyPatch, 500); return; }
+    if(!panel){ setTimeout(addToMenu, 500); return; }
+    if(panel.querySelector('[data-fn="showExpirationCalendar"]')) return;
+    const grids = panel.querySelectorAll('div[style*="grid-template-columns"]');
+    if(grids.length === 0){ setTimeout(addToMenu, 500); return; }
+    const firstGrid = grids[0];
+    const newItem = document.createElement('button');
+    newItem.className = 'menu-item';
+    newItem.dataset.fn = 'showExpirationCalendar';
+    newItem.style.cssText = 'background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px 8px;cursor:pointer;text-align:left;font-size:12px;display:flex;align-items:center;gap:6px;transition:all 0.15s;color:#1f2937;';
+    newItem.innerHTML = '<span style="font-size:18px;">🧙‍♀️</span><span>만기일 캘린더</span>';
+    newItem.onmouseenter = function(){ newItem.style.background='#dbeafe'; newItem.style.borderColor='#3b82f6'; };
+    newItem.onmouseleave = function(){ newItem.style.background='#f9fafb'; newItem.style.borderColor='#e5e7eb'; };
+    firstGrid.appendChild(newItem);
+    console.log('✅ 만기일 캘린더 메뉴 추가됨');
+  }
+  
+  function addBanner(){
+    if(document.getElementById('expiration-banner')) return;
+    const warning = window.getExpirationWarning();
+    if(!warning || warning.daysLeft > 7) return;
+    const banner = document.createElement('div');
+    banner.id = 'expiration-banner';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:' + warning.color + ';color:white;padding:6px 12px;text-align:center;font-size:13px;font-weight:bold;z-index:9997;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.2);';
+    banner.innerHTML = warning.message + ' · ' + warning.nextDate + ' · 클릭하여 상세 보기 →';
+    banner.onclick = function(){ window.showExpirationCalendar(); };
+    document.body.appendChild(banner);
+  }
+  
+  if(document.readyState === 'complete'){
+    setTimeout(function(){ addToMenu(); addBanner(); }, 1500);
+  } else {
+    window.addEventListener('load', function(){ setTimeout(function(){ addToMenu(); addBanner(); }, 1500); });
+  }
+  
+  console.log('✅ 만기일 캘린더 시스템 로드 완료');
+})();
+</script>
+<script>
+// === 왝더독 분석 시스템 ===
+(function(){
+  
+  // ============================================================
+  // 모듈 1: KOSPI200 자동 수집
+  // ============================================================
+  window.fetchKospi200Daily = async function(days){
+    days = days || 30;
+    const cacheKey = 'kospi200_daily_cache';
+    const cached = localStorage.getItem(cacheKey);
+    if(cached){
+      try{
+        const c = JSON.parse(cached);
+        if(Date.now() - c.timestamp < 3600000){ // 1시간 캐시
+          return c.data;
+        }
+      }catch(e){}
+    }
     
-    const items = document.querySelectorAll('.menu-item');
-    if(items.length === 0){ setTimeout(applyPatch, 500); return; }
+    const today = new Date();
+    const end = today.toISOString().slice(0,10).replace(/-/g,'');
+    const start = new Date(today - days * 86400000).toISOString().slice(0,10).replace(/-/g,'');
+    const url = 'https://m.stock.naver.com/front-api/external/chart/domestic/info?symbol=KPI200&requestType=1&startTime=' + start + '&endTime=' + end + '&timeframe=day';
     
-    items.forEach(function(b){
-      var originalClick = b.onclick;
-      b.onclick = function(){
-        var fnName = b.dataset.fn;
-        panel.style.display = 'none';
+    try{
+      const r = await fetch('https://stock-proxy.kgwsw.workers.dev/proxy?url=' + encodeURIComponent(url));
+      const text = await r.text();
+      const regex = /\["(\d{8})",\s*([\d.]+),\s*([\d.]+),\s*([\d.]+),\s*([\d.]+),\s*(\d+),\s*([\d.]+)\]/g;
+      const data = [];
+      let m;
+      while((m = regex.exec(text)) !== null){
+        data.push({
+          date: m[1].slice(0,4) + '-' + m[1].slice(4,6) + '-' + m[1].slice(6,8),
+          open: parseFloat(m[2]),
+          high: parseFloat(m[3]),
+          low: parseFloat(m[4]),
+          close: parseFloat(m[5]),
+          volume: parseInt(m[6])
+        });
+      }
+      localStorage.setItem(cacheKey, JSON.stringify({timestamp:Date.now(), data:data}));
+      return data;
+    }catch(e){
+      console.error('KOSPI200 조회 실패:', e);
+      return [];
+    }
+  };
+  
+  // 변동성 분석
+  window.analyzeVolatility = function(data){
+    if(!data || data.length < 2) return null;
+    const changes = [];
+    for(let i = 1; i < data.length; i++){
+      changes.push((data[i].close - data[i-1].close) / data[i-1].close * 100);
+    }
+    const avg = changes.reduce((a,b)=>a+b,0) / changes.length;
+    const stdev = Math.sqrt(changes.reduce((a,b)=>a+Math.pow(b-avg,2),0) / changes.length);
+    const latest = data[data.length-1];
+    const prev = data[data.length-2];
+    const todayChange = ((latest.close - prev.close) / prev.close * 100);
+    const intradayRange = ((latest.high - latest.low) / latest.low * 100);
+    
+    let alertLevel, alertColor, alertMsg;
+    if(Math.abs(todayChange) >= 5){ alertLevel='critical'; alertColor='#dc2626'; alertMsg='🚨 극심한 변동성'; }
+    else if(Math.abs(todayChange) >= 3){ alertLevel='high'; alertColor='#ef4444'; alertMsg='🔴 높은 변동성'; }
+    else if(Math.abs(todayChange) >= 1.5){ alertLevel='medium'; alertColor='#f59e0b'; alertMsg='🟠 주의'; }
+    else{ alertLevel='normal'; alertColor='#10b981'; alertMsg='🟢 정상'; }
+    
+    return {
+      latest: latest,
+      prev: prev,
+      todayChange: todayChange,
+      intradayRange: intradayRange,
+      avg: avg,
+      stdev: stdev,
+      minChange: Math.min.apply(null, changes),
+      maxChange: Math.max.apply(null, changes),
+      alertLevel: alertLevel,
+      alertColor: alertColor,
+      alertMsg: alertMsg,
+      changes: changes,
+      data: data
+    };
+  };
+  
+  // ============================================================
+  // 모듈 2: 외국인 수급 수동 입력 + 저장
+  // ============================================================
+  window.saveForeignFlow = function(date, spotNet, futuresNet, kospi200Change){
+    const key = 'wagthedog_log';
+    const log = JSON.parse(localStorage.getItem(key) || '[]');
+    const existing = log.findIndex(function(d){ return d.date === date; });
+    const entry = {
+      date: date,
+      spotNet: spotNet,      // 외국인 현물 순매수 (억원, 음수면 매도)
+      futuresNet: futuresNet, // 외국인 선물 순매수 (계약, 음수면 매도)
+      kospi200Change: kospi200Change,
+      savedAt: Date.now()
+    };
+    if(existing >= 0) log[existing] = entry;
+    else log.push(entry);
+    log.sort(function(a,b){ return a.date.localeCompare(b.date); });
+    localStorage.setItem(key, JSON.stringify(log));
+    return entry;
+  };
+  
+  window.getForeignFlowHistory = function(){
+    return JSON.parse(localStorage.getItem('wagthedog_log') || '[]');
+  };
+  
+  // ============================================================
+  // 모듈 3: 종합 왝더독 분석
+  // ============================================================
+  window.analyzeWagTheDog = function(spotNet, futuresNet, volAnalysis, expWarning){
+    if(spotNet === null || futuresNet === null || isNaN(spotNet) || isNaN(futuresNet)){
+      return { error: '외국인 현물/선물 데이터 필요' };
+    }
+    
+    // 1. 현·선물 방향 분류
+    var spotDir = spotNet > 100 ? 'buy' : (spotNet < -100 ? 'sell' : 'neutral');
+    var futDir = futuresNet > 1000 ? 'buy' : (futuresNet < -1000 ? 'sell' : 'neutral');
+    
+    // 2. 기본 시그널 매트릭스
+    var matrix = {
+      'buy-buy':     { score: +60, signal: '🟢 강한 상승 베팅', desc: '외국인 현물·선물 동방향 매수' },
+      'buy-neutral': { score: +30, signal: '🟢 상승 우세',     desc: '외국인 현물 매수, 선물 관망' },
+      'buy-sell':    { score: -10, signal: '🟡 단기 차익/헷지', desc: '현물 매수하며 선물 헷지' },
+      'neutral-buy': { score: +20, signal: '🟢 선물 선행 매수', desc: '선물부터 매수 시작' },
+      'neutral-neutral':{ score: 0, signal: '➖ 중립',          desc: '뚜렷한 방향 없음' },
+      'neutral-sell':{ score: -20, signal: '🟠 선물 선행 매도', desc: '선물부터 매도, 현물 따라갈 가능성' },
+      'sell-buy':    { score: +10, signal: '🟡 헷지 매수',     desc: '현물 매도하며 선물로 헷지' },
+      'sell-neutral':{ score: -30, signal: '🟠 하락 우세',     desc: '외국인 현물 매도, 선물 관망' },
+      'sell-sell':   { score: -60, signal: '🔴 강한 하락 베팅', desc: '⚠️ 왝더독 의심: 현물·선물 동방향 매도' }
+    };
+    var base = matrix[spotDir + '-' + futDir];
+    var score = base.score;
+    var factors = [base.desc];
+    
+    // 3. 만기일 D-? 가중치
+    if(expWarning){
+      if(expWarning.daysLeft <= 0){
+        score *= 1.5;
+        factors.push('🧙‍♀️ 만기 당일 → 변동성 ×1.5');
+      } else if(expWarning.daysLeft <= 3 && expWarning.isQuadruple){
+        score *= 1.4;
+        factors.push('🧙‍♀️ 네마녀 D-' + expWarning.daysLeft + ' → 변동성 ×1.4');
+      } else if(expWarning.daysLeft <= 3){
+        score *= 1.2;
+        factors.push('📅 만기 D-' + expWarning.daysLeft + ' → 변동성 ×1.2');
+      } else if(expWarning.daysLeft <= 7 && expWarning.isQuadruple){
+        score *= 1.1;
+        factors.push('🧙‍♀️ 네마녀 D-' + expWarning.daysLeft + ' → 가중치 ×1.1');
+      }
+    }
+    
+    // 4. KOSPI200 변동성 가중치
+    if(volAnalysis){
+      var ch = volAnalysis.todayChange;
+      if(Math.abs(ch) >= 5){
+        score += (ch < 0 ? -15 : +15);
+        factors.push('📉 KOSPI200 ' + ch.toFixed(2) + '% → ±15점 반영');
+      } else if(Math.abs(ch) >= 3){
+        score += (ch < 0 ? -10 : +10);
+        factors.push('📊 KOSPI200 ' + ch.toFixed(2) + '% → ±10점 반영');
+      }
+      // 변동성 표준편차가 정상의 2배 이상이면 추가 가중치
+      if(volAnalysis.stdev > 3){
+        if(score < 0) score -= 5;
+        factors.push('⚡ 변동성 표준편차 ' + volAnalysis.stdev.toFixed(2) + '% (고변동성)');
+      }
+    }
+    
+    // 5. 최종 시그널
+    score = Math.max(-100, Math.min(100, Math.round(score)));
+    var finalSignal, finalColor, action;
+    if(score >= 50){ finalSignal='🟢 강한 상승 신호'; finalColor='#10b981'; action='✅ 매수 적극 / BSA Top1-3 진입 고려'; }
+    else if(score >= 20){ finalSignal='🟢 상승 우세'; finalColor='#34d399'; action='✅ 매수 가능 / 선별적 진입'; }
+    else if(score >= -19){ finalSignal='➖ 중립'; finalColor='#6b7280'; action='⏸ 관망 / 현금 비중 유지'; }
+    else if(score >= -49){ finalSignal='🟠 하락 우세'; finalColor='#f59e0b'; action='⚠️ 비중 축소 / 현금 30-50%'; }
+    else{ finalSignal='🔴 강한 하락 / 왝더독 의심'; finalColor='#dc2626'; action='🚨 매도 / 현금 50%+ / 신규 매수 자제'; }
+    
+    return {
+      spotDir: spotDir,
+      futDir: futDir,
+      baseSignal: base.signal,
+      score: score,
+      factors: factors,
+      finalSignal: finalSignal,
+      finalColor: finalColor,
+      action: action
+    };
+  };
+  
+  // ============================================================
+  // 모듈 4: UI - 왝더독 모달
+  // ============================================================
+  window.showWagTheDog = async function(){
+    var oldModal = document.getElementById('wagthedog-modal');
+    if(oldModal) oldModal.remove();
+    
+    var modal = document.createElement('div');
+    modal.id = 'wagthedog-modal';
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+    modal.innerHTML = '<div style="background:white;border-radius:12px;max-width:800px;width:100%;max-height:90vh;overflow-y:auto;padding:24px;position:relative;"><div style="text-align:center;padding:32px;color:#6b7280;">⏳ KOSPI200 데이터 로딩 중...</div></div>';
+    document.body.appendChild(modal);
+    
+    // 데이터 로딩
+    var kospiData = await window.fetchKospi200Daily(30);
+    var vol = window.analyzeVolatility(kospiData);
+    var expWarning = window.getExpirationWarning();
+    var history = window.getForeignFlowHistory();
+    var today = new Date().toISOString().slice(0,10);
+    var todayEntry = history.find(function(h){ return h.date === today; });
+    
+    var html = '<div style="background:white;border-radius:12px;max-width:800px;width:100%;max-height:90vh;overflow-y:auto;padding:24px;position:relative;">';
+    html += '<button id="wtd-close" style="position:absolute;top:12px;right:12px;background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>';
+    html += '<h2 style="margin:0 0 16px;color:#1f2937;">🐶 왝더독 분석 (Wag the Dog)</h2>';
+    
+    // 자동 데이터 섹션
+    if(vol){
+      html += '<div style="background:' + vol.alertColor + '20;border-left:4px solid ' + vol.alertColor + ';padding:12px;border-radius:6px;margin-bottom:14px;">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;">';
+      html += '<div><b>📊 KOSPI200 자동 수집</b> <span style="color:#6b7280;font-size:11px;">(' + vol.latest.date + ')</span></div>';
+      html += '<div style="font-size:18px;font-weight:bold;color:' + vol.alertColor + ';">' + vol.alertMsg + '</div>';
+      html += '</div>';
+      html += '<div style="margin-top:8px;display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:12px;">';
+      html += '<div><b>종가</b><br>' + vol.latest.close.toLocaleString() + '</div>';
+      html += '<div><b>일대비</b><br><span style="color:' + (vol.todayChange<0?'#dc2626':'#10b981') + ';">' + vol.todayChange.toFixed(2) + '%</span></div>';
+      html += '<div><b>일중변동폭</b><br>' + vol.intradayRange.toFixed(2) + '%</div>';
+      html += '<div><b>표준편차(' + kospiData.length + '일)</b><br>' + vol.stdev.toFixed(2) + '%</div>';
+      html += '</div></div>';
+    }
+    
+    // 만기일 정보
+    if(expWarning){
+      html += '<div style="background:' + expWarning.color + '20;border-left:4px solid ' + expWarning.color + ';padding:12px;border-radius:6px;margin-bottom:14px;font-size:13px;">';
+      html += '<b>🧙‍♀️ 만기일:</b> ' + expWarning.message + ' · ' + expWarning.nextDate + ' (' + expWarning.label + ')';
+      html += '</div>';
+    }
+    
+    // 외국인 수동 입력
+    html += '<div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;padding:14px;margin-bottom:14px;">';
+    html += '<div style="font-weight:bold;color:#92400e;margin-bottom:10px;">💼 외국인 수급 입력 (네이버 증권에서 확인 후 입력)</div>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">';
+    html += '<div><label style="font-size:12px;color:#78350f;">현물 순매수 (억원)</label>';
+    html += '<input type="number" id="wtd-spot" value="' + (todayEntry?todayEntry.spotNet:'') + '" placeholder="예: -2965 (매도)" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:4px;font-size:13px;"/></div>';
+    html += '<div><label style="font-size:12px;color:#78350f;">선물 순매수 (계약)</label>';
+    html += '<input type="number" id="wtd-fut" value="' + (todayEntry?todayEntry.futuresNet:'') + '" placeholder="예: -8000 (매도)" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:4px;font-size:13px;"/></div>';
+    html += '</div>';
+    html += '<div style="display:flex;gap:8px;">';
+    html += '<button id="wtd-analyze" style="flex:1;background:linear-gradient(135deg,#8b5cf6,#7c3aed);color:white;border:none;padding:10px;border-radius:6px;font-weight:bold;cursor:pointer;">🔍 왝더독 분석 실행</button>';
+    html += '<button id="wtd-naver" style="background:#10b981;color:white;border:none;padding:10px 14px;border-radius:6px;cursor:pointer;font-size:12px;">📊 네이버 열기</button>';
+    html += '</div>';
+    html += '<div style="font-size:11px;color:#92400e;margin-top:8px;">💡 매도는 음수, 매수는 양수로 입력 (예: 외국인 2965억 매도 → -2965)</div>';
+    html += '</div>';
+    
+    // 결과 영역
+    html += '<div id="wtd-result"></div>';
+    
+    // 과거 이력
+    if(history.length > 0){
+      html += '<div style="margin-top:16px;"><h3 style="font-size:14px;color:#1f2937;margin:0 0 8px;">📜 과거 이력 (최근 ' + Math.min(history.length, 10) + '일)</h3>';
+      html += '<table style="width:100%;font-size:12px;border-collapse:collapse;">';
+      html += '<thead><tr style="background:#f3f4f6;"><th style="padding:6px;text-align:left;">날짜</th><th style="padding:6px;text-align:right;">현물(억)</th><th style="padding:6px;text-align:right;">선물(계약)</th><th style="padding:6px;text-align:right;">코스피200</th></tr></thead><tbody>';
+      history.slice(-10).reverse().forEach(function(h){
+        var spotColor = h.spotNet > 0 ? '#10b981' : '#ef4444';
+        var futColor = h.futuresNet > 0 ? '#10b981' : '#ef4444';
+        html += '<tr style="border-bottom:1px solid #e5e7eb;">';
+        html += '<td style="padding:6px;">' + h.date + '</td>';
+        html += '<td style="padding:6px;text-align:right;color:' + spotColor + ';">' + h.spotNet.toLocaleString() + '</td>';
+        html += '<td style="padding:6px;text-align:right;color:' + futColor + ';">' + h.futuresNet.toLocaleString() + '</td>';
+        html += '<td style="padding:6px;text-align:right;">' + (h.kospi200Change != null ? h.kospi200Change.toFixed(2) + '%' : '-') + '</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+    
+    html += '</div>';
+    modal.innerHTML = html;
+    
+    // 이벤트 바인딩
+    document.getElementById('wtd-close').onclick = function(){ modal.remove(); };
+    modal.onclick = function(e){ if(e.target === modal) modal.remove(); };
+    
+    document.getElementById('wtd-naver').onclick = function(){
+      window.open('https://finance.naver.com/sise/sise_deal_rank.naver', '_blank');
+    };
+    
+    document.getElementById('wtd-analyze').onclick = function(){
+      var spot = parseFloat(document.getElementById('wtd-spot').value);
+      var fut = parseFloat(document.getElementById('wtd-fut').value);
+      if(isNaN(spot) || isNaN(fut)){
+        alert('외국인 현물과 선물 값을 모두 입력하세요');
+        return;
+      }
+      
+      var k200change = vol ? vol.todayChange : null;
+      window.saveForeignFlow(today, spot, fut, k200change);
+      var result = window.analyzeWagTheDog(spot, fut, vol, expWarning);
+      
+      var rh = '<div style="background:' + result.finalColor + '20;border:2px solid ' + result.finalColor + ';border-radius:8px;padding:16px;margin-top:8px;">';
+      rh += '<div style="font-size:22px;font-weight:bold;color:' + result.finalColor + ';text-align:center;margin-bottom:8px;">' + result.finalSignal + '</div>';
+      rh += '<div style="text-align:center;font-size:14px;margin-bottom:12px;"><b>종합 점수: ' + (result.score > 0 ? '+' : '') + result.score + '</b> / 100</div>';
+      rh += '<div style="background:white;padding:10px;border-radius:6px;margin-bottom:10px;"><b>📋 권장 행동</b><br>' + result.action + '</div>';
+      rh += '<div style="background:white;padding:10px;border-radius:6px;font-size:12px;"><b>🔍 분석 근거</b><ul style="margin:6px 0 0;padding-left:20px;">';
+      result.factors.forEach(function(f){ rh += '<li>' + f + '</li>'; });
+      rh += '</ul></div>';
+      rh += '<div style="margin-top:10px;padding:8px;background:#f9fafb;border-radius:4px;font-size:11px;color:#6b7280;">기본 시그널: ' + result.baseSignal + ' (현물:' + result.spotDir + ', 선물:' + result.futDir + ')</div>';
+      rh += '</div>';
+      document.getElementById('wtd-result').innerHTML = rh;
+    };
+    
+    // 오늘 데이터가 있으면 자동 분석
+    if(todayEntry){
+      setTimeout(function(){ document.getElementById('wtd-analyze').click(); }, 200);
+    }
+  };
+  
+  // ============================================================
+  // 메뉴에 항목 추가
+  // ============================================================
+  function addToMenu(){
+    var panel = document.getElementById('menu-panel');
+    if(!panel){ setTimeout(addToMenu, 500); return; }
+    if(panel.querySelector('[data-fn="showWagTheDog"]')) return;
+    var grids = panel.querySelectorAll('div[style*="grid-template-columns"]');
+    if(grids.length === 0){ setTimeout(addToMenu, 500); return; }
+    
+    var firstGrid = grids[0];
+    var newItem = document.createElement('button');
+    newItem.className = 'menu-item';
+    newItem.dataset.fn = 'showWagTheDog';
+    newItem.style.cssText = 'background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px 8px;cursor:pointer;text-align:left;font-size:12px;display:flex;align-items:center;gap:6px;transition:all 0.15s;color:#1f2937;';
+    newItem.innerHTML = '<span style="font-size:18px;">🐶</span><span>왝더독 분석</span>';
+    newItem.onmouseenter = function(){ newItem.style.background='#dbeafe'; newItem.style.borderColor='#3b82f6'; };
+    newItem.onmouseleave = function(){ newItem.style.background='#f9fafb'; newItem.style.borderColor='#e5e7eb'; };
+    firstGrid.appendChild(newItem);
+    console.log('✅ 왝더독 메뉴 추가됨');
+  }
+  
+  if(document.readyState === 'complete'){
+    setTimeout(addToMenu, 1500);
+  } else {
+    window.addEventListener('load', function(){ setTimeout(addToMenu, 1500); });
+  }
+  // === 왝더독 모달 개선: 바로가기 + 이전값 자동 채우기 + 클립보드 ===
+(function(){
+  const originalShow = window.showWagTheDog;
+  if(!originalShow){ console.log('⚠️ showWagTheDog 미정의 - 개선 패치 보류'); return; }
+  
+  window.showWagTheDog = function(){
+    originalShow();
+    
+    setTimeout(() => {
+      const modal = Array.from(document.querySelectorAll('div')).find(el => 
+        el.textContent.includes('왝더독 분석 (Wag the Dog)') && 
+        getComputedStyle(el).position === 'fixed'
+      );
+      if(!modal || modal.querySelector('[data-shortcut-bar]')) return;
+      
+      // 입력 박스 찾기
+      const spotInput = modal.querySelector('input[placeholder*="2965"], input[placeholder*="현물"]') 
+                     || modal.querySelectorAll('input[type="number"], input[type="text"]')[0];
+      const futInput = modal.querySelector('input[placeholder*="8000"], input[placeholder*="선물"]') 
+                    || modal.querySelectorAll('input[type="number"], input[type="text"]')[1];
+      if(!spotInput || !futInput) return;
+      
+      const inputBox = spotInput.closest('div[style*="background"]') || spotInput.parentElement.parentElement;
+      if(!inputBox) return;
+      
+      // ===== 1) 바로가기 버튼 바 =====
+      const shortcutBar = document.createElement('div');
+      shortcutBar.dataset.shortcutBar = '1';
+      shortcutBar.style.cssText = 'background:#eff6ff;border:1px solid #93c5fd;border-radius:6px;padding:10px;margin-bottom:10px;';
+      shortcutBar.innerHTML = 
+  '<div style="font-size:12px;color:#1e40af;margin-bottom:8px;font-weight:bold;">🔗 공식 데이터 소스</div>' +
+  '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;">' +
+    '<button data-url="https://finance.naver.com/" style="background:#10b981;color:white;border:none;border-radius:4px;padding:10px;cursor:pointer;font-size:12px;font-weight:bold;">⭐ 네이버 증권 홈 (추천)</button>' +
+    '<button data-url="https://data.krx.co.kr/" style="background:#dc2626;color:white;border:none;border-radius:4px;padding:10px;cursor:pointer;font-size:12px;font-weight:bold;">🏛️ KRX 공식 (대조용)</button>' +
+    '<button data-url="https://finance.naver.com/sise/sise_index.naver?code=KPI200" style="background:#3b82f6;color:white;border:none;border-radius:4px;padding:8px;cursor:pointer;font-size:11px;font-weight:bold;">📈 KOSPI200 선물</button>' +
+    '<button data-url="https://markets.hankyung.com/indices/kospi-future" style="background:#f59e0b;color:white;border:none;border-radius:4px;padding:8px;cursor:pointer;font-size:11px;font-weight:bold;">📰 한경 선물</button>' +
+  '</div>' +
+  '<div style="margin-top:10px;padding:10px;background:white;border-radius:4px;font-size:11px;color:#374151;line-height:1.7;">' +
+    '<b style="color:#10b981;">⭐ 권장 입력 절차 (네이버 증권 홈):</b><br>' +
+    '1️⃣ <b>⭐ 네이버 증권 홈</b> 클릭<br>' +
+    '2️⃣ 중앙 <b>"오늘의 증시"</b> 박스 확인<br>' +
+    '3️⃣ <code style="background:#fef3c7;padding:1px 4px;">외국인 -25,388 (억원)</code> 같은 숫자 복사<br>' +
+    '4️⃣ <b>현물 입력칸에 그대로 입력</b>: <code style="background:#fef3c7;padding:1px 4px;">-25388</code><br>' +
+    '5️⃣ 선물 데이터: <b>📈 KOSPI200 선물</b> 페이지 하단 투자자별 매매 확인<br><br>' +
+    '<b style="color:#dc2626;">⚠️ 단위 주의:</b><br>' +
+    '• 네이버: <b>억원</b> (그대로 입력)<br>' +
+    '• KRX: <b>십억원</b> (× 10 해서 입력, 예: -2,775 → -27750)' +
+  '</div>';
+
+      
+      shortcutBar.querySelectorAll('button[data-url]').forEach(btn => {
+        btn.onclick = (e) => { e.preventDefault(); window.open(btn.dataset.url, '_blank'); };
+      });
+      
+      inputBox.insertBefore(shortcutBar, inputBox.firstChild);
+      
+      // ===== 2) 편의 기능 바 (이전값 불러오기, 초기화) =====
+      const helperBar = document.createElement('div');
+      helperBar.style.cssText = 'display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;';
+      
+      const lastLog = JSON.parse(localStorage.getItem('wagthedog_log') || '[]');
+      const lastEntry = lastLog[lastLog.length - 1];
+      
+      helperBar.innerHTML = 
+        '<button id="wtd-load-last" style="background:#6366f1;color:white;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;font-size:11px;font-weight:bold;">' +
+          '↩ 이전 입력값 불러오기' + (lastEntry ? ' (' + lastEntry.date + ')' : '') +
+        '</button>' +
+        '<button id="wtd-clear" style="background:#9ca3af;color:white;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;font-size:11px;font-weight:bold;">🗑️ 초기화</button>' +
+        '<button id="wtd-paste-help" style="background:#06b6d4;color:white;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;font-size:11px;font-weight:bold;">📋 붙여넣기 도움말</button>';
+      
+      inputBox.insertBefore(helperBar, shortcutBar.nextSibling);
+      
+      // 이전값 불러오기
+      document.getElementById('wtd-load-last').onclick = () => {
+        if(!lastEntry){ alert('저장된 이전 입력값이 없습니다'); return; }
+        spotInput.value = lastEntry.spotNet || 0;
+        futInput.value = lastEntry.futuresNet || 0;
+        alert('✅ ' + lastEntry.date + ' 데이터 불러옴\n현물: ' + lastEntry.spotNet + '억\n선물: ' + lastEntry.futuresNet + '계약');
+      };
+      
+      // 초기화
+      document.getElementById('wtd-clear').onclick = () => {
+        spotInput.value = '';
+        futInput.value = '';
+      };
+      
+      // 붙여넣기 도움말
+      document.getElementById('wtd-paste-help').onclick = () => {
+        alert('📋 빠른 입력 팁:\n\n' +
+              '1. 네이버에서 "외국인 -2,965" 같은 숫자 복사\n' +
+              '2. 입력칸 클릭 후 Ctrl+V 붙여넣기\n' +
+              '3. 쉼표(,)는 자동으로 제거됩니다\n\n' +
+              '⚠️ 부호 주의:\n' +
+              '• 매도 = 음수 (-)\n' +
+              '• 매수 = 양수 (+)');
+      };
+      
+      // ===== 3) 입력값 자동 정제 (쉼표 제거, 부호 처리) =====
+      [spotInput, futInput].forEach(inp => {
+        inp.addEventListener('paste', (e) => {
+          e.preventDefault();
+          let txt = (e.clipboardData || window.clipboardData).getData('text');
+          // 쉼표, 공백, "억", "계약" 등 제거
+          txt = txt.replace(/[,\s억원계약매도매수외국인]/g, '');
+          // 숫자와 음수 부호만 남기기
+          const match = txt.match(/-?\d+\.?\d*/);
+          if(match) inp.value = match[0];
+        });
         
-        if(typeof window[fnName] === 'function'){
-          try {
-            window[fnName]();
-          } catch(err){
-            console.error(fnName, err);
-            alert(fnName + ' 오류: ' + err.message);
-            panel.style.display = 'block';
-            return;
-          }
-          
-          setTimeout(function(){
-            var modals = Array.prototype.slice.call(document.querySelectorAll('div')).filter(function(el){
-              var s = getComputedStyle(el);
-              if(s.position !== 'fixed') return false;
-              if(parseInt(s.zIndex) < 9999) return false;
-              if(el.id === 'menu-panel' || el.id === 'floating-menu-btn') return false;
-              if(s.display === 'none' || s.visibility === 'hidden') return false;
-              var r = el.getBoundingClientRect();
-              return r.width > 0 && r.height > 0;
+        inp.addEventListener('blur', () => {
+          // 입력 후 쉼표 자동 제거
+          if(inp.value) inp.value = inp.value.toString().replace(/,/g, '');
+        });
+      });
+            // ===== 4) 분석 실행 후 결과로 자동 스크롤 =====
+      const analyzeBtn = document.getElementById('wtd-analyze');
+      if(analyzeBtn && !analyzeBtn.dataset.scrollHooked){
+        analyzeBtn.dataset.scrollHooked = '1';
+        analyzeBtn.addEventListener('click', () => {
+          setTimeout(() => {
+            const resultArea = document.getElementById('wtd-result');
+            if(resultArea && resultArea.innerHTML.trim()){
+              resultArea.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          }, 200);
+        });
+      }
+
+      console.log('✅ 왝더독 모달 개선 패치 적용 (바로가기 + 이전값 + 클립보드)');
+    }, 100);
+  };
+})();
+
+  console.log('✅ 왝더독 분석 시스템 로드 완료');
+})();
+</script>
+
+<script>
+// 메뉴 패널 자동 복원 패치 (MutationObserver 버전)
+(function(){
+  let panel = null;
+  let patchedButtons = new WeakSet();
+  
+  function patchButton(b){
+    if(patchedButtons.has(b)) return;
+    patchedButtons.add(b);
+    
+    b.onclick = () => {
+      const fn = b.dataset.fn;
+      panel.style.display = 'none';
+      if(typeof window[fn] === 'function'){
+        try {
+          window[fn]();
+          setTimeout(() => {
+            const modals = Array.from(document.querySelectorAll('div')).filter(el => {
+              const s = getComputedStyle(el);
+              return s.position === 'fixed' && parseInt(s.zIndex) >= 9999 
+                && el.id !== 'menu-panel' && el.id !== 'floating-menu-btn'
+                && s.display !== 'none' && el.getBoundingClientRect().width > 0;
             });
-            var modal = modals[modals.length - 1];
-            
+            const modal = modals[modals.length - 1];
             if(modal){
-              var iv = setInterval(function(){
-                var visible = document.body.contains(modal)
-                  && getComputedStyle(modal).display !== 'none'
-                  && getComputedStyle(modal).visibility !== 'hidden'
-                  && modal.getBoundingClientRect().width > 0;
-                if(!visible){
+              const iv = setInterval(() => {
+                if(!document.body.contains(modal) || getComputedStyle(modal).display === 'none'){
                   clearInterval(iv);
                   panel.style.display = 'block';
                 }
               }, 200);
-              setTimeout(function(){ clearInterval(iv); }, 60000);
+              setTimeout(() => clearInterval(iv), 60000);
             } else {
               panel.style.display = 'block';
             }
           }, 500);
-        } else {
-          alert(fnName + ' 함수가 정의되지 않았습니다');
+        } catch(e){
+          console.error(fn, '에러:', e);
+          alert(fn + ' 실행 오류: ' + e.message);
           panel.style.display = 'block';
         }
-      };
-    });
-    
-    console.log('✅ 메뉴 패널 자동 복원 패치 적용 완료 (' + items.length + '개 아이템)');
+      } else {
+        alert('❌ ' + fn + ' 함수가 정의되지 않음');
+        panel.style.display = 'block';
+      }
+    };
   }
   
-  if(document.readyState === 'complete'){
-    setTimeout(applyPatch, 1000);
-  } else {
-    window.addEventListener('load', function(){ setTimeout(applyPatch, 1000); });
+  function patchAll(){
+    document.querySelectorAll('.menu-item').forEach(patchButton);
   }
+  
+  function applyPatch(){
+    panel = document.getElementById('menu-panel');
+    if(!panel){ setTimeout(applyPatch, 500); return; }
+    
+    // 1) 현재 존재하는 버튼들 패치
+    patchAll();
+    
+    // 2) 새로 추가되는 버튼도 자동 패치 (왝더독, 만기일 캘린더 등 동적 추가용)
+    const observer = new MutationObserver((mutations) => {
+      let hasNewButton = false;
+      mutations.forEach(m => {
+        m.addedNodes.forEach(node => {
+          if(node.nodeType === 1){
+            if(node.classList && node.classList.contains('menu-item')){
+              hasNewButton = true;
+            } else if(node.querySelectorAll){
+              if(node.querySelectorAll('.menu-item').length > 0) hasNewButton = true;
+            }
+          }
+        });
+      });
+      if(hasNewButton) patchAll();
+    });
+    observer.observe(panel, { childList: true, subtree: true });
+    
+    const total = document.querySelectorAll('.menu-item').length;
+    console.log('✅ 메뉴 자동 복원 패치 적용 (' + total + '개 + 동적 감시)');
+  }
+  
+  if(document.readyState === 'complete') applyPatch();
+  else window.addEventListener('load', applyPatch);
 })();
 </script>
-
 </body>
 </html>
