@@ -11496,7 +11496,7 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
         });
         
         // 자동 수집 함수
-                       const autoFetch = async () => {
+                               const autoFetch = async () => {
           const refreshBtn = document.getElementById('wtd-macro-refresh');
           const statusEl = document.getElementById('wtd-macro-status');
           refreshBtn.disabled = true;
@@ -11526,17 +11526,14 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
             if(macro.vix !== null) document.getElementById('wtd-vix').value = macro.vix.toFixed(2);
             if(macro.usdKrwChange !== null) document.getElementById('wtd-usdkrw').value = macro.usdKrwChange.toFixed(2);
             
-            // 🆕 반도체
+            // 반도체
             if(macro.soxChange !== null) document.getElementById('wtd-sox').value = macro.soxChange.toFixed(2);
             if(macro.semiAvg !== null) document.getElementById('wtd-semiavg').value = macro.semiAvg.toFixed(2);
             
             const semiDetailEl = document.getElementById('wtd-semi-detail');
             if(semiDetailEl){
               const fmt = (name, c) => c !== null ? name + ' ' + (c >= 0 ? '+' : '') + c.toFixed(2) + '%' : name + ' -';
-              semiDetailEl.innerHTML = '📊 ' + 
-                fmt('NVDA', macro.nvdaChange) + ' | ' + 
-                fmt('MU', macro.muChange) + ' | ' + 
-                fmt('TSM', macro.tsmChange);
+              semiDetailEl.innerHTML = '📊 ' + fmt('NVDA', macro.nvdaChange) + ' | ' + fmt('MU', macro.muChange) + ' | ' + fmt('TSM', macro.tsmChange);
             }
             
             const samsungEl = document.getElementById('wtd-samsung');
@@ -11551,7 +11548,7 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
               skHynixEl.style.color = macro.skHynixChange >= 0 ? '#10b981' : '#dc2626';
             }
             
-            // 🆕 야간선물
+            // 야간선물
             if(macro.esFutureChange !== null) document.getElementById('wtd-esfuture').value = macro.esFutureChange.toFixed(2);
             if(macro.nqFutureChange !== null) document.getElementById('wtd-nqfuture').value = macro.nqFutureChange.toFixed(2);
             
@@ -11572,32 +11569,68 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
               ' | USD/KRW: ' + (macro.usdKrw != null ? macro.usdKrw.toFixed(2) : '-');
             statusEl.style.color = '#10b981';
             
-            // ===== 📊 AI 자동 인사이트 생성 =====
+            // ===== 📊 AI 자동 인사이트 생성 (v2: 시간대/트렌드/수급/알림/히스토리) =====
             try {
+              // ── 1) 시간대 판단 ──
+              const now = new Date();
+              const hour = now.getHours();
+              const minute = now.getMinutes();
+              const timeNum = hour * 60 + minute;
+              const isMarketHours = timeNum >= 540 && timeNum <= 930; // 09:00 ~ 15:30
+              const sessionLabel = isMarketHours ? '📈 장중 (09:00~15:30)' : '🌙 장후 (15:30~익일 09:00)';
+              const sessionColor = isMarketHours ? '#3b82f6' : '#8b5cf6';
+              
+              // ── 2) 이전 히스토리 로드 ──
+              let history = [];
+              try { history = JSON.parse(localStorage.getItem('wtd_insight_history') || '[]'); } catch(_){ history = []; }
+              const prev = history.length > 0 ? history[history.length - 1] : null;
+              
+              // ── 3) 외국인 수급 입력값 읽기 ──
+              const spotInputEl = document.getElementById('spotInput') || document.getElementById('wtd-spot');
+              const futInputEl = document.getElementById('futInput') || document.getElementById('wtd-fut');
+              const spotVal = spotInputEl ? parseFloat(spotInputEl.value) : NaN;
+              const futVal = futInputEl ? parseFloat(futInputEl.value) : NaN;
+              const hasSpot = !isNaN(spotVal);
+              const hasFut = !isNaN(futVal);
+              
+              // ── 4) 인사이트 계산 ──
               const insights = [];
               let totalSignal = 0;
               
-              // 1. 미국 시장
+              // 트렌드 표시 헬퍼
+              const trendStr = (curr, prevKey) => {
+                if(!prev || prev[prevKey] == null || curr == null) return '';
+                const diff = curr - prev[prevKey];
+                if(Math.abs(diff) < 0.05) return ' <span style="color:#6b7280;font-size:11px;">→ 보합</span>';
+                const arrow = diff > 0 ? '▲' : '▼';
+                const color = diff > 0 ? '#10b981' : '#dc2626';
+                return ' <span style="color:' + color + ';font-size:11px;">' + arrow + ' ' + (diff > 0 ? '+' : '') + diff.toFixed(2) + '</span>';
+              };
+              
+              // (A) 미국 시장
               if(macro.usAvg != null){
-                if(macro.usAvg <= -2){ insights.push({icon:'🔴', text:'미증시 폭락 (평균 ' + macro.usAvg.toFixed(2) + '%) - 위험 회피 심리 강함', score:-15}); totalSignal -= 15; }
-                else if(macro.usAvg <= -1){ insights.push({icon:'🟠', text:'미증시 하락 (평균 ' + macro.usAvg.toFixed(2) + '%) - 조심스러운 접근 필요', score:-8}); totalSignal -= 8; }
-                else if(macro.usAvg >= 2){ insights.push({icon:'🟢', text:'미증시 강세 (평균 ' + macro.usAvg.toFixed(2) + '%) - 위험자산 선호', score:15}); totalSignal += 15; }
-                else if(macro.usAvg >= 1){ insights.push({icon:'🟢', text:'미증시 상승 (평균 ' + macro.usAvg.toFixed(2) + '%) - 우호적 환경', score:8}); totalSignal += 8; }
-                else { insights.push({icon:'🟡', text:'미증시 보합 (평균 ' + macro.usAvg.toFixed(2) + '%) - 방향성 불분명', score:0}); }
+                const t = trendStr(macro.usAvg, 'usAvg');
+                if(macro.usAvg <= -2){ insights.push({icon:'🔴', text:'미증시 폭락 (평균 ' + macro.usAvg.toFixed(2) + '%)' + t + ' - 위험 회피 심리 강함', score:-15}); totalSignal -= 15; }
+                else if(macro.usAvg <= -1){ insights.push({icon:'🟠', text:'미증시 하락 (평균 ' + macro.usAvg.toFixed(2) + '%)' + t, score:-8}); totalSignal -= 8; }
+                else if(macro.usAvg >= 2){ insights.push({icon:'🟢', text:'미증시 강세 (평균 ' + macro.usAvg.toFixed(2) + '%)' + t, score:15}); totalSignal += 15; }
+                else if(macro.usAvg >= 1){ insights.push({icon:'🟢', text:'미증시 상승 (평균 ' + macro.usAvg.toFixed(2) + '%)' + t, score:8}); totalSignal += 8; }
+                else { insights.push({icon:'🟡', text:'미증시 보합 (평균 ' + macro.usAvg.toFixed(2) + '%)' + t, score:0}); }
               }
               
-              // 2. 반도체 섹터
+              // (B) 반도체 섹터
               const semiChanges = [macro.soxChange, macro.nvdaChange, macro.muChange, macro.tsmChange].filter(v => v != null);
+              let semiAvgVal = null;
               if(semiChanges.length > 0){
-                const semiAvg = semiChanges.reduce((a,b)=>a+b,0) / semiChanges.length;
-                if(semiAvg <= -5){ insights.push({icon:'🔴', text:'반도체 섹터 급락 (평균 ' + semiAvg.toFixed(2) + '%) - AI/반도체주 패닉 가능성', score:-12}); totalSignal -= 12; }
-                else if(semiAvg <= -2){ insights.push({icon:'🟠', text:'반도체 약세 (평균 ' + semiAvg.toFixed(2) + '%) - 삼성/하이닉스 부정적 영향 예상', score:-6}); totalSignal -= 6; }
-                else if(semiAvg >= 3){ insights.push({icon:'🟢', text:'반도체 강세 (평균 ' + semiAvg.toFixed(2) + '%) - 한국 반도체주 동반 상승 기대', score:10}); totalSignal += 10; }
-                else if(semiAvg >= 1){ insights.push({icon:'🟢', text:'반도체 상승 (평균 ' + semiAvg.toFixed(2) + '%)', score:5}); totalSignal += 5; }
-                else { insights.push({icon:'🟡', text:'반도체 보합 (평균 ' + semiAvg.toFixed(2) + '%)', score:0}); }
+                semiAvgVal = semiChanges.reduce((a,b)=>a+b,0) / semiChanges.length;
+                const t = trendStr(semiAvgVal, 'semiAvg');
+                if(semiAvgVal <= -5){ insights.push({icon:'🔴', text:'반도체 섹터 급락 (평균 ' + semiAvgVal.toFixed(2) + '%)' + t + ' - AI/반도체주 패닉 가능성', score:-12}); totalSignal -= 12; }
+                else if(semiAvgVal <= -2){ insights.push({icon:'🟠', text:'반도체 약세 (평균 ' + semiAvgVal.toFixed(2) + '%)' + t, score:-6}); totalSignal -= 6; }
+                else if(semiAvgVal >= 3){ insights.push({icon:'🟢', text:'반도체 강세 (평균 ' + semiAvgVal.toFixed(2) + '%)' + t, score:10}); totalSignal += 10; }
+                else if(semiAvgVal >= 1){ insights.push({icon:'🟢', text:'반도체 상승 (평균 ' + semiAvgVal.toFixed(2) + '%)' + t, score:5}); totalSignal += 5; }
+                else { insights.push({icon:'🟡', text:'반도체 보합 (평균 ' + semiAvgVal.toFixed(2) + '%)' + t, score:0}); }
               }
               
-              // 3. 한미 반도체 동조화
+              // (C) 한미 반도체 동조화
               if(macro.soxChange != null && macro.samsungChange != null){
                 const gap = macro.samsungChange - macro.soxChange;
                 if(Math.abs(gap) >= 5){
@@ -11607,33 +11640,70 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
                 }
               }
               
-              // 4. VIX
+              // (D) VIX
               if(macro.vix != null){
-                if(macro.vix >= 30){ insights.push({icon:'🔴', text:'VIX ' + macro.vix.toFixed(1) + ' - 극도의 공포, 변동성 극대화', score:-15}); totalSignal -= 15; }
-                else if(macro.vix >= 20){ insights.push({icon:'🟠', text:'VIX ' + macro.vix.toFixed(1) + ' - 불안 심리 상승, 방어적 자세 필요', score:-8}); totalSignal -= 8; }
-                else if(macro.vix <= 15){ insights.push({icon:'🟢', text:'VIX ' + macro.vix.toFixed(1) + ' - 안정 국면, 위험 선호', score:5}); totalSignal += 5; }
-                else { insights.push({icon:'🟡', text:'VIX ' + macro.vix.toFixed(1) + ' - 평이한 수준', score:0}); }
+                const t = trendStr(macro.vix, 'vix');
+                if(macro.vix >= 30){ insights.push({icon:'🔴', text:'VIX ' + macro.vix.toFixed(1) + t + ' - 극도의 공포, 변동성 극대화', score:-15}); totalSignal -= 15; }
+                else if(macro.vix >= 20){ insights.push({icon:'🟠', text:'VIX ' + macro.vix.toFixed(1) + t + ' - 불안 심리 상승, 방어적 자세 필요', score:-8}); totalSignal -= 8; }
+                else if(macro.vix <= 15){ insights.push({icon:'🟢', text:'VIX ' + macro.vix.toFixed(1) + t + ' - 안정 국면', score:5}); totalSignal += 5; }
+                else { insights.push({icon:'🟡', text:'VIX ' + macro.vix.toFixed(1) + t + ' - 평이한 수준', score:0}); }
               }
               
-              // 5. 환율
+              // (E) 환율
               if(macro.usdKrwChange != null){
-                if(macro.usdKrwChange >= 10){ insights.push({icon:'🔴', text:'원/달러 +' + macro.usdKrwChange.toFixed(1) + '원 - 원화 약세, 외국인 매도 압력↑', score:-10}); totalSignal -= 10; }
-                else if(macro.usdKrwChange >= 5){ insights.push({icon:'🟠', text:'원/달러 +' + macro.usdKrwChange.toFixed(1) + '원 - 원화 약세 진행', score:-5}); totalSignal -= 5; }
-                else if(macro.usdKrwChange <= -10){ insights.push({icon:'🟢', text:'원/달러 ' + macro.usdKrwChange.toFixed(1) + '원 - 원화 강세, 외국인 매수 유인', score:10}); totalSignal += 10; }
-                else if(macro.usdKrwChange <= -5){ insights.push({icon:'🟢', text:'원/달러 ' + macro.usdKrwChange.toFixed(1) + '원 - 원화 강세 진행', score:5}); totalSignal += 5; }
-                else { insights.push({icon:'🟡', text:'원/달러 ' + (macro.usdKrwChange>=0?'+':'') + macro.usdKrwChange.toFixed(1) + '원 - 환율 안정', score:0}); }
+                const t = trendStr(macro.usdKrwChange, 'usdKrwChange');
+                if(macro.usdKrwChange >= 10){ insights.push({icon:'🔴', text:'원/달러 +' + macro.usdKrwChange.toFixed(1) + '원' + t + ' - 원화 약세, 외국인 매도 압력↑', score:-10}); totalSignal -= 10; }
+                else if(macro.usdKrwChange >= 5){ insights.push({icon:'🟠', text:'원/달러 +' + macro.usdKrwChange.toFixed(1) + '원' + t + ' - 원화 약세', score:-5}); totalSignal -= 5; }
+                else if(macro.usdKrwChange <= -10){ insights.push({icon:'🟢', text:'원/달러 ' + macro.usdKrwChange.toFixed(1) + '원' + t + ' - 원화 강세, 외국인 매수 유인', score:10}); totalSignal += 10; }
+                else if(macro.usdKrwChange <= -5){ insights.push({icon:'🟢', text:'원/달러 ' + macro.usdKrwChange.toFixed(1) + '원' + t + ' - 원화 강세', score:5}); totalSignal += 5; }
+                else { insights.push({icon:'🟡', text:'원/달러 ' + (macro.usdKrwChange>=0?'+':'') + macro.usdKrwChange.toFixed(1) + '원' + t + ' - 환율 안정', score:0}); }
               }
               
-              // 6. 야간선물
+              // (F) 야간선물 - 시간대별 가중치
               if(macro.futureAvg != null){
-                if(macro.futureAvg <= -1){ insights.push({icon:'🔴', text:'야간선물 평균 ' + macro.futureAvg.toFixed(2) + '% - 내일 한국장 하락 갭 우려', score:-10}); totalSignal -= 10; }
-                else if(macro.futureAvg <= -0.3){ insights.push({icon:'🟠', text:'야간선물 약세 ' + macro.futureAvg.toFixed(2) + '% - 내일 한국장 약세 출발 예상', score:-5}); totalSignal -= 5; }
-                else if(macro.futureAvg >= 1){ insights.push({icon:'🟢', text:'야간선물 강세 +' + macro.futureAvg.toFixed(2) + '% - 내일 한국장 상승 갭 기대', score:10}); totalSignal += 10; }
-                else if(macro.futureAvg >= 0.3){ insights.push({icon:'🟢', text:'야간선물 +' + macro.futureAvg.toFixed(2) + '% - 내일 강세 출발 가능', score:5}); totalSignal += 5; }
-                else { insights.push({icon:'🟡', text:'야간선물 보합 ' + macro.futureAvg.toFixed(2) + '% - 내일 평이한 출발 예상', score:0}); }
+                const t = trendStr(macro.futureAvg, 'futureAvg');
+                // 장후에는 야간선물이 내일장 예측이라 가중치↑(×1.5), 장중에는 참고용(×0.7)
+                const weight = isMarketHours ? 0.7 : 1.5;
+                const w = (base) => Math.round(base * weight);
+                if(macro.futureAvg <= -1){ const s = w(-10); insights.push({icon:'🔴', text:'야간선물 평균 ' + macro.futureAvg.toFixed(2) + '%' + t + (isMarketHours?' - 참고용':' - 내일 하락 갭 우려'), score:s}); totalSignal += s; }
+                else if(macro.futureAvg <= -0.3){ const s = w(-5); insights.push({icon:'🟠', text:'야간선물 약세 ' + macro.futureAvg.toFixed(2) + '%' + t + (isMarketHours?' - 참고용':' - 내일 약세 출발'), score:s}); totalSignal += s; }
+                else if(macro.futureAvg >= 1){ const s = w(10); insights.push({icon:'🟢', text:'야간선물 강세 +' + macro.futureAvg.toFixed(2) + '%' + t + (isMarketHours?' - 참고용':' - 내일 상승 갭 기대'), score:s}); totalSignal += s; }
+                else if(macro.futureAvg >= 0.3){ const s = w(5); insights.push({icon:'🟢', text:'야간선물 +' + macro.futureAvg.toFixed(2) + '%' + t + (isMarketHours?' - 참고용':' - 내일 강세 출발'), score:s}); totalSignal += s; }
+                else { insights.push({icon:'🟡', text:'야간선물 보합 ' + macro.futureAvg.toFixed(2) + '%' + t, score:0}); }
               }
               
-              // 종합 시그널
+              // (G) 외국인 수급 연동
+              if(hasSpot){
+                const t = trendStr(spotVal, 'spotVal');
+                if(spotVal <= -20000){ insights.push({icon:'🔴', text:'외국인 현물 ' + spotVal.toFixed(0) + '억' + t + ' - 대규모 매도, 강한 이탈', score:-15}); totalSignal -= 15; }
+                else if(spotVal <= -5000){ insights.push({icon:'🟠', text:'외국인 현물 ' + spotVal.toFixed(0) + '억' + t + ' - 매도 우위', score:-8}); totalSignal -= 8; }
+                else if(spotVal >= 20000){ insights.push({icon:'🟢', text:'외국인 현물 +' + spotVal.toFixed(0) + '억' + t + ' - 대규모 매수, 강한 유입', score:15}); totalSignal += 15; }
+                else if(spotVal >= 5000){ insights.push({icon:'🟢', text:'외국인 현물 +' + spotVal.toFixed(0) + '억' + t + ' - 매수 우위', score:8}); totalSignal += 8; }
+                else { insights.push({icon:'🟡', text:'외국인 현물 ' + (spotVal>=0?'+':'') + spotVal.toFixed(0) + '억' + t + ' - 중립적', score:0}); }
+              }
+              
+              if(hasFut){
+                const t = trendStr(futVal, 'futVal');
+                if(futVal <= -10000){ insights.push({icon:'🔴', text:'외국인 선물 ' + futVal.toFixed(0) + '계약' + t + ' - 대규모 매도', score:-10}); totalSignal -= 10; }
+                else if(futVal <= -3000){ insights.push({icon:'🟠', text:'외국인 선물 ' + futVal.toFixed(0) + '계약' + t, score:-5}); totalSignal -= 5; }
+                else if(futVal >= 10000){ insights.push({icon:'🟢', text:'외국인 선물 +' + futVal.toFixed(0) + '계약' + t + ' - 대규모 매수', score:10}); totalSignal += 10; }
+                else if(futVal >= 3000){ insights.push({icon:'🟢', text:'외국인 선물 +' + futVal.toFixed(0) + '계약' + t, score:5}); totalSignal += 5; }
+                else { insights.push({icon:'🟡', text:'외국인 선물 ' + (futVal>=0?'+':'') + futVal.toFixed(0) + '계약' + t, score:0}); }
+              }
+              
+              // 현물/선물 엇갈림 체크
+              if(hasSpot && hasFut){
+                if(spotVal < -3000 && futVal > 3000){
+                  insights.push({icon:'⚠️', text:'엇갈림: 현물 매도 + 선물 매수 - 단기 반등 가능성 또는 헤지', score:0});
+                } else if(spotVal > 3000 && futVal < -3000){
+                  insights.push({icon:'⚠️', text:'엇갈림: 현물 매수 + 선물 매도 - 차익거래 또는 약세 헤지', score:0});
+                }
+              }
+              
+              // 점수 범위 제한
+              totalSignal = Math.max(-100, Math.min(100, totalSignal));
+              
+              // ── 5) 종합 시그널 ──
               let summary, sumColor, action;
               if(totalSignal <= -30){ summary = '🚨 강한 위험 신호'; sumColor = '#dc2626'; action = '현금 비중 확대, 신규 매수 자제, 손절 라인 점검'; }
               else if(totalSignal <= -15){ summary = '🔴 부정적 환경'; sumColor = '#ea580c'; action = '방어적 포지션, 변동성 확대 대비'; }
@@ -11643,7 +11713,56 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
               else if(totalSignal >= 5){ summary = '🟢 다소 강세'; sumColor = '#84cc16'; action = '선별적 매수 가능'; }
               else { summary = '🟡 중립'; sumColor = '#eab308'; action = '관망, 추세 확인 후 대응'; }
               
-              // 인사이트 박스 렌더링
+              // ── 6) 직전 대비 점수 변화 ──
+              let scoreTrendHtml = '';
+              if(prev && prev.totalSignal != null){
+                const diff = totalSignal - prev.totalSignal;
+                const prevTime = prev.timestamp ? new Date(prev.timestamp).toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'}) : '직전';
+                if(Math.abs(diff) < 1){
+                  scoreTrendHtml = '<span style="color:#6b7280;font-size:12px;"> (' + prevTime + ' 대비 변화 없음)</span>';
+                } else {
+                  const arrow = diff > 0 ? '▲' : '▼';
+                  const color = diff > 0 ? '#10b981' : '#dc2626';
+                  const verbal = diff > 0 ? '개선' : '악화';
+                  scoreTrendHtml = '<span style="color:' + color + ';font-size:12px;font-weight:bold;"> (' + prevTime + ' 대비 ' + arrow + ' ' + (diff > 0 ? '+' : '') + diff + '점 ' + verbal + ')</span>';
+                }
+              }
+              
+              // ── 7) 히스토리 저장 ──
+              const newEntry = {
+                timestamp: now.toISOString(),
+                totalSignal: totalSignal,
+                summary: summary,
+                session: isMarketHours ? 'market' : 'after',
+                usAvg: macro.usAvg,
+                semiAvg: semiAvgVal,
+                vix: macro.vix,
+                usdKrwChange: macro.usdKrwChange,
+                futureAvg: macro.futureAvg,
+                spotVal: hasSpot ? spotVal : null,
+                futVal: hasFut ? futVal : null
+              };
+              history.push(newEntry);
+              if(history.length > 50) history = history.slice(-50); // 최근 50개만 유지
+              try { localStorage.setItem('wtd_insight_history', JSON.stringify(history)); } catch(_){}
+              
+              // ── 8) 일별 비교 (오늘 처음/오늘 평균) ──
+              const todayStr = now.toISOString().slice(0,10);
+              const todayEntries = history.filter(h => h.timestamp && h.timestamp.slice(0,10) === todayStr);
+              let dailyHtml = '';
+              if(todayEntries.length >= 2){
+                const todayScores = todayEntries.map(h => h.totalSignal).filter(s => s != null);
+                if(todayScores.length > 0){
+                  const todayAvg = todayScores.reduce((a,b)=>a+b,0) / todayScores.length;
+                  const todayMin = Math.min.apply(null, todayScores);
+                  const todayMax = Math.max.apply(null, todayScores);
+                  dailyHtml = '<div style="margin-top:8px;padding:8px;background:rgba(255,255,255,0.6);border-radius:6px;font-size:11px;color:#4b5563;">' +
+                    '📊 오늘(' + todayEntries.length + '회 측정): 평균 ' + todayAvg.toFixed(1) + '점 | 최저 ' + todayMin + '점 | 최고 ' + todayMax + '점' +
+                    '</div>';
+                }
+              }
+              
+              // ── 9) 인사이트 박스 렌더링 ──
               let insightBox = document.getElementById('wtd-insight-box');
               if(!insightBox){
                 insightBox = document.createElement('div');
@@ -11658,17 +11777,79 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
               }).join('');
               
               insightBox.innerHTML = 
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
+                  '<span style="font-size:11px;color:' + sessionColor + ';font-weight:bold;background:rgba(255,255,255,0.7);padding:3px 8px;border-radius:10px;">' + sessionLabel + '</span>' +
+                  '<span style="font-size:10px;color:#6b7280;">' + now.toLocaleString('ko-KR') + '</span>' +
+                '</div>' +
                 '<div style="font-size:16px;font-weight:bold;color:' + sumColor + ';margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid ' + sumColor + ';">' +
-                  '💡 AI 종합 인사이트: ' + summary + ' (' + (totalSignal>0?'+':'') + totalSignal + '점)' +
+                  '💡 AI 종합 인사이트: ' + summary + ' (' + (totalSignal>0?'+':'') + totalSignal + '점)' + scoreTrendHtml +
                 '</div>' +
                 '<div style="font-size:13px;line-height:1.9;color:#1f2937;">' + itemsHtml + '</div>' +
                 '<div style="margin-top:12px;padding:10px;background:white;border-radius:6px;border-left:4px solid ' + sumColor + ';">' +
                   '<div style="font-size:12px;color:#6b7280;margin-bottom:4px;">📌 권장 행동</div>' +
                   '<div style="font-size:14px;font-weight:bold;color:#1f2937;">' + action + '</div>' +
                 '</div>' +
-                '<div style="margin-top:8px;font-size:11px;color:#6b7280;text-align:right;">⏰ ' + new Date().toLocaleString('ko-KR') + ' 기준 분석</div>';
+                dailyHtml +
+                '<div style="margin-top:8px;display:flex;gap:6px;">' +
+                  '<button id="wtd-history-btn" style="flex:1;padding:6px;font-size:11px;background:#3b82f6;color:white;border:none;border-radius:4px;cursor:pointer;">📚 히스토리 보기</button>' +
+                  '<button id="wtd-notify-btn" style="flex:1;padding:6px;font-size:11px;background:#8b5cf6;color:white;border:none;border-radius:4px;cursor:pointer;">🔔 알림 권한</button>' +
+                  '<button id="wtd-history-clear" style="padding:6px 10px;font-size:11px;background:#6b7280;color:white;border:none;border-radius:4px;cursor:pointer;">🗑️</button>' +
+                '</div>';
               
-              console.log('✅ AI 인사이트 생성 완료:', summary, totalSignal + '점');
+              // ── 10) 히스토리 보기 버튼 ──
+              const histBtn = document.getElementById('wtd-history-btn');
+              if(histBtn){
+                histBtn.onclick = function(){
+                  const hist = JSON.parse(localStorage.getItem('wtd_insight_history') || '[]');
+                  if(hist.length === 0){ alert('저장된 히스토리가 없습니다.'); return; }
+                  const rows = hist.slice(-20).reverse().map(h => {
+                    const t = new Date(h.timestamp).toLocaleString('ko-KR');
+                    const sess = h.session === 'market' ? '📈장중' : '🌙장후';
+                    return t + ' | ' + sess + ' | ' + (h.totalSignal>=0?'+':'') + h.totalSignal + '점 | ' + h.summary;
+                  }).join('\n');
+                  alert('📚 최근 20회 인사이트 히스토리\n\n' + rows);
+                };
+              }
+              
+              const clearBtn = document.getElementById('wtd-history-clear');
+              if(clearBtn){
+                clearBtn.onclick = function(){
+                  if(confirm('히스토리를 모두 삭제하시겠습니까?')){
+                    localStorage.removeItem('wtd_insight_history');
+                    alert('✅ 히스토리 삭제 완료');
+                  }
+                };
+              }
+              
+              // ── 11) 브라우저 알림 권한 버튼 ──
+              const notifyBtn = document.getElementById('wtd-notify-btn');
+              if(notifyBtn){
+                notifyBtn.onclick = function(){
+                  if(!('Notification' in window)){ alert('이 브라우저는 알림을 지원하지 않습니다.'); return; }
+                  Notification.requestPermission().then(p => {
+                    if(p === 'granted'){
+                      new Notification('✅ 왝더독 알림 활성화', { body: '강한 신호(±30점 이상) 발생 시 알려드립니다.' });
+                    } else {
+                      alert('알림 권한이 거부되었습니다.');
+                    }
+                  });
+                };
+              }
+              
+              // ── 12) 자동 알림 발송 (강한 신호 시) ──
+              if('Notification' in window && Notification.permission === 'granted'){
+                if(totalSignal <= -30 || totalSignal >= 30){
+                  try {
+                    new Notification('🚨 왝더독 강한 신호: ' + summary, {
+                      body: '종합 점수 ' + (totalSignal>=0?'+':'') + totalSignal + '점\n' + action,
+                      tag: 'wtd-strong-signal',
+                      requireInteraction: false
+                    });
+                  } catch(notifyErr){ console.warn('알림 발송 실패:', notifyErr); }
+                }
+              }
+              
+              console.log('✅ AI 인사이트 v2 생성 완료:', summary, totalSignal + '점', '|', sessionLabel);
             } catch(insightErr){
               console.warn('인사이트 생성 중 오류:', insightErr);
             }
@@ -11682,15 +11863,8 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
             refreshBtn.textContent = '🔄 자동 수집';
           }
         };
-        
-        document.getElementById('wtd-macro-refresh').onclick = autoFetch;
-        
-        // 모달 열릴 때 자동으로 1회 수집
-        autoFetch();
-      }
-      
 
-
+     
       // ===== 3) 입력값 자동 정제 (쉼표 제거, 부호 처리) =====
       [spotInput, futInput].forEach(inp => {
         inp.addEventListener('paste', (e) => {
