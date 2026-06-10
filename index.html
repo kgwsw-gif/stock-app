@@ -11574,6 +11574,12 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
             
             // ===== 📊 AI 자동 인사이트 생성 =====
             try {
+              // ── 시간대 판단 ──
+              const now = new Date();
+              const timeNum = now.getHours() * 60 + now.getMinutes();
+              const isMarketHours = timeNum >= 540 && timeNum <= 930; // 09:00 ~ 15:30
+              const sessionLabel = isMarketHours ? '📈 장중 (09:00~15:30)' : '🌙 장후 (15:30~익일 09:00)';
+              const sessionColor = isMarketHours ? '#3b82f6' : '#8b5cf6';
               const insights = [];
               let totalSignal = 0;
               
@@ -11624,14 +11630,18 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
                 else { insights.push({icon:'🟡', text:'원/달러 ' + (macro.usdKrwChange>=0?'+':'') + macro.usdKrwChange.toFixed(1) + '원 - 환율 안정', score:0}); }
               }
               
-              // 6. 야간선물
+               // 6. 야간선물 (시간대별 가중치)
               if(macro.futureAvg != null){
-                if(macro.futureAvg <= -1){ insights.push({icon:'🔴', text:'야간선물 평균 ' + macro.futureAvg.toFixed(2) + '% - 내일 한국장 하락 갭 우려', score:-10}); totalSignal -= 10; }
-                else if(macro.futureAvg <= -0.3){ insights.push({icon:'🟠', text:'야간선물 약세 ' + macro.futureAvg.toFixed(2) + '% - 내일 한국장 약세 출발 예상', score:-5}); totalSignal -= 5; }
-                else if(macro.futureAvg >= 1){ insights.push({icon:'🟢', text:'야간선물 강세 +' + macro.futureAvg.toFixed(2) + '% - 내일 한국장 상승 갭 기대', score:10}); totalSignal += 10; }
-                else if(macro.futureAvg >= 0.3){ insights.push({icon:'🟢', text:'야간선물 +' + macro.futureAvg.toFixed(2) + '% - 내일 강세 출발 가능', score:5}); totalSignal += 5; }
-                else { insights.push({icon:'🟡', text:'야간선물 보합 ' + macro.futureAvg.toFixed(2) + '% - 내일 평이한 출발 예상', score:0}); }
+                const fw = isMarketHours ? 0.7 : 1.5; // 장중 ↓, 장후 ↑
+                const w = (base) => Math.round(base * fw);
+                const note = isMarketHours ? ' (장중 참고용)' : ' - 내일 한국장 영향';
+                if(macro.futureAvg <= -1){ const s = w(-10); insights.push({icon:'🔴', text:'야간선물 평균 ' + macro.futureAvg.toFixed(2) + '%' + note, score:s}); totalSignal += s; }
+                else if(macro.futureAvg <= -0.3){ const s = w(-5); insights.push({icon:'🟠', text:'야간선물 약세 ' + macro.futureAvg.toFixed(2) + '%' + note, score:s}); totalSignal += s; }
+                else if(macro.futureAvg >= 1){ const s = w(10); insights.push({icon:'🟢', text:'야간선물 강세 +' + macro.futureAvg.toFixed(2) + '%' + note, score:s}); totalSignal += s; }
+                else if(macro.futureAvg >= 0.3){ const s = w(5); insights.push({icon:'🟢', text:'야간선물 +' + macro.futureAvg.toFixed(2) + '%' + note, score:s}); totalSignal += s; }
+                else { insights.push({icon:'🟡', text:'야간선물 보합 ' + macro.futureAvg.toFixed(2) + '%', score:0}); }
               }
+
 
               // 7. 외국인 수급 (입력값이 있을 때만)
               const spotInputEl = document.getElementById('spotInput') || document.getElementById('wtd-spot');
@@ -11690,7 +11700,11 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
                 return '<div style="padding:3px 0;">' + i.icon + ' ' + i.text + scoreText + '</div>';
               }).join('');
               
-              insightBox.innerHTML = 
+                            insightBox.innerHTML = 
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
+                  '<span style="font-size:11px;color:' + sessionColor + ';font-weight:bold;background:rgba(255,255,255,0.7);padding:3px 8px;border-radius:10px;">' + sessionLabel + '</span>' +
+                  '<span style="font-size:10px;color:#6b7280;">' + now.toLocaleString('ko-KR') + '</span>' +
+                '</div>' +
                 '<div style="font-size:16px;font-weight:bold;color:' + sumColor + ';margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid ' + sumColor + ';">' +
                   '💡 AI 종합 인사이트: ' + summary + ' (' + (totalSignal>0?'+':'') + totalSignal + '점)' +
                 '</div>' +
