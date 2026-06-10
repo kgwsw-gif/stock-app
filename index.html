@@ -11563,7 +11563,54 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
               futureInfoEl.innerHTML = '📊 야간선물 평균: <b style="color:' + fColor + ';">' + fSign + macro.futureAvg.toFixed(2) + '%</b>';
             }
 
-            window._lastMacroData = macro;
+                        window._lastMacroData = macro;
+            
+                        // ===== 🇰🇷 KRX 외국인/기관 매매동향 자동 수집 (안전버전) =====
+            try {
+              const krxUrl = 'https://kgwsw-gif.github.io/stock-app/data/krx_investor.json';
+              const krxRes = await fetch(krxUrl + '?t=' + Date.now());
+              if (krxRes && krxRes.ok) {
+                const krxData = await krxRes.json();
+                const kospi = (krxData && krxData.kospi && krxData.kospi.eok) ? krxData.kospi.eok : {};
+                
+                // 전역 저장만 하고 DOM 조작은 하지 않음
+                window._lastKrxData = krxData;
+                if (typeof macro !== 'undefined' && macro) {
+                  macro.foreignSpot   = kospi['외국인합계'] != null ? kospi['외국인합계'] : null;
+                  macro.institutional = kospi['기관합계']   != null ? kospi['기관합계']   : null;
+                }
+                
+                console.log('🇰🇷 KRX 데이터 수집 완료');
+                console.log('  📅 기준일:', krxData.base_date);
+                console.log('  📊 소스:', krxData.source);
+                console.log('  💰 외국인합계:', kospi['외국인합계'], '억원');
+                console.log('  🏢 기관합계:', kospi['기관합계'], '억원');
+                
+                // statusEl이 진짜 DOM 요소이고 innerHTML 속성이 있는 경우에만 업데이트
+                try {
+                  if (typeof statusEl !== 'undefined' && statusEl && statusEl.nodeType === 1) {
+                    const krxSource = krxData.source === 'mock' ? '🔶 MOCK' : '✅ KRX 실시간';
+                    const fVal = kospi['외국인합계'] != null ? kospi['외국인합계'].toLocaleString() : '-';
+                    const iVal = kospi['기관합계']   != null ? kospi['기관합계'].toLocaleString()   : '-';
+                    statusEl.innerHTML += '<br><span style="font-size:13px;">🇰🇷 ' + krxSource + ' | 외국인: <b>' + fVal + '</b>억 | 기관: <b>' + iVal + '</b>억</span>';
+                  }
+                } catch(statusErr) {
+                  console.warn('상태 메시지 업데이트 스킵:', statusErr.message);
+                }
+              } else {
+                console.warn('⚠️ KRX 데이터 fetch 실패:', krxRes ? krxRes.status : 'no response');
+              }
+            } catch (krxErr) {
+              console.warn('⚠️ KRX 데이터 수집 중 오류:', krxErr.message);
+            }
+            // ===== KRX 수집 끝 =====
+
+            
+            // ===== 📊 AI 자동 인사이트 생성 =====
+            try {
+              // ── 시간대 판단 ──
+              const now = new Date();
+
             
                        const time = new Date(macro.timestamp).toLocaleString('ko-KR');
             const errMsg = macro.errors.length ? ' (실패: ' + macro.errors.join(', ') + ')' : '';
@@ -11592,7 +11639,70 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
                 else if(macro.usAvg >= 1){ insights.push({icon:'🟢', text:'미증시 상승 (평균 ' + macro.usAvg.toFixed(2) + '%) - 우호적 환경', score:8}); totalSignal += 8; }
                 else { insights.push({icon:'🟡', text:'미증시 보합 (평균 ' + macro.usAvg.toFixed(2) + '%) - 방향성 불분명', score:0}); }
               }
+
+             // 2. KRX 외국인 수급 (KOSPI 기준, 단위: 억원)
+                 if(window._lastKrxData && window._lastKrxData.kospi && window._lastKrxData.kospi.eok){
+                const krxKospi = window._lastKrxData.kospi.eok;
+                const foreign = krxKospi['외국인합계'];
+                const inst    = krxKospi['기관합계'];
+                const isMock  = window._lastKrxData.source === 'mock';
+                const mockTag = isMock ? ' [MOCK]' : '';
+                
+                // 외국인 수급 분석
+                if(foreign != null){
+                  const fStr = foreign.toLocaleString();
+                  if(foreign <= -20000){
+                    insights.push({icon:'🔴', text:'외국인 대규모 매도 (' + fStr + '억' + mockTag + ') - 수급 매우 악화', score:-20});
+                    totalSignal -= 20;
+                  } else if(foreign <= -10000){
+                    insights.push({icon:'🔴', text:'외국인 매도 우세 (' + fStr + '억' + mockTag + ') - 수급 악화', score:-12});
+                    totalSignal -= 12;
+                  } else if(foreign <= -3000){
+                    insights.push({icon:'🟠', text:'외국인 순매도 (' + fStr + '억' + mockTag + ') - 약세 신호', score:-6});
+                    totalSignal -= 6;
+                  } else if(foreign >= 20000){
+                    insights.push({icon:'🟢', text:'외국인 대규모 매수 (+' + fStr + '억' + mockTag + ') - 수급 매우 양호', score:20});
+                    totalSignal += 20;
+                  } else if(foreign >= 10000){
+                    insights.push({icon:'🟢', text:'외국인 매수 우세 (+' + fStr + '억' + mockTag + ') - 수급 양호', score:12});
+                    totalSignal += 12;
+                  } else if(foreign >= 3000){
+                    insights.push({icon:'🟢', text:'외국인 순매수 (+' + fStr + '억' + mockTag + ') - 강세 신호', score:6});
+                    totalSignal += 6;
+                  } else {
+                    insights.push({icon:'🟡', text:'외국인 보합 (' + fStr + '억' + mockTag + ') - 관망', score:0});
+                  }
+                }
+                
+                // 기관 수급 분석 (보조 지표, 가중치 낮음)
+                if(inst != null){
+                  const iStr = inst.toLocaleString();
+                  if(inst <= -10000){
+                    insights.push({icon:'🟠', text:'기관 매도 우세 (' + iStr + '억' + mockTag + ')', score:-5});
+                    totalSignal -= 5;
+                  } else if(inst >= 10000){
+                    insights.push({icon:'🟢', text:'기관 매수 우세 (+' + iStr + '억' + mockTag + ')', score:5});
+                    totalSignal += 5;
+                  }
+                }
+                
+                // 외국인+기관 동시 매수/매도 = 강력 신호
+                if(foreign != null && inst != null){
+                  if(foreign >= 5000 && inst >= 5000){
+                    insights.push({icon:'🚀', text:'외국인+기관 동반 매수 - 쌍끌이 매수세', score:8});
+                    totalSignal += 8;
+                  } else if(foreign <= -5000 && inst <= -5000){
+                    insights.push({icon:'⚠️', text:'외국인+기관 동반 매도 - 쌍끌이 매도세', score:-8});
+                    totalSignal -= 8;
+                  }
+                }
+              } else {
+                insights.push({icon:'⚪', text:'KRX 수급 데이터 미수집 - 새로고침 필요', score:0});
+              }
               
+              // 3. KOSPI / 기타 지표 (기존 로직 이어서)
+
+
               // 2. 반도체 섹터
               const semiChanges = [macro.soxChange, macro.nvdaChange, macro.muChange, macro.tsmChange].filter(v => v != null);
               if(semiChanges.length > 0){
