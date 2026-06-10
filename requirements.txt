@@ -1,0 +1,5 @@
+pykrx
+requests
+beautifulsoup4
+lxml
+pandas
