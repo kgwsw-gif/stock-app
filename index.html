@@ -11695,25 +11695,25 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
               }
               insightBox.style.cssText = 'margin-top:12px;padding:14px;border-radius:8px;background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid ' + sumColor + ';';
               
-              const itemsHtml = insights.map(function(i){
-                const scoreText = i.score !== 0 ? ' <span style="color:#6b7280;font-size:11px;">(' + (i.score>0?'+':'') + i.score + '점)</span>' : '';
-                return '<div style="padding:3px 0;">' + i.icon + ' ' + i.text + scoreText + '</div>';
+                            const itemsHtml = insights.map(function(i){
+                const scoreText = i.score !== 0 ? ' <span style="color:#6b7280;font-size:13px;font-weight:600;">(' + (i.score>0?'+':'') + i.score + '점)</span>' : '';
+                return '<div style="padding:5px 0;">' + i.icon + ' ' + i.text + scoreText + '</div>';
               }).join('');
               
-                            insightBox.innerHTML = 
-                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
-                  '<span style="font-size:11px;color:' + sessionColor + ';font-weight:bold;background:rgba(255,255,255,0.7);padding:3px 8px;border-radius:10px;">' + sessionLabel + '</span>' +
-                  '<span style="font-size:10px;color:#6b7280;">' + now.toLocaleString('ko-KR') + '</span>' +
+                                          insightBox.innerHTML = 
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">' +
+                  '<span style="font-size:14px;color:' + sessionColor + ';font-weight:bold;background:rgba(255,255,255,0.8);padding:5px 12px;border-radius:12px;">' + sessionLabel + '</span>' +
+                  '<span style="font-size:13px;color:#4b5563;font-weight:500;">' + now.toLocaleString('ko-KR') + '</span>' +
                 '</div>' +
-                '<div style="font-size:16px;font-weight:bold;color:' + sumColor + ';margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid ' + sumColor + ';">' +
+                '<div style="font-size:19px;font-weight:bold;color:' + sumColor + ';margin-bottom:12px;padding-bottom:10px;border-bottom:2px solid ' + sumColor + ';">' +
                   '💡 AI 종합 인사이트: ' + summary + ' (' + (totalSignal>0?'+':'') + totalSignal + '점)' +
                 '</div>' +
-                '<div style="font-size:13px;line-height:1.9;color:#1f2937;">' + itemsHtml + '</div>' +
-                '<div style="margin-top:12px;padding:10px;background:white;border-radius:6px;border-left:4px solid ' + sumColor + ';">' +
-                  '<div style="font-size:12px;color:#6b7280;margin-bottom:4px;">📌 권장 행동</div>' +
-                  '<div style="font-size:14px;font-weight:bold;color:#1f2937;">' + action + '</div>' +
+                '<div style="font-size:15px;line-height:2.0;color:#1f2937;">' + itemsHtml + '</div>' +
+                '<div style="margin-top:14px;padding:12px;background:white;border-radius:6px;border-left:4px solid ' + sumColor + ';">' +
+                  '<div style="font-size:13px;color:#6b7280;margin-bottom:5px;">📌 권장 행동</div>' +
+                  '<div style="font-size:16px;font-weight:bold;color:#1f2937;">' + action + '</div>' +
                 '</div>' +
-                '<div style="margin-top:8px;font-size:11px;color:#6b7280;text-align:right;">⏰ ' + new Date().toLocaleString('ko-KR') + ' 기준 분석</div>';
+                '<div style="margin-top:10px;font-size:13px;color:#6b7280;text-align:right;">⏰ ' + now.toLocaleString('ko-KR') + ' 기준 분석</div>';
               
               console.log('✅ AI 인사이트 생성 완료:', summary, totalSignal + '점');
             } catch(insightErr){
