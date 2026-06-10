@@ -11734,16 +11734,41 @@ window.fetchGlobalMacro = async function(useCache = true){
     errors: []
   };
   
-  const fetchYahoo = async (symbol) => {
+     const fetchYahoo = async (symbol) => {
     try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=10d`;
       const r = await fetch(url);
       if(!r.ok) throw new Error('HTTP ' + r.status);
       const data = await r.json();
-      const meta = data.chart?.result?.[0]?.meta;
+      const result = data.chart?.result?.[0];
+      const meta = result?.meta;
       if(!meta) throw new Error('데이터 없음');
+      
       const current = meta.regularMarketPrice;
-      const prev = meta.chartPreviousClose || meta.previousClose;
+      const closes = result?.indicators?.quote?.[0]?.close || [];
+      
+      // 🔧 정확한 어제 종가 찾기
+      // 1. close 배열에서 null/undefined 제외한 유효값들
+      const validCloses = closes.filter(c => c !== null && c !== undefined && !isNaN(c));
+      
+      let prev = null;
+      
+      if(validCloses.length >= 2){
+        const lastValid = validCloses[validCloses.length - 1];
+        // 마지막 유효 종가가 현재가와 거의 같으면 → 오늘 일봉 → 어제는 그 전 값
+        // 다르면 → 마지막 유효 종가가 어제 값 (미국처럼 오늘 장 안 열린 경우)
+        if(Math.abs(lastValid - current) / current < 0.001){
+          prev = validCloses[validCloses.length - 2];
+        } else {
+          prev = lastValid;
+        }
+      }
+      
+      // 폴백: close 배열로 못 찾으면 Yahoo의 chartPreviousClose 사용
+      if(!prev || prev <= 0){
+        prev = meta.chartPreviousClose || meta.previousClose;
+      }
+      
       return {
         price: current,
         change: prev ? ((current - prev) / prev * 100) : 0,
