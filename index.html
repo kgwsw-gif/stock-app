@@ -12270,5 +12270,125 @@ console.log('✅ 글로벌 거시 지표 시스템 로드 완료');
   console.log('✅ 보호 시스템 활성화');
 })();
 </script>
+<script>
+// === 옵션 B + C: 왝더독 박스 안정화 + KRX 자동 통합 ===
+(function(){
+  
+  // ============================================================
+  // 1. 페이지 로드 시 KRX 데이터 미리 fetch (옵션 C 준비)
+  // ============================================================
+  async function preloadKrxData(){
+    try {
+      const url = 'https://kgwsw-gif.github.io/stock-app/data/krx_investor.json?t=' + Date.now();
+      const res = await fetch(url);
+      if(res.ok){
+        const data = await res.json();
+        window._lastKrxData = data;
+        console.log('🇰🇷 KRX 데이터 사전 로딩 완료:', data.source, '|', data.base_date);
+      }
+    } catch(e){
+      console.warn('KRX 데이터 사전 로딩 실패:', e.message);
+    }
+  }
+  
+  // 페이지 로드 즉시 + 5분마다 자동 갱신
+  preloadKrxData();
+  setInterval(preloadKrxData, 5 * 60 * 1000);
+  
+  // ============================================================
+  // 2. 왝더독 모달 안정화 (옵션 B)
+  // ============================================================
+  
+  // 원본 showWagTheDog 함수 백업
+  let originalShowWagTheDog = null;
+  
+  // 박스 강제 재생성 함수
+  function ensureBoxesVisible(retries){
+    retries = retries || 0;
+    if(retries > 10){
+      console.warn('박스 재생성 시도 한계 초과');
+      return;
+    }
+    
+    const modal = document.getElementById('wagthedog-modal');
+    if(!modal){
+      return; // 모달 닫힘
+    }
+    
+    // 박스가 이미 다 있으면 종료
+    const hasShortcut = modal.querySelector('[data-shortcut-bar]');
+    const hasMacro = modal.querySelector('#wtd-macro-area');
+    
+    if(hasShortcut && hasMacro){
+      console.log('✅ 모든 박스 정상 표시됨');
+      return;
+    }
+    
+    // 박스가 없으면 다시 시도
+    console.log('🔄 박스 재생성 시도 #' + (retries + 1));
+    
+    // 약간의 지연 후 다시 확인
+    setTimeout(function(){
+      // 강제로 모달을 다시 열어서 박스를 추가하도록 유도
+      if(retries === 0 && typeof window.showWagTheDog === 'function'){
+        // 모달이 열린 상태에서 추가 코드만 다시 실행하도록 트리거
+        const event = new Event('reopen-wagthedog');
+        modal.dispatchEvent(event);
+      }
+      ensureBoxesVisible(retries + 1);
+    }, 500);
+  }
+  
+  // ============================================================
+  // 3. showWagTheDog 함수 후킹 (안정화)
+  // ============================================================
+  function hookWagTheDog(){
+    if(typeof window.showWagTheDog !== 'function'){
+      setTimeout(hookWagTheDog, 500);
+      return;
+    }
+    
+    if(window.showWagTheDog._hooked){
+      return; // 이미 후킹됨
+    }
+    
+    const original = window.showWagTheDog;
+    
+    window.showWagTheDog = function(){
+      // 1. KRX 데이터 미리 갱신
+      preloadKrxData();
+      
+      // 2. 원본 실행
+      const result = original.apply(this, arguments);
+      
+      // 3. 박스 표시 확인 (여러 번 시도)
+      setTimeout(function(){ ensureBoxesVisible(0); }, 200);
+      setTimeout(function(){ ensureBoxesVisible(0); }, 800);
+      setTimeout(function(){ ensureBoxesVisible(0); }, 2000);
+      
+      return result;
+    };
+    
+    window.showWagTheDog._hooked = true;
+    console.log('✅ 왝더독 모달 안정화 후킹 완료');
+  }
+  
+  hookWagTheDog();
+  
+  // ============================================================
+  // 4. KRX 데이터 fetch 자동 갱신 (옵션 C)
+  // ============================================================
+  
+  // 왝더독 분석 실행 버튼 클릭 시 KRX 데이터 재갱신
+  document.addEventListener('click', function(e){
+    if(e.target && e.target.id === 'wtd-analyze'){
+      console.log('🔄 왝더독 분석 전 KRX 데이터 재갱신');
+      preloadKrxData();
+    }
+  });
+  
+  console.log('✅ 왝더독 안정화 + KRX 통합 시스템 활성화');
+})();
+</script>
 </body>
 </html>
