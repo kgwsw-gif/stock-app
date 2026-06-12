@@ -7794,6 +7794,51 @@ function fetchLsHoga(code){
       };
     });
 }
+// 🔍 수급 시그널 분석 (3가지 패턴)
+function analyzeSupplySignals(trend){
+  if(!trend) return [];
+  var signals = [];
+  var f = trend.foreignToday, o = trend.orgToday, ind = trend.indToday;
+  var f5 = trend.foreign5d, o5 = trend.org5d;
+  
+  // 🔄 시그널 1: 반전 매수 (5일 외국인 매도 → 오늘 외국인 매수 전환)
+  if(f5 <= -10000 && f >= 10000){
+    signals.push({
+      icon: '🔄',
+      type: 'positive',
+      title: '반전 매수 신호',
+      desc: '5일 외국인 매도 → 오늘 매수 전환 (스마트머니 진입)',
+      detail: '5일 ' + f5.toLocaleString() + '주 → 오늘 +' + f.toLocaleString() + '주',
+      score: '+10'
+    });
+  }
+  
+  // ⚠️ 시그널 2: 스마트머니 대립 (개인 매수 + 외국인/기관 매도)
+  if(ind > 50000 && (f + o) < -50000){
+    signals.push({
+      icon: '⚠️',
+      type: 'negative',
+      title: '스마트머니 대립',
+      desc: '개인 매수 vs 외국인+기관 매도 (위험 신호)',
+      detail: '개인 +' + ind.toLocaleString() + ' / 외+기 ' + (f+o).toLocaleString() + '주',
+      score: '-8'
+    });
+  }
+  
+  // 🚀 시그널 3: 동반 강세 (외국인+기관 동시 매수)
+  if(f >= 50000 && o >= 50000){
+    signals.push({
+      icon: '🚀',
+      type: 'strong-positive',
+      title: '외국인+기관 동반 강세',
+      desc: '쌍끌이 매수세 (강력한 상승 시그널)',
+      detail: '외국인 +' + f.toLocaleString() + ' / 기관 +' + o.toLocaleString() + '주',
+      score: '+12'
+    });
+  }
+  
+  return signals;
+}
 
 function getSignalHistory(){try{return JSON.parse(localStorage.getItem('signal_history_v1')||'[]');}catch(e){return[];}}
 function saveSignalHistory(h){try{localStorage.setItem('signal_history_v1',JSON.stringify(h.slice(-200)));}catch(e){}}
