@@ -6883,7 +6883,7 @@ function ShortTermBox(props){
       typeof fetchStockNews==='function'?fetchStockNews(query):Promise.resolve([]),
       typeof fetchLsHoga==='function'?fetchLsHoga(symbol):Promise.resolve(null)
     ]).then(function(r){
-      var minutes=r[0],news=r[1],hoga=r[2];
+      var minutes=r[0],news=r[1],hoga=r[2];window._lastHoga = hoga;
       var sent=(typeof analyzeNewsSentiment==='function'&&news&&news.length)?analyzeNewsSentiment(news):null;
       if(typeof calcShortTermScore==='function'){
         setResult(calcShortTermScore(minutes,sent,hoga));
@@ -6918,6 +6918,33 @@ function ShortTermBox(props){
           React.createElement('div',null,React.createElement('span',{className:'text-gray-600'},'호가 '),React.createElement('b',null,result.hoga.score+'/15'),' ',React.createElement('span',{className:'text-gray-500'},result.hoga.label),result.hoga.ratio!=null&&React.createElement('span',{className:'text-gray-400 ml-1'},'(매수'+result.hoga.ratio+'%)'))
         )
       ),
+(function(){
+  var trend = window._lastHoga && window._lastHoga.trend;
+  if(!trend || typeof analyzeSupplySignals !== 'function') return null;
+  var signals = analyzeSupplySignals(trend);
+  if(signals.length === 0) return null;
+  return React.createElement('div',{className:'mt-3 space-y-2'},
+    signals.map(function(s, idx){
+      var bg = s.type === 'strong-positive' ? 'bg-green-100 border-green-400' :
+               s.type === 'positive' ? 'bg-blue-100 border-blue-300' :
+               'bg-red-100 border-red-300';
+      var titleColor = s.type === 'strong-positive' ? 'text-green-800' :
+                       s.type === 'positive' ? 'text-blue-800' :
+                       'text-red-800';
+      var scoreColor = s.type === 'negative' ? 'text-red-600' : 'text-green-600';
+      return React.createElement('div',{key:idx, className:'rounded-lg p-2 border-2 ' + bg},
+        React.createElement('div',{className:'flex justify-between items-start'},
+          React.createElement('div',{className:'flex-1'},
+            React.createElement('p',{className:'text-sm font-bold ' + titleColor}, s.icon + ' ' + s.title),
+            React.createElement('p',{className:'text-xs text-gray-700 mt-1'}, s.desc),
+            React.createElement('p',{className:'text-xs text-gray-500 mt-1'}, s.detail)
+          ),
+          React.createElement('span',{className:'text-sm font-bold ' + scoreColor + ' ml-2'}, s.score)
+        )
+      );
+    })
+  );
+})(),
       React.createElement('p',{className:'text-xs text-gray-500 mt-2'},'💡 단기 점수는 당일~1주 모멘텀 기준. 장기 펀더와 함께 종합 판단.')
     )
   );
