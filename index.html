@@ -7749,6 +7749,52 @@ function getLsToken(){var cfg=getLsConfig();if(!cfg.appkey||!cfg.appsecret)retur
 function getValidLsToken(){var token=localStorage.getItem('ls_token');var time=parseInt(localStorage.getItem('ls_token_time')||'0');if(token&&Date.now()-time<72000000)return Promise.resolve(token);return getLsToken();}
 function lsApiCall(trCd,path,body){return getValidLsToken().then(function(token){return fetch('https://stock-proxy.kgwsw.workers.dev/ls/api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:token,tr_cd:trCd,path:path,body:body})});}).then(function(r){return r.json();});}
 function fetchLsPrice(code){return lsApiCall('t1102','stock/market-data',{t1102InBlock:{shcode:code}}).then(function(j){var d=j.t1102OutBlock;if(!d)return null;return{name:d.hname,price:Number(d.price),sign:d.sign,change:Number(d.change),diff:Number(d.diff),volume:Number(d.volume),open:Number(d.open),high:Number(d.high),low:Number(d.low),uplimit:Number(d.uplmtprice),dnlimit:Number(d.dnlmtprice),jnilclose:Number(d.jnilclose)};});}
+function fetchLsHoga(code){
+  return fetch('https://stock-proxy.kgwsw.workers.dev/naver/stock?code=' + code)
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      var trends = (j && j.dealTrendInfos) || [];
+      if(trends.length === 0) return null;
+      var parseNum = function(s){
+        if(!s) return 0;
+        return parseInt(String(s).replace(/[+,\s]/g, '')) || 0;
+      };
+      var today = trends[0];
+      var foreignToday = parseNum(today.foreignerPureBuyQuant);
+      var orgToday = parseNum(today.organPureBuyQuant);
+      var indToday = parseNum(today.individualPureBuyQuant);
+      var foreign5d = 0, org5d = 0, ind5d = 0;
+      for(var i = 0; i < Math.min(5, trends.length); i++){
+        foreign5d += parseNum(trends[i].foreignerPureBuyQuant);
+        org5d += parseNum(trends[i].organPureBuyQuant);
+        ind5d += parseNum(trends[i].individualPureBuyQuant);
+      }
+      var buyPower = Math.max(0, foreignToday) + Math.max(0, orgToday);
+      var sellPower = Math.max(0, -foreignToday) + Math.max(0, -orgToday) + Math.max(0, -indToday);
+      var sum = buyPower + sellPower;
+      var ratio = sum > 0 ? Math.round(buyPower / sum * 100) : 50;
+      var smartMoney = foreignToday + orgToday;
+      var signal;
+      if(foreign5d > 0 && org5d > 0 && smartMoney > 0) signal = '외국인+기관 동반 매수 (강세)';
+      else if(smartMoney > 0 && foreignToday > 0) signal = '외국인 매수세 (유리)';
+      else if(foreign5d < 0 && org5d < 0 && smartMoney < 0) signal = '외국인+기관 동반 매도 (약세)';
+      else if(smartMoney < 0 && foreignToday < 0) signal = '외국인 매도세 (불리)';
+      else signal = '수급 혼조 (관망)';
+      return {
+        asks: [], bids: [],
+        totalAsk: Math.abs(Math.min(0, foreignToday) + Math.min(0, orgToday)),
+        totalBid: Math.max(0, foreignToday) + Math.max(0, orgToday),
+        ratio: ratio,
+        signal: signal,
+        trend: {
+          foreignToday: foreignToday, orgToday: orgToday, indToday: indToday,
+          foreign5d: foreign5d, org5d: org5d, ind5d: ind5d,
+          isMockReplacement: true
+        }
+      };
+    });
+}
+
 function getSignalHistory(){try{return JSON.parse(localStorage.getItem('signal_history_v1')||'[]');}catch(e){return[];}}
 function saveSignalHistory(h){try{localStorage.setItem('signal_history_v1',JSON.stringify(h.slice(-200)));}catch(e){}}
 function recordSignal(name,code,type,price,reasons){var h=getSignalHistory();h.push({name:name,code:code,type:type,price:price,reasons:reasons,date:new Date().toISOString().substring(0,10),time:new Date().toISOString().substring(11,16),result:null,resultPrice:null,resultDate:null});saveSignalHistory(h);return h;}
