@@ -12654,5 +12654,133 @@ console.log('✅ 글로벌 거시 지표 시스템 로드 완료');
   console.log('💡 getKrxSummary()로 KRX 요약 조회 가능');
 })();
 </script>
+<script>
+// === 글씨 크기 키우기 (가독성 향상) ===
+(function(){
+  
+  // 1. 전역 CSS 스타일 추가
+  const style = document.createElement('style');
+  style.textContent = `
+    /* KRX 메인 박스 글씨 크게 */
+    #krx-main-box {
+      font-size: 15px !important;
+      padding: 14px 20px !important;
+    }
+    #krx-main-box > div:first-child {
+      font-size: 16px !important;
+    }
+    #krx-box-content {
+      gap: 16px !important;
+    }
+    #krx-box-content > span {
+      font-size: 15px !important;
+    }
+    #krx-box-content b {
+      font-size: 16px !important;
+    }
+    #krx-box-close {
+      width: 26px !important;
+      height: 26px !important;
+      font-size: 14px !important;
+    }
+    
+    /* 왝더독 모달 글씨 크게 */
+    #wagthedog-modal h2 {
+      font-size: 22px !important;
+    }
+    #wagthedog-modal h3 {
+      font-size: 17px !important;
+    }
+    #wagthedog-modal table th,
+    #wagthedog-modal table td {
+      font-size: 14px !important;
+      padding: 8px !important;
+    }
+    #wagthedog-modal input,
+    #wagthedog-modal select,
+    #wagthedog-modal button {
+      font-size: 14px !important;
+    }
+    #wagthedog-modal label {
+      font-size: 14px !important;
+    }
+    
+    /* 거시 지표 박스 입력란 글씨 크게 */
+    #wtd-macro-area label {
+      font-size: 14px !important;
+      font-weight: bold !important;
+    }
+    #wtd-macro-area input {
+      font-size: 16px !important;
+      font-weight: bold !important;
+      padding: 10px !important;
+    }
+    
+    /* AI 인사이트 박스 */
+    #wtd-insight-box {
+      font-size: 15px !important;
+    }
+    #wtd-insight-box > div {
+      font-size: 16px !important;
+    }
+    
+    /* KRX 정보 주입 박스 */
+    .krx-info-injected {
+      font-size: 15px !important;
+      padding: 14px 18px !important;
+    }
+    .krx-info-injected > div:first-child {
+      font-size: 17px !important;
+    }
+    .krx-info-injected > div:nth-child(2) {
+      font-size: 14px !important;
+    }
+    .krx-info-injected > div:last-child {
+      font-size: 13px !important;
+    }
+    
+    /* 메뉴 버튼 글씨 크게 */
+    #menu-panel .menu-item {
+      font-size: 14px !important;
+      padding: 12px 10px !important;
+    }
+    #menu-panel .menu-item span:first-child {
+      font-size: 22px !important;
+    }
+    
+    /* 차트/표 일반 글씨 크게 */
+    table {
+      font-size: 14px !important;
+    }
+    
+    /* 모달 안의 작은 글씨들 (10px → 12px) */
+    [style*="font-size:10px"],
+    [style*="font-size: 10px"] {
+      font-size: 12px !important;
+    }
+    [style*="font-size:11px"],
+    [style*="font-size: 11px"] {
+      font-size: 13px !important;
+    }
+    [style*="font-size:12px"],
+    [style*="font-size: 12px"] {
+      font-size: 14px !important;
+    }
+    [style*="font-size:13px"],
+    [style*="font-size: 13px"] {
+      font-size: 15px !important;
+    }
+    
+    /* 토스트 알림 글씨 크게 */
+    [style*="position: fixed"][style*="top: 20px"] {
+      font-size: 16px !important;
+      padding: 18px 28px !important;
+    }
+  `;
+  document.head.appendChild(style);
+  
+  console.log('✅ 글씨 크기 확대 적용 (가독성 향상)');
+})();
+</script>
 </body>
 </html>
