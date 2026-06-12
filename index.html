@@ -12390,5 +12390,269 @@ console.log('✅ 글로벌 거시 지표 시스템 로드 완료');
   console.log('✅ 왝더독 안정화 + KRX 통합 시스템 활성화');
 })();
 </script>
+<script>
+// === 옵션 B+C: 메인 화면 KRX 박스 + 종목 분석 통합 ===
+(function(){
+  
+  // ============================================================
+  // 1. 메인 화면 상단 KRX 박스 생성 (옵션 B)
+  // ============================================================
+  
+  function createKrxFloatingBox(){
+    if(document.getElementById('krx-main-box')) return;
+    
+    const box = document.createElement('div');
+    box.id = 'krx-main-box';
+    box.style.cssText = `
+      position: fixed;
+      top: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: linear-gradient(135deg, #fef3c7, #fde68a);
+      border: 2px solid #f59e0b;
+      border-radius: 12px;
+      padding: 10px 16px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 9990;
+      font-size: 12px;
+      max-width: 90%;
+      width: auto;
+      cursor: pointer;
+      transition: all 0.3s;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    `;
+    
+    box.innerHTML = `
+      <div style="font-weight:bold;color:#92400e;">🇰🇷 KRX 외국인/기관</div>
+      <div id="krx-box-content" style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;color:#1f2937;">
+        <span style="color:#6b7280;">⏳ 로딩 중...</span>
+      </div>
+      <button id="krx-box-close" style="background:#ef4444;color:white;border:none;border-radius:50%;width:20px;height:20px;cursor:pointer;font-size:11px;line-height:1;display:flex;align-items:center;justify-content:center;margin-left:auto;">✕</button>
+    `;
+    
+    document.body.appendChild(box);
+    
+    // 닫기 버튼
+    document.getElementById('krx-box-close').onclick = function(e){
+      e.stopPropagation();
+      box.style.display = 'none';
+      localStorage.setItem('krx_box_hidden_until', Date.now() + 24*60*60*1000); // 24시간
+    };
+    
+    // 박스 클릭 → 왝더독 분석 열기
+    box.onclick = function(e){
+      if(e.target.id !== 'krx-box-close' && typeof window.showWagTheDog === 'function'){
+        window.showWagTheDog();
+      }
+    };
+    
+    box.onmouseenter = function(){ box.style.transform = 'translateX(-50%) scale(1.02)'; };
+    box.onmouseleave = function(){ box.style.transform = 'translateX(-50%) scale(1)'; };
+    
+    updateKrxBox();
+  }
+  
+  function updateKrxBox(){
+    const box = document.getElementById('krx-main-box');
+    const content = document.getElementById('krx-box-content');
+    if(!box || !content) return;
+    
+    const data = window._lastKrxData;
+    if(!data || !data.kospi || !data.kospi.eok){
+      content.innerHTML = '<span style="color:#6b7280;">⏳ 데이터 로딩 중...</span>';
+      return;
+    }
+    
+    const kospi = data.kospi.eok;
+    const foreign = kospi['외국인합계'];
+    const inst = kospi['기관합계'];
+    const isMock = data.source === 'mock';
+    const sourceTag = isMock ? '<span style="background:#f59e0b;color:white;padding:2px 6px;border-radius:4px;font-size:10px;">MOCK</span>' : '<span style="background:#10b981;color:white;padding:2px 6px;border-radius:4px;font-size:10px;">실시간</span>';
+    
+    let html = sourceTag;
+    
+    if(foreign != null){
+      const fColor = foreign >= 0 ? '#10b981' : '#dc2626';
+      const fIcon = foreign >= 0 ? '🟢' : '🔴';
+      const fSign = foreign >= 0 ? '+' : '';
+      html += `<span><span style="color:#6b7280;">외국인:</span> <b style="color:${fColor};">${fIcon} ${fSign}${foreign.toLocaleString()}억</b></span>`;
+    }
+    
+    if(inst != null){
+      const iColor = inst >= 0 ? '#10b981' : '#dc2626';
+      const iIcon = inst >= 0 ? '🟢' : '🔴';
+      const iSign = inst >= 0 ? '+' : '';
+      html += `<span><span style="color:#6b7280;">기관:</span> <b style="color:${iColor};">${iIcon} ${iSign}${inst.toLocaleString()}억</b></span>`;
+    }
+    
+    if(data.base_date){
+      html += `<span style="color:#9ca3af;font-size:10px;">${data.base_date}</span>`;
+    }
+    
+    html += `<span style="color:#3b82f6;font-size:10px;">📊 클릭=왝더독</span>`;
+    
+    content.innerHTML = html;
+  }
+  
+  // 24시간 숨김 체크
+  function shouldShowBox(){
+    const hidden = localStorage.getItem('krx_box_hidden_until');
+    if(!hidden) return true;
+    return Date.now() > parseInt(hidden);
+  }
+  
+  // 박스 생성 (페이지 로드 후)
+  setTimeout(function(){
+    if(shouldShowBox()){
+      createKrxFloatingBox();
+    }
+  }, 2000);
+  
+  // 데이터 갱신 시 박스도 갱신
+  const originalFetch = window.fetch;
+  setInterval(updateKrxBox, 60000); // 1분마다
+  
+  // ============================================================
+  // 2. KRX 데이터 활용 헬퍼 함수 (옵션 C)
+  // ============================================================
+  
+  // 종목 분석에 활용할 헬퍼
+  window.getKrxSummary = function(){
+    const data = window._lastKrxData;
+    if(!data || !data.kospi || !data.kospi.eok) return null;
+    
+    const kospi = data.kospi.eok;
+    const foreign = kospi['외국인합계'];
+    const inst = kospi['기관합계'];
+    
+    let signal = 'neutral';
+    let strength = 0;
+    let label = '중립';
+    let color = '#6b7280';
+    
+    if(foreign != null){
+      if(foreign >= 20000){
+        signal = 'strong_buy'; strength = 3; label = '외국인 대규모 매수'; color = '#10b981';
+      } else if(foreign >= 10000){
+        signal = 'buy'; strength = 2; label = '외국인 매수 우세'; color = '#22c55e';
+      } else if(foreign >= 3000){
+        signal = 'buy'; strength = 1; label = '외국인 순매수'; color = '#84cc16';
+      } else if(foreign <= -20000){
+        signal = 'strong_sell'; strength = -3; label = '외국인 대규모 매도'; color = '#dc2626';
+      } else if(foreign <= -10000){
+        signal = 'sell'; strength = -2; label = '외국인 매도 우세'; color = '#ef4444';
+      } else if(foreign <= -3000){
+        signal = 'sell'; strength = -1; label = '외국인 순매도'; color = '#f97316';
+      }
+    }
+    
+    // 외국인+기관 동반 매수/매도 (가장 강한 신호)
+    if(foreign != null && inst != null){
+      if(foreign >= 5000 && inst >= 5000){
+        signal = 'strong_buy'; strength = 4; label = '🚀 쌍끌이 매수'; color = '#10b981';
+      } else if(foreign <= -5000 && inst <= -5000){
+        signal = 'strong_sell'; strength = -4; label = '⚠️ 쌍끌이 매도'; color = '#dc2626';
+      }
+    }
+    
+    return {
+      foreign: foreign,
+      institutional: inst,
+      signal: signal,
+      strength: strength,
+      label: label,
+      color: color,
+      isMock: data.source === 'mock',
+      date: data.base_date
+    };
+  };
+  
+  // ============================================================
+  // 3. 단타/종목 분석 화면에 KRX 정보 자동 표시 (옵션 C)
+  // ============================================================
+  
+  function injectKrxInfoToAnalysis(){
+    const summary = window.getKrxSummary();
+    if(!summary) return;
+    
+    // 종목 분석 화면 찾기 (다양한 셀렉터)
+    const targets = [
+      document.querySelector('#analysis-result'),
+      document.querySelector('.analysis-content'),
+      document.querySelector('[id*="result"]'),
+    ].filter(Boolean);
+    
+    targets.forEach(function(el){
+      if(el.querySelector('.krx-info-injected')) return; // 이미 추가됨
+      
+      const infoDiv = document.createElement('div');
+      infoDiv.className = 'krx-info-injected';
+      infoDiv.style.cssText = `
+        background: ${summary.color}15;
+        border-left: 4px solid ${summary.color};
+        padding: 10px 14px;
+        margin: 10px 0;
+        border-radius: 6px;
+        font-size: 12px;
+      `;
+      
+      const mockTag = summary.isMock ? ' <span style="background:#f59e0b;color:white;padding:1px 5px;border-radius:3px;font-size:9px;">MOCK</span>' : '';
+      
+      infoDiv.innerHTML = `
+        <div style="font-weight:bold;color:${summary.color};margin-bottom:4px;">
+          🇰🇷 KRX 시장 상황: ${summary.label}${mockTag}
+        </div>
+        <div style="color:#374151;font-size:11px;">
+          외국인 ${summary.foreign != null ? (summary.foreign >= 0 ? '+' : '') + summary.foreign.toLocaleString() + '억' : '-'} · 
+          기관 ${summary.institutional != null ? (summary.institutional >= 0 ? '+' : '') + summary.institutional.toLocaleString() + '억' : '-'}
+          ${summary.date ? ' · ' + summary.date : ''}
+        </div>
+        <div style="color:#6b7280;font-size:10px;margin-top:4px;">
+          💡 ${summary.strength >= 3 ? '시장 수급 매우 양호 - 매수 종목 점수 가산 권장' :
+              summary.strength >= 1 ? '시장 수급 양호 - 우호적 환경' :
+              summary.strength <= -3 ? '시장 수급 매우 악화 - 신규 매수 주의, 손절 강화' :
+              summary.strength <= -1 ? '시장 수급 약화 - 보수적 접근' :
+              '중립적 환경 - 종목별 개별 판단 우선'}
+        </div>
+      `;
+      
+      el.insertBefore(infoDiv, el.firstChild);
+    });
+  }
+  
+  // 종목 분석 결과 표시 감지 (MutationObserver)
+  const analysisObserver = new MutationObserver(function(mutations){
+    mutations.forEach(function(m){
+      m.addedNodes.forEach(function(node){
+        if(node.nodeType === 1){
+          // 분석 결과나 단타 결과가 추가되면 KRX 정보 주입
+          if(node.id && (node.id.indexOf('result') !== -1 || node.id.indexOf('analysis') !== -1)){
+            setTimeout(injectKrxInfoToAnalysis, 100);
+          }
+          if(node.classList && (
+            node.classList.contains('analysis-content') ||
+            node.classList.contains('result-card')
+          )){
+            setTimeout(injectKrxInfoToAnalysis, 100);
+          }
+        }
+      });
+    });
+  });
+  
+  setTimeout(function(){
+    analysisObserver.observe(document.body, { childList: true, subtree: true });
+  }, 3000);
+  
+  // ============================================================
+  // 4. 시작 메시지
+  // ============================================================
+  console.log('✅ KRX 메인 박스 + 종목 통합 시스템 활성화');
+  console.log('💡 getKrxSummary()로 KRX 요약 조회 가능');
+})();
+</script>
 </body>
 </html>
