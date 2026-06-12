@@ -12807,7 +12807,26 @@ console.log('✅ 글로벌 거시 지표 시스템 로드 완료');
     originalWarn.apply(console, args);
   };
   
-  console.log('✅ 콘솔 에러 정리 시스템 활성화 (불필요한 에러 숨김)');
+   console.log('✅ 콘솔 에러 정리 시스템 활성화 (불필요한 에러 숨김)');
+  
+  // ===== 🔀 뉴스 fetch 자동 리다이렉트 추가 =====
+  const originalFetch = window.fetch;
+  window.fetch = function(url, opts){
+    if (typeof url === 'string' && url.indexOf('localhost:3000') !== -1) {
+      let code = '';
+      const m = url.match(/[?&](?:symbol|code|q)=([A-Za-z0-9]+)/);
+      if (m) code = m[1];
+      if (code) {
+        const newUrl = 'https://stock-proxy.kgwsw.workers.dev/naver/news?q=' + code;
+        console.log('🔀 뉴스 리다이렉트:', code);
+        return originalFetch(newUrl, opts);
+      }
+    }
+    return originalFetch.apply(this, arguments);
+  };
+  console.log('✅ 뉴스 fetch 리다이렉트 활성화');
+  // ===== 끝 =====
+  
 })();
 </script>
 </body>
