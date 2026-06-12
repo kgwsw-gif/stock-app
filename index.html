@@ -12232,110 +12232,43 @@ console.log('✅ 글로벌 거시 지표 시스템 로드 완료');
 })();
 </script>
 <script>
-<script>
-// === 🛡️ React 컴포넌트 크래시 자동 복구 시스템 ===
+// === 보호 시스템 ===
 (function(){
-  
-  // 1. 에러 발생 시 React 자동 재마운트
-  let crashCount = 0;
-  let lastCrashTime = 0;
-  
-  function remountReact(){
-    const now = Date.now();
-    if(now - lastCrashTime < 2000){
-      console.warn('🛡️ 재마운트 쿨다운 중 (2초 대기)');
-      return;
-    }
-    lastCrashTime = now;
-    crashCount++;
-    
-    if(crashCount > 5){
-      console.warn('🚫 재마운트 5회 초과, 자동 복구 중지');
-      return;
-    }
-    
-    console.log('🔄 React 자동 재마운트 시도 #' + crashCount);
-    
-    const root = document.getElementById('root');
-    if(root && root.innerHTML.trim() === ''){
-      // 페이지 새로고침으로 복구
-      setTimeout(function(){
-        if(document.getElementById('root').innerHTML.trim() === ''){
-          console.log('🔄 페이지 새로고침');
-          location.reload();
-        }
-      }, 1000);
-    }
-  }
-  
-  // 2. 전역 에러 차단 (캡처 단계)
   window.addEventListener('error', function(e){
-    if(e.message && (
-      e.message.indexOf("Cannot read properties of undefined") !== -1 ||
-      e.message.indexOf("Cannot read property") !== -1
-    )){
+    if(e.message && e.message.indexOf('value') !== -1){
       console.warn('🛡️ 에러 차단:', e.message);
       e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-      
-      // 페이지가 비었으면 자동 복구
-      setTimeout(remountReact, 500);
       return true;
     }
   }, true);
   
-  // 3. Promise 에러 차단
   window.addEventListener('unhandledrejection', function(e){
-    if(e.reason && e.reason.message && e.reason.message.indexOf('value') !== -1){
-      console.warn('🛡️ Promise 에러 차단:', e.reason.message);
-      e.preventDefault();
-    }
+    e.preventDefault();
   });
   
-  // 4. 페이지 빈 상태 자동 감지 (5초마다)
   setInterval(function(){
-    const root = document.getElementById('root');
-    if(root && root.innerHTML.trim() === '' && crashCount < 3){
-      console.warn('🛡️ 빈 화면 감지, 새로고침');
-      remountReact();
+    var r = document.getElementById('root');
+    if(r && r.innerHTML.trim() === ''){
+      console.log('🔄 빈 화면 감지, 새로고침');
+      location.reload();
     }
-  }, 5000);
+  }, 8000);
   
-  // 5. 시장분석 버튼 사전 차단
-  function blockMarketAnalysis(){
+  setTimeout(function(){
     document.querySelectorAll('button').forEach(function(btn){
-      if(btn.textContent && (
-        btn.textContent.indexOf('시장분석') !== -1 ||
-        btn.textContent.indexOf('시장 분석') !== -1
-      ) && !btn.dataset.protected){
-        btn.dataset.protected = '1';
-        const orig = btn.onclick;
+      if(btn.textContent && btn.textContent.indexOf('시장분석') !== -1){
         btn.onclick = function(e){
           e.preventDefault();
-          e.stopPropagation();
-          alert('⚠️ 시장분석 기능은 일시 비활성화 상태입니다.\n다른 기능은 정상 작동합니다.');
+          alert('⚠️ 시장분석 기능은 일시 비활성화 상태입니다.');
           return false;
         };
         console.log('🚫 시장분석 버튼 무력화');
       }
     });
-  }
+  }, 3000);
   
-  // 페이지 로드 후 + 동적 생성 감지
-  setTimeout(blockMarketAnalysis, 1000);
-  setTimeout(blockMarketAnalysis, 3000);
-  setTimeout(blockMarketAnalysis, 5000);
-  
-  const observer = new MutationObserver(function(){
-    blockMarketAnalysis();
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-  
-  console.log('✅ React 크래시 복구 시스템 활성화 (v2)');
+  console.log('✅ 보호 시스템 활성화');
 })();
 </script>
-</body>
-
 </body>
 </html>
