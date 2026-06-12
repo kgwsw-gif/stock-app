@@ -12809,23 +12809,29 @@ console.log('✅ 글로벌 거시 지표 시스템 로드 완료');
   
    console.log('✅ 콘솔 에러 정리 시스템 활성화 (불필요한 에러 숨김)');
   
-  // ===== 🔀 뉴스 fetch 자동 리다이렉트 추가 =====
-  const originalFetch = window.fetch;
-  window.fetch = function(url, opts){
-    if (typeof url === 'string' && url.indexOf('localhost:3000') !== -1) {
-      let code = '';
-      const m = url.match(/[?&](?:symbol|code|q)=([A-Za-z0-9]+)/);
-      if (m) code = m[1];
-      if (code) {
-        const newUrl = 'https://stock-proxy.kgwsw.workers.dev/naver/news?q=' + code;
-        console.log('🔀 뉴스 리다이렉트:', code);
-        return originalFetch(newUrl, opts);
-      }
+  // ===== 🔀 뉴스 fetch 자동 리다이렉트 (한글 지원 + 에러 처리) =====
+const originalFetch = window.fetch;
+window.fetch = function(url, opts){
+  // 뉴스 요청 리다이렉트 (localhost:3000/news)
+  if (typeof url === 'string' && url.indexOf('localhost:3000') !== -1 && url.indexOf('/news') !== -1) {
+    let code = '';
+    // 한글 포함 모든 문자 매칭 (URL 인코딩된 한글 포함)
+    const m = url.match(/[?&](?:symbol|code|q)=([^&]+)/);
+    if (m) code = m[1]; // 이미 URL 인코딩된 상태 유지
+    if (code) {
+      const newUrl = 'https://stock-proxy.kgwsw.workers.dev/naver/news?q=' + code;
+      console.log('🔀 뉴스 리다이렉트:', decodeURIComponent(code));
+      return originalFetch(newUrl, opts).catch(err => {
+        console.warn('뉴스 fetch 실패:', err.message);
+        return new Response(JSON.stringify({items:[], total:0}), {status:200, headers:{'Content-Type':'application/json'}});
+      });
     }
-    return originalFetch.apply(this, arguments);
-  };
-  console.log('✅ 뉴스 fetch 리다이렉트 활성화');
-  // ===== 끝 =====
+  }
+  return originalFetch.apply(this, arguments);
+};
+console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
+// ===== 끝 =====
+
   
 })();
 </script>
