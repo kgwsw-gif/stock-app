@@ -12952,5 +12952,56 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   
 })();
 </script>
+<script>
+// ===== 🇰🇷 KRX 메인 박스 자동 생성 =====
+(function(){
+  function renderKrxBox(){
+    if(!window._lastKrxData){
+      // 데이터 아직 안 옴 → 1초 후 재시도
+      setTimeout(renderKrxBox, 1000);
+      return;
+    }
+    
+    const old = document.getElementById('krx-main-box');
+    if(old) old.remove();
+    
+    const data = window._lastKrxData;
+    const kospi = (data.kospi && data.kospi.eok) || {};
+    const kosdaq = (data.kosdaq && data.kosdaq.eok) || {};
+    const fK = kospi['외국인합계'];
+    const iK = kospi['기관합계'];
+    const fQ = kosdaq['외국인합계'];
+    const iQ = kosdaq['기관합계'];
+    const date = data.base_date || '-';
+    const src = data.source === 'mock' ? '🔶 MOCK' : '✅ KRX 실시간';
+    
+    const box = document.createElement('div');
+    box.id = 'krx-main-box';
+    box.style.cssText = 'position:fixed;top:60px;right:20px;z-index:9999;background:#fef3c7;border:2px solid #f59e0b;border-radius:8px;padding:12px 18px;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,0.15);max-width:360px;font-family:sans-serif;';
+    
+    const fmt = v => v != null ? (v >= 0 ? '+' : '') + v.toLocaleString() : '-';
+    const color = v => v == null ? '#666' : (v >= 0 ? '#dc2626' : '#2563eb');
+    
+    box.innerHTML = 
+      `<div style="font-weight:bold;margin-bottom:6px;font-size:14px;">🇰🇷 KRX 외국인/기관 ${src}</div>`+
+      `<div style="color:#666;margin-bottom:4px;">📅 ${date}</div>`+
+      `<div id="krx-box-content" style="border-top:1px solid #fbbf24;padding-top:6px;margin-top:4px;">`+
+        `<div><b>KOSPI</b> 외국인: <b style="color:${color(fK)}">${fmt(fK)}</b>억 | 기관: <b style="color:${color(iK)}">${fmt(iK)}</b>억</div>`+
+        `<div><b>KOSDAQ</b> 외국인: <b style="color:${color(fQ)}">${fmt(fQ)}</b>억 | 기관: <b style="color:${color(iQ)}">${fmt(iQ)}</b>억</div>`+
+      `</div>`+
+      `<div id="krx-box-close" style="position:absolute;top:4px;right:8px;cursor:pointer;font-size:18px;line-height:1;color:#666;" onclick="this.parentElement.remove()">✕</div>`;
+    
+    document.body.appendChild(box);
+    console.log('✅ KRX 메인 박스 자동 생성 완료');
+  }
+  
+  // 페이지 로드 후 실행
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', () => setTimeout(renderKrxBox, 500));
+  } else {
+    setTimeout(renderKrxBox, 500);
+  }
+})();
+</script>
 </body>
 </html>
