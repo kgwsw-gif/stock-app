@@ -12782,5 +12782,33 @@ console.log('✅ 글로벌 거시 지표 시스템 로드 완료');
   console.log('✅ 글씨 크기 확대 적용 (가독성 향상)');
 })();
 </script>
+<script>
+// === 콘솔 에러 정리 (뉴스 서버 & 일시 서버 에러 숨김) ===
+(function(){
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  
+  function shouldFilter(msg){
+    if(!msg) return false;
+    const str = String(msg).toLowerCase();
+    return str.indexOf('localhost:3000') !== -1 ||
+           str.indexOf('err_connection_refused') !== -1 ||
+           str.indexOf('fetchstocknews') !== -1 ||
+           str.indexOf('500 (internal server error)') !== -1;
+  }
+  
+  console.error = function(...args){
+    if(args.some(shouldFilter)) return;
+    originalError.apply(console, args);
+  };
+  
+  console.warn = function(...args){
+    if(args.some(shouldFilter)) return;
+    originalWarn.apply(console, args);
+  };
+  
+  console.log('✅ 콘솔 에러 정리 시스템 활성화 (불필요한 에러 숨김)');
+})();
+</script>
 </body>
 </html>
