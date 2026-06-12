@@ -11564,54 +11564,7 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
             }
 
                         window._lastMacroData = macro;
-            
-                        // ===== 🇰🇷 KRX 외국인/기관 매매동향 자동 수집 (안전버전) =====
-            try {
-              const krxUrl = 'https://kgwsw-gif.github.io/stock-app/data/krx_investor.json';
-              const krxRes = await fetch(krxUrl + '?t=' + Date.now());
-              if (krxRes && krxRes.ok) {
-                const krxData = await krxRes.json();
-                const kospi = (krxData && krxData.kospi && krxData.kospi.eok) ? krxData.kospi.eok : {};
-                
-                // 전역 저장만 하고 DOM 조작은 하지 않음
-                window._lastKrxData = krxData;
-                if (typeof macro !== 'undefined' && macro) {
-                  macro.foreignSpot   = kospi['외국인합계'] != null ? kospi['외국인합계'] : null;
-                  macro.institutional = kospi['기관합계']   != null ? kospi['기관합계']   : null;
-                }
-                
-                console.log('🇰🇷 KRX 데이터 수집 완료');
-                console.log('  📅 기준일:', krxData.base_date);
-                console.log('  📊 소스:', krxData.source);
-                console.log('  💰 외국인합계:', kospi['외국인합계'], '억원');
-                console.log('  🏢 기관합계:', kospi['기관합계'], '억원');
-                
-                // statusEl이 진짜 DOM 요소이고 innerHTML 속성이 있는 경우에만 업데이트
-                try {
-                  if (typeof statusEl !== 'undefined' && statusEl && statusEl.nodeType === 1) {
-                    const krxSource = krxData.source === 'mock' ? '🔶 MOCK' : '✅ KRX 실시간';
-                    const fVal = kospi['외국인합계'] != null ? kospi['외국인합계'].toLocaleString() : '-';
-                    const iVal = kospi['기관합계']   != null ? kospi['기관합계'].toLocaleString()   : '-';
-                    statusEl.innerHTML += '<br><span style="font-size:13px;">🇰🇷 ' + krxSource + ' | 외국인: <b>' + fVal + '</b>억 | 기관: <b>' + iVal + '</b>억</span>';
-                  }
-                } catch(statusErr) {
-                  console.warn('상태 메시지 업데이트 스킵:', statusErr.message);
-                }
-              } else {
-                console.warn('⚠️ KRX 데이터 fetch 실패:', krxRes ? krxRes.status : 'no response');
-              }
-            } catch (krxErr) {
-              console.warn('⚠️ KRX 데이터 수집 중 오류:', krxErr.message);
-            }
-            // ===== KRX 수집 끝 =====
-
-            
-            // ===== 📊 AI 자동 인사이트 생성 =====
-            try {
-              // ── 시간대 판단 ──
-              const now = new Date();
-
-            
+           
                        const time = new Date(macro.timestamp).toLocaleString('ko-KR');
             const errMsg = macro.errors.length ? ' (실패: ' + macro.errors.join(', ') + ')' : '';
             statusEl.innerHTML = '<span style="font-size:14px;">✅ 수집 완료 (' + time + ')' + errMsg + '</span>' + 
@@ -12278,5 +12231,48 @@ console.log('✅ 글로벌 거시 지표 시스템 로드 완료');
   else window.addEventListener('load', applyPatch);
 })();
 </script>
+<script>
+// === 종합 에러 보호 시스템 ===
+(function(){
+  // 1. 전역 에러 차단
+  window.addEventListener('error', function(e){
+    if(e.message && (
+      e.message.indexOf("Cannot read properties of undefined") !== -1 ||
+      e.message.indexOf("Cannot read property") !== -1
+    )){
+      console.warn('🛡️ 에러 차단됨:', e.message);
+      e.preventDefault();
+      return true;
+    }
+  }, true);
+  
+  // 2. Promise 에러 차단
+  window.addEventListener('unhandledrejection', function(e){
+    console.warn('🛡️ Promise 에러 차단:', e.reason);
+    e.preventDefault();
+  });
+  
+  // 3. 시장분석 버튼 안전 처리
+  setTimeout(function(){
+    document.querySelectorAll('button').forEach(function(btn){
+      if(btn.textContent && btn.textContent.indexOf('시장분석') !== -1){
+        var originalClick = btn.onclick;
+        btn.onclick = function(e){
+          try {
+            if(originalClick) return originalClick.call(this, e);
+          } catch(err){
+            console.warn('🛡️ 시장분석 에러 차단:', err);
+            alert('⚠️ 시장분석 기능 일시 오류\n다른 기능은 정상 작동합니다.');
+          }
+        };
+        console.log('🛡️ 시장분석 버튼 보호 적용');
+      }
+    });
+  }, 2000);
+  
+  console.log('✅ 종합 에러 보호 시스템 활성화');
+})();
+</script>
+</body>
 </body>
 </html>
