@@ -15874,5 +15874,323 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   }
 })();
 </script>
+  <script>
+/* === Patch #24 Part 1 - 영구 누적 검증 시스템 (코어) === */
+(function(){
+  const PREDICTION_KEY = 'prediction_history';
+  const WEIGHTS_KEY = 'indicator_weights';
+  const MAX_HISTORY = 60; // 최대 60일치 보관
+
+  /* === 한국 영업일 계산 === */
+  function getNextBusinessDay(date){
+    const d = new Date(date);
+    d.setDate(d.getDate() + 1);
+    while(d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+    return d;
+  }
+  function formatDate(d){
+    return d.toISOString().slice(0,10);
+  }
+  function isMarketClosed(){
+    const now = new Date();
+    const day = now.getDay();
+    if(day === 0 || day === 6) return true; // 주말
+    const minutes = now.getHours() * 60 + now.getMinutes();
+    return minutes >= 16 * 60 + 30; // 16:30 이후
+  }
+  function todayKR(){
+    return formatDate(new Date());
+  }
+
+  /* === 데이터 I/O === */
+  function loadHistory(){
+    try { return JSON.parse(localStorage.getItem(PREDICTION_KEY) || '[]'); }
+    catch(e){ return []; }
+  }
+  function saveHistory(arr){
+    localStorage.setItem(PREDICTION_KEY, JSON.stringify(arr.slice(-MAX_HISTORY)));
+  }
+  function loadWeights(){
+    const def = {
+      obv:        { weight:1.0, hitRate:null, samples:0, hits:0 },
+      market_rel: { weight:1.0, hitRate:null, samples:0, hits:0 },
+      volume:     { weight:1.0, hitRate:null, samples:0, hits:0 },
+      position:   { weight:1.0, hitRate:null, samples:0, hits:0 },
+      volatility: { weight:1.0, hitRate:null, samples:0, hits:0 },
+      foreign:    { weight:1.0, hitRate:null, samples:0, hits:0 }
+    };
+    try {
+      const stored = JSON.parse(localStorage.getItem(WEIGHTS_KEY) || 'null');
+      return stored || def;
+    } catch(e){ return def; }
+  }
+  function saveWeights(w){
+    localStorage.setItem(WEIGHTS_KEY, JSON.stringify(w));
+  }
+
+  /* === 예측 스냅샷 기록 === */
+  window.recordPrediction = function(opts = {}){
+    const force = opts.force === true;
+    const history = loadHistory();
+    const date = todayKR();
+
+    // 중복 방지 (같은 날 이미 기록됨)
+    const existing = history.find(h => h.date === date);
+    if(existing && !force){
+      console.log(`⚠️ 오늘(${date}) 이미 기록됨. 덮어쓰려면 recordPrediction({force:true})`);
+      return existing;
+    }
+
+    // 데이터 소스: screening_results 캐시 우선, 없으면 관심종목
+    let source = [];
+    try {
+      const cached = JSON.parse(localStorage.getItem('screening_results') || 'null');
+      if(cached?.data?.length) source = cached.data;
+    } catch(e){}
+    if(!source.length && window._maeJipResults?.length) source = window._maeJipResults;
+    if(!source.length){
+      console.error('❌ 예측 기록 실패: 스크리닝 결과 없음. runFullScreening() 먼저 실행하세요.');
+      return null;
+    }
+
+    // 다음 영업일 (검증 대상일)
+    const nowDate = new Date();
+    const targetDate = isMarketClosed()
+      ? formatDate(getNextBusinessDay(nowDate))  // 장 마감 후면 다음 영업일
+      : formatDate(nowDate);                       // 장 시작 전이면 오늘이 검증일
+
+    const watchlist = (JSON.parse(localStorage.getItem('watchlist') || '[]'))
+      .map(w => w.code);
+
+    const stocks = source.map(s => ({
+      code: s.code,
+      name: s.name,
+      score: s.score ?? s.total,
+      grade: typeof s.grade === 'string' ? s.grade : (s.grade || ''),
+      sector: s.sector || (window._getSector ? window._getSector(s.code) : '기타'),
+      obvLabel: s.obvLabel || s.detail?.obvLabel || '',
+      foreignChange20: s.foreignChange20 ?? s.detail?.foreignChange20 ?? null,
+      priceChange20: s.priceChange ?? s.detail?.priceChange ?? null,
+      breakdown: s.breakdown || null,
+      priceAtPrediction: s.currentPrice || s.close || null,
+      isWatchlist: watchlist.includes(s.code),
+      actualReturn: null,
+      priceAtValidation: null,
+      hit: null
+    }));
+
+    const record = {
+      date,
+      recordedAt: Date.now(),
+      targetDate,
+      marketContext: window._lastKrxData?.marketReturn ?? null,
+      stocks,
+      validated: false,
+      summary: null
+    };
+
+    // 같은 날 기존 기록 덮어쓰기
+    const filtered = history.filter(h => h.date !== date);
+    filtered.push(record);
+    saveHistory(filtered);
+
+    console.log(`✅ 예측 기록 완료: ${date} → 검증대상 ${targetDate}`);
+    console.log(`   종목 수: ${stocks.length}, 관심종목 포함: ${stocks.filter(s=>s.isWatchlist).length}`);
+    console.log(`   🟢 매집 의심: ${stocks.filter(s=>s.grade.includes('🟢')).length}종목`);
+    return record;
+  };
+
+  /* === 검증 (종가 fetch + 적중 판정) === */
+  window.validatePredictions = async function(opts = {}){
+    const force = opts.force === true;
+    const targetDateFilter = opts.date || null;
+    const history = loadHistory();
+    const today = todayKR();
+
+    // 검증 대상: validated=false 이고 targetDate <= 오늘
+    let targets = history.filter(h => !h.validated && h.targetDate <= today);
+    if(targetDateFilter) targets = targets.filter(h => h.date === targetDateFilter);
+    if(force && targetDateFilter){
+      targets = history.filter(h => h.date === targetDateFilter);
+    }
+
+    if(!targets.length){
+      console.log('ℹ️ 검증 대상 없음 (모두 완료되었거나 아직 도래하지 않음)');
+      return [];
+    }
+
+    console.log(`🔍 검증 시작: ${targets.length}일치 기록`);
+    const results = [];
+
+    for(const record of targets){
+      console.log(`\n📅 ${record.date} → 검증대상 ${record.targetDate}`);
+      let hits = 0, total = 0, errors = 0;
+      const indicatorStats = {
+        obv:        { samples:0, hits:0 },
+        market_rel: { samples:0, hits:0 },
+        volume:     { samples:0, hits:0 },
+        position:   { samples:0, hits:0 },
+        volatility: { samples:0, hits:0 },
+        foreign:    { samples:0, hits:0 }
+      };
+
+      // 종목 순회 (배치 처리)
+      for(let i = 0; i < record.stocks.length; i++){
+        const s = record.stocks[i];
+        try {
+          // 종가 데이터 fetch (검증대상일 종가)
+          const data = await window.fetchDailyWithForeign(s.code, 10);
+          if(!data || data.length < 2){ errors++; continue; }
+
+          // targetDate에 해당하는 종가 찾기
+          const targetRow = data.find(d => d.date === record.targetDate);
+          if(!targetRow){
+            // 데이터에 targetDate 없음 (휴장일 등) → 최근 종가 사용
+            const lastRow = data[data.length - 1];
+            if(lastRow.date < record.targetDate){ errors++; continue; }
+            s.priceAtValidation = lastRow.close;
+            s.actualDate = lastRow.date;
+          } else {
+            s.priceAtValidation = targetRow.close;
+            s.actualDate = targetRow.date;
+          }
+
+          // 기준가 = 예측 기록 직전 종가 (targetDate 이전 가장 가까운 영업일)
+          const baseRow = data.filter(d => d.date < record.targetDate).pop();
+          if(!baseRow){ errors++; continue; }
+          const basePrice = baseRow.close;
+          s.actualReturn = ((s.priceAtValidation - basePrice) / basePrice) * 100;
+
+          // 적중 판정 (등급별)
+          const ret = s.actualReturn;
+          if(s.grade.includes('🟢'))      s.hit = ret >= 1.0;
+          else if(s.grade.includes('🔴')) s.hit = ret <= -1.0;
+          else                              s.hit = Math.abs(ret) < 1.0;
+
+          if(s.hit) hits++;
+          total++;
+
+          // 지표별 적중률 집계 (breakdown 기반)
+          if(s.breakdown){
+            const map = {
+              obv: 'obvScore',
+              market_rel: 'marketRelScore',
+              volume: 'volumeScore',
+              position: 'positionScore',
+              volatility: 'volatilityScore',
+              foreign: 'foreignScore'
+            };
+            Object.entries(map).forEach(([k, field])=>{
+              const sc = s.breakdown[field];
+              if(typeof sc === 'number'){
+                const isHighScore = sc >= (k === 'obv' ? 18 : k === 'market_rel' ? 12 : k === 'volume' ? 10 : k === 'position' ? 10 : k === 'volatility' ? 6 : 3);
+                if(isHighScore){
+                  indicatorStats[k].samples++;
+                  if(s.hit) indicatorStats[k].hits++;
+                }
+              }
+            });
+          }
+
+          await new Promise(r => setTimeout(r, 150));
+          if(i % 10 === 0) console.log(`  진행: ${i+1}/${record.stocks.length}`);
+        } catch(e){
+          errors++;
+        }
+      }
+
+      // 요약
+      record.summary = {
+        total, hits, errors,
+        hitRate: total ? (hits / total * 100) : 0,
+        avgReturn: record.stocks.filter(s => s.actualReturn != null)
+                                .reduce((sum, s) => sum + s.actualReturn, 0) /
+                   Math.max(1, record.stocks.filter(s => s.actualReturn != null).length),
+        greenHitRate: (()=>{
+          const g = record.stocks.filter(s => s.grade.includes('🟢') && s.hit !== null);
+          return g.length ? g.filter(s=>s.hit).length / g.length * 100 : null;
+        })(),
+        redHitRate: (()=>{
+          const r = record.stocks.filter(s => s.grade.includes('🔴') && s.hit !== null);
+          return r.length ? r.filter(s=>s.hit).length / r.length * 100 : null;
+        })(),
+        indicatorStats
+      };
+      record.validated = true;
+      results.push(record);
+
+      // 가중치 누적 업데이트
+      const weights = loadWeights();
+      Object.entries(indicatorStats).forEach(([k, v])=>{
+        weights[k].samples += v.samples;
+        weights[k].hits += v.hits;
+        weights[k].hitRate = weights[k].samples ? (weights[k].hits / weights[k].samples * 100) : null;
+        // 가중치 자동 보정 (50%를 기준으로 ±0.5)
+        if(weights[k].samples >= 20 && weights[k].hitRate != null){
+          weights[k].weight = Math.max(0.5, Math.min(1.5, 0.5 + weights[k].hitRate / 100));
+        }
+      });
+      saveWeights(weights);
+
+      console.log(`  ✅ ${record.date}: ${hits}/${total} 적중 (${record.summary.hitRate.toFixed(1)}%)`);
+      console.log(`     평균수익률: ${record.summary.avgReturn.toFixed(2)}%`);
+      console.log(`     🟢 적중률: ${record.summary.greenHitRate?.toFixed(1) || '-'}% | 🔴 적중률: ${record.summary.redHitRate?.toFixed(1) || '-'}%`);
+    }
+
+    saveHistory(history);
+    return results;
+  };
+
+  /* === 누적 통계 조회 === */
+  window.getPredictionStats = function(){
+    const history = loadHistory();
+    const validated = history.filter(h => h.validated && h.summary);
+    if(!validated.length){
+      console.log('ℹ️ 검증 완료된 기록 없음');
+      return null;
+    }
+    const totalHits = validated.reduce((s,h) => s + h.summary.hits, 0);
+    const totalSamples = validated.reduce((s,h) => s + h.summary.total, 0);
+    const stats = {
+      days: validated.length,
+      totalSamples,
+      totalHits,
+      overallHitRate: totalSamples ? (totalHits / totalSamples * 100) : 0,
+      avgDailyReturn: validated.reduce((s,h) => s + h.summary.avgReturn, 0) / validated.length,
+      weights: loadWeights(),
+      history: validated.map(h => ({
+        date: h.date,
+        hitRate: h.summary.hitRate,
+        avgReturn: h.summary.avgReturn,
+        greenHit: h.summary.greenHitRate,
+        redHit: h.summary.redHitRate
+      }))
+    };
+    console.log('📊 누적 예측 통계');
+    console.log(`   기간: ${stats.days}일 | 종목 수: ${stats.totalSamples}`);
+    console.log(`   전체 적중률: ${stats.overallHitRate.toFixed(1)}%`);
+    console.log(`   일평균 수익률: ${stats.avgDailyReturn.toFixed(2)}%`);
+    console.log('   지표별 가중치:', stats.weights);
+    return stats;
+  };
+
+  /* === 데이터 초기화 (디버그용) === */
+  window.clearPredictionHistory = function(){
+    if(confirm('모든 예측/검증 데이터를 삭제할까요?')){
+      localStorage.removeItem(PREDICTION_KEY);
+      localStorage.removeItem(WEIGHTS_KEY);
+      console.log('🗑 예측 히스토리 삭제 완료');
+    }
+  };
+
+  window._patch24Part1Installed = true;
+  window._patch24Version = 'v1-core';
+  console.log('✅ Patch #24 Part 1 설치 완료 (영구 누적 검증 코어)');
+  console.log('   recordPrediction()      - 오늘 예측 기록');
+  console.log('   validatePredictions()   - 검증 실행');
+  console.log('   getPredictionStats()    - 누적 통계 조회');
+  console.log('   clearPredictionHistory() - 전체 삭제');
+})();
+</script>
 </body>
 </html>
