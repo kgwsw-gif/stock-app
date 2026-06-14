@@ -13381,5 +13381,52 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   }
 })();
 </script>
+  <script>
+// ============================================
+// KRX 박스 클릭 → 왝더독 실행 (F)
+// ============================================
+(function(){
+  function installClickHandler(){
+    const box = document.getElementById('krx-main-box');
+    if(!box){
+      setTimeout(installClickHandler, 1000);
+      return;
+    }
+    if(box._clickHandlerInstalled) return;
+    box._clickHandlerInstalled = true;
+    
+    box.style.cursor = 'pointer';
+    box.onclick = function(e){
+      // 닫기 버튼이나 내부 링크 클릭은 무시
+      if(e.target.closest('[onclick*="remove"]')) return;
+      if(e.target.tagName === 'A') return;
+      if(e.target.tagName === 'BUTTON') return;
+      
+      console.log('🐶 KRX 박스 클릭 → 왝더독 실행');
+      if(typeof window.showWagTheDog === 'function'){
+        window.showWagTheDog();
+      }
+    };
+    console.log('✅ KRX 박스 클릭 핸들러 설치 완료');
+  }
+  
+  // KRX 박스가 재생성되어도 핸들러가 유지되도록 주기적 확인
+  function watchBox(){
+    installClickHandler();
+    setInterval(() => {
+      const box = document.getElementById('krx-main-box');
+      if(box && !box._clickHandlerInstalled){
+        installClickHandler();
+      }
+    }, 2000);
+  }
+  
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', () => setTimeout(watchBox, 1500));
+  } else {
+    setTimeout(watchBox, 1500);
+  }
+})();
+</script>
 </body>
 </html>
