@@ -14247,23 +14247,22 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   else setTimeout(install,3500);
 })();
 </script>
-
 <script>
-// Patch #17 - localStorage 시그널 히스토리 백업/복원 UI
+// Patch #17 v3 - localStorage 백업/복원 (콘솔 명령어 방식, UI 없음)
 (function(){
-  const STORAGE_KEYS = ['wtd_signal_history','wtd_results','wtd_last_inputs','krx_signal_hits'];
-
   function exportData(){
     const data = {};
     Object.keys(localStorage).forEach(k=>{
-      if(STORAGE_KEYS.some(prefix => k.includes(prefix.split('_')[0]) || k.startsWith('wtd_') || k.startsWith('krx_'))){
-        try{
-          data[k] = JSON.parse(localStorage.getItem(k));
-        }catch(e){
-          data[k] = localStorage.getItem(k);
-        }
+      if(k.startsWith('wtd_') || k.startsWith('krx_')){
+        try{ data[k] = JSON.parse(localStorage.getItem(k)); }
+        catch(e){ data[k] = localStorage.getItem(k); }
       }
     });
+    const count = Object.keys(data).length;
+    if(count === 0){
+      console.warn('⚠️ 백업할 데이터 없음');
+      return;
+    }
     const blob = new Blob([JSON.stringify({
       exportedAt: new Date().toISOString(),
       version: '1.0',
@@ -14271,15 +14270,14 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     }, null, 2)], {type:'application/json'});
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    const date = new Date().toISOString().slice(0,10);
     a.href = url;
-    a.download = `wtd_backup_${date}.json`;
+    a.download = `wtd_backup_${new Date().toISOString().slice(0,10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    const count = Object.keys(data).length;
-    alert(`✅ 백업 파일 다운로드 완료\n저장된 항목: ${count}개`);
+    localStorage.setItem('wtd_last_backup', String(Date.now()));
+    console.log(`✅ 백업 완료 — ${count}개 항목 다운로드됨`);
   }
-
+  
   function importData(){
     const input = document.createElement('input');
     input.type = 'file';
@@ -14290,75 +14288,34 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
       try{
         const text = await file.text();
         const parsed = JSON.parse(text);
-        if(!parsed.data){
-          alert('❌ 잘못된 백업 파일 형식');
-          return;
-        }
-        const overwrite = confirm(`백업 파일을 가져오시겠습니까?\n\n내보낸 날짜: ${parsed.exportedAt}\n복원할 항목: ${Object.keys(parsed.data).length}개\n\n⚠️ 기존 데이터가 덮어쓰여집니다.`);
-        if(!overwrite) return;
+        if(!parsed.data){ console.error('❌ 잘못된 형식'); return; }
+        const count = Object.keys(parsed.data).length;
+        if(!confirm(`복원하시겠습니까?\n날짜: ${parsed.exportedAt}\n항목: ${count}개\n⚠️ 기존 데이터 덮어씀`)) return;
         Object.entries(parsed.data).forEach(([k,v])=>{
           localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v));
         });
-        alert(`✅ 복원 완료\n복원된 항목: ${Object.keys(parsed.data).length}개\n\n페이지를 새로고침합니다.`);
+        console.log(`✅ 복원 완료 — 새로고침`);
         location.reload();
-      }catch(e){
-        alert(`❌ 복원 실패: ${e.message}`);
-      }
+      }catch(e){ console.error(`❌ 실패: ${e.message}`); }
     };
     input.click();
   }
-
-  function addBackupButtons(){
-    const box = document.getElementById('krx-main-box');
-    if(!box) return;
-    if(box.querySelector('[data-backup-ui]')) return;
-
-    const wrap = document.createElement('div');
-    wrap.dataset.backupUi = '1';
-    wrap.style.cssText = `margin:8px 12px;display:flex;gap:6px;font-size:10px;`;
-    wrap.innerHTML = `
-      <button data-export style="flex:1;padding:5px;background:rgba(34,197,94,0.15);color:#22c55e;border:1px solid #22c55e40;border-radius:4px;cursor:pointer;font-size:10px;">💾 백업 내보내기</button>
-      <button data-import style="flex:1;padding:5px;background:rgba(96,165,250,0.15);color:#60a5fa;border:1px solid #60a5fa40;border-radius:4px;cursor:pointer;font-size:10px;">📂 백업 복원</button>
-    `;
-    // 이벤트 캡처 단계로 박스 클릭 전파 차단
-    wrap.querySelector('[data-export]').addEventListener('click',e=>{
-      e.stopPropagation(); e.preventDefault(); exportData();
-    },true);
-    wrap.querySelector('[data-import]').addEventListener('click',e=>{
-      e.stopPropagation(); e.preventDefault(); importData();
-    },true);
-    // 박스 전체 클릭 핸들러 차단 (왝더독 실행 방지)
-    wrap.addEventListener('click', e=>e.stopPropagation(), true);
-
-    box.appendChild(wrap);
-  }
-
-  // 7일 이상 백업 안 했으면 헤더에 알림 표시
-  function checkBackupReminder(){
-    const last = localStorage.getItem('wtd_last_backup');
-    if(!last) return;
-    const days = Math.floor((Date.now()-parseInt(last))/(1000*60*60*24));
-    if(days > 7){
-      console.warn(`⚠️ 마지막 백업: ${days}일 전 — 백업을 권장합니다`);
-    }
-  }
-
+  
   function install(){
-    addBackupButtons();
-    if(window._backupObserver) window._backupObserver.disconnect();
-    window._backupObserver = new MutationObserver(muts=>{
-      const boxAdded = muts.some(m =>
-        Array.from(m.addedNodes).some(n =>
-          n.nodeType===1 && (n.id==='krx-main-box' || n.querySelector?.('#krx-main-box'))
-        )
-      );
-      if(boxAdded) setTimeout(addBackupButtons, 400);
-    });
-    window._backupObserver.observe(document.body,{childList:true,subtree:true});
-    checkBackupReminder();
+    // 기존 외부 패널이 있으면 제거
+    document.querySelectorAll('[data-backup-external]').forEach(el=>el.remove());
+    document.querySelectorAll('[data-backup-ui]').forEach(el=>el.remove());
+    
+    // 전역 함수로 등록
+    window.wtdBackup = exportData;
+    window.wtdRestore = importData;
+    
     window._patch17Installed = true;
-    console.log('✅ Patch #17 설치 (localStorage 백업/복원)');
+    window._patch17Version = 'v3-console';
+    console.log('✅ Patch #17 v3 설치 (콘솔 명령어 방식)');
+    console.log('💡 사용법: wtdBackup() — 백업 / wtdRestore() — 복원');
   }
+  
   if(document.readyState==='loading')
     document.addEventListener('DOMContentLoaded',()=>setTimeout(install,4000));
   else setTimeout(install,4000);
