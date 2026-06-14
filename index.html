@@ -13047,5 +13047,168 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   }
 })();
 </script>
+  <script>
+// ============================================
+// 시그널 적중률 추적 시스템 (B)
+// ============================================
+(function(){
+  const STORAGE_KEY = 'wtd_signal_history';
+  const KOSPI_API = 'https://query1.finance.yahoo.com/v8/finance/chart/%5EKS11?range=1mo&interval=1d';
+
+  function loadHistory(){
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
+    catch(e){ return []; }
+  }
+  function saveHistory(arr){
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(arr.slice(-90)));
+  }
+
+  window.recordTodaySignal = function(signal, score, label){
+    const today = new Date().toISOString().slice(0,10);
+    const history = loadHistory();
+    const existing = history.findIndex(h => h.date === today);
+    const entry = {
+      date: today, signal, score, label,
+      kospiClose: null, nextKospiChange: null, hit: null
+    };
+    if(existing >= 0) history[existing] = entry;
+    else history.push(entry);
+    saveHistory(history);
+    console.log('📝 시그널 기록:', entry);
+  };
+
+  async function fetchKospiHistory(){
+    try {
+      const r = await fetch(KOSPI_API);
+      const j = await r.json();
+      const result = j.chart.result[0];
+      const timestamps = result.timestamp;
+      const closes = result.indicators.quote[0].close;
+      const out = {};
+      timestamps.forEach((t, i) => {
+        const d = new Date(t * 1000).toISOString().slice(0,10);
+        if(closes[i] != null) out[d] = closes[i];
+      });
+      return out;
+    } catch(e){
+      console.warn('⚠️ KOSPI 시세 조회 실패:', e.message);
+      return {};
+    }
+  }
+
+  function judge(signal, change){
+    if(change == null) return null;
+    if(signal === 'buy')     return change >= 0;
+    if(signal === 'sell')    return change <= 0;
+    if(signal === 'neutral') return Math.abs(change) < 1.0;
+    return null;
+  }
+
+  window.updateHitRates = async function(){
+    const history = loadHistory();
+    if(history.length === 0){ renderHitRateBox(); return; }
+    const kospi = await fetchKospiHistory();
+    if(Object.keys(kospi).length === 0){ renderHitRateBox(); return; }
+    const dates = Object.keys(kospi).sort();
+    let updated = 0;
+    history.forEach(h => {
+      const idx = dates.indexOf(h.date);
+      if(idx >= 0){
+        h.kospiClose = kospi[h.date];
+        const nextDate = dates[idx + 1];
+        if(nextDate && kospi[nextDate] != null){
+          const change = ((kospi[nextDate] - h.kospiClose) / h.kospiClose) * 100;
+          h.nextKospiChange = +change.toFixed(2);
+          h.hit = judge(h.signal, h.nextKospiChange);
+          updated++;
+        }
+      }
+    });
+    saveHistory(history);
+    console.log('🔄 적중률 갱신:', updated, '건 / 전체:', history.length);
+    renderHitRateBox();
+  };
+
+  window.renderHitRateBox = function(){
+    const history = loadHistory();
+    const judged = history.filter(h => h.hit !== null);
+    const old = document.getElementById('hitrate-box');
+    if(old) old.remove();
+    const box = document.createElement('div');
+    box.id = 'hitrate-box';
+    box.style.cssText = 'position:fixed;top:200px;right:20px;z-index:9998;background:#f0f9ff;border:2px solid #0284c7;border-radius:8px;padding:12px 18px;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,0.15);max-width:360px;font-family:sans-serif;';
+    if(judged.length === 0){
+      box.innerHTML = `<div style="font-weight:bold;font-size:14px;margin-bottom:6px;">📊 시그널 적중률</div>
+        <div style="color:#666;">데이터 수집 중... (${history.length}일 기록, 익일 결과 대기 중)</div>
+        <div style="position:absolute;top:4px;right:8px;cursor:pointer;font-size:18px;color:#666;" onclick="this.parentElement.remove()">✕</div>`;
+    } else {
+      const total = judged.length;
+      const hits = judged.filter(h => h.hit).length;
+      const rate = (hits / total * 100).toFixed(1);
+      const recent7 = judged.slice(-7);
+      const rate7 = recent7.length > 0 ? (recent7.filter(h=>h.hit).length / recent7.length * 100).toFixed(1) : '-';
+      const bySignal = {};
+      judged.forEach(h => {
+        if(!bySignal[h.signal]) bySignal[h.signal] = {total:0, hits:0};
+        bySignal[h.signal].total++;
+        if(h.hit) bySignal[h.signal].hits++;
+      });
+      const sigText = Object.entries(bySignal).map(([s,v]) =>
+        `${s}: ${v.hits}/${v.total} (${(v.hits/v.total*100).toFixed(0)}%)`
+      ).join(' | ');
+      const last3 = judged.slice(-3).reverse().map(h =>
+        `${h.date} ${h.signal} → ${h.nextKospiChange>=0?'+':''}${h.nextKospiChange}% ${h.hit?'✅':'❌'}`
+      ).join('<br>');
+      box.innerHTML = `<div style="font-weight:bold;font-size:14px;margin-bottom:6px;">📊 시그널 적중률</div>
+        <div style="font-size:18px;font-weight:bold;color:${rate>=60?'#16a34a':rate>=50?'#ca8a04':'#dc2626'};">${rate}% (${hits}/${total})</div>
+        <div style="color:#666;margin-top:4px;">최근 7일: ${rate7}%</div>
+        <div style="border-top:1px solid #bae6fd;padding-top:6px;margin-top:6px;font-size:11px;">
+          <div style="margin-bottom:4px;"><b>시그널별:</b><br>${sigText}</div>
+          <div><b>최근 3건:</b><br>${last3}</div>
+        </div>
+        <div style="position:absolute;top:4px;right:8px;cursor:pointer;font-size:18px;color:#666;" onclick="this.parentElement.remove()">✕</div>`;
+    }
+    document.body.appendChild(box);
+  };
+
+  function installRecorder(){
+    if(typeof window.showWagTheDog !== 'function'){
+      setTimeout(installRecorder, 500); return;
+    }
+    if(window._wtdRecorderInstalled) return;
+    window._wtdRecorderInstalled = true;
+    const _orig = window.showWagTheDog;
+    window.showWagTheDog = function(){
+      const r = _orig.apply(this, arguments);
+      setTimeout(() => {
+        const d = window._lastKrxData;
+        if(!d) return;
+        const spot = d.kospi?.eok?.['외국인합계'];
+        const fut = d.futures?.['외국인합계'];
+        if(spot == null || fut == null) return;
+        try {
+          const result = window.analyzeWagTheDog(spot, fut, null, null);
+          if(result && !result.error){
+            let signal = 'neutral';
+            if(result.score >= 20) signal = 'buy';
+            else if(result.score <= -20) signal = 'sell';
+            window.recordTodaySignal(signal, result.score, result.baseSignal || result.signal);
+            window.updateHitRates();
+          }
+        } catch(e){ console.warn('적중률 기록 실패:', e); }
+      }, 800);
+      return r;
+    };
+    console.log('✅ 시그널 적중률 추적기 설치');
+    setTimeout(() => window.updateHitRates(), 1500);
+  }
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', installRecorder);
+  } else {
+    installRecorder();
+  }
+})();
+</script>
 </body>
 </html>
