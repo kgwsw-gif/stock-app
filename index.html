@@ -13003,5 +13003,49 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   }
 })();
 </script>
+<script>
+// 왝더독 자동입력 패치 (KRX 외국인 현물/선물 데이터 자동 채움)
+(function(){
+  function installAutoFill(){
+    if(typeof window.showWagTheDog !== 'function'){
+      setTimeout(installAutoFill, 500);
+      return;
+    }
+    if(window._wtdAutoFillInstalled) return;
+    window._wtdAutoFillInstalled = true;
+
+    const _origShow = window.showWagTheDog;
+    window.showWagTheDog = function(){
+      const r = _origShow.apply(this, arguments);
+      setTimeout(() => {
+        const d = window._lastKrxData;
+        if(!d){ console.warn('⚠️ KRX 데이터 미로드 - 자동입력 스킵'); return; }
+        const spot = d.kospi?.eok?.['외국인합계'];
+        const fut  = d.futures?.['외국인합계'];
+        const spotEl = document.getElementById('wtd-spot');
+        const futEl  = document.getElementById('wtd-fut');
+        if(spotEl && spot!=null){
+          spotEl.value = spot;
+          spotEl.dispatchEvent(new Event('input',{bubbles:true}));
+          spotEl.dispatchEvent(new Event('change',{bubbles:true}));
+        }
+        if(futEl && fut!=null){
+          futEl.value = fut;
+          futEl.dispatchEvent(new Event('input',{bubbles:true}));
+          futEl.dispatchEvent(new Event('change',{bubbles:true}));
+        }
+        console.log('✅ 왝더독 자동입력:', {현물:spot, 선물:fut, 날짜:d.base_date});
+      }, 400);
+      return r;
+    };
+    console.log('✅ 왝더독 자동입력 패치 설치 완료');
+  }
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', installAutoFill);
+  } else {
+    installAutoFill();
+  }
+})();
+</script>
 </body>
 </html>
