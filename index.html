@@ -13943,5 +13943,58 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   else setTimeout(installLock,2500);
 })();
 </script>
+  <script>
+// Patch #13: KRX 박스 X 버튼 → 접기/펼치기 변환
+(function(){
+  function restoreAndSetup(){
+    const box = document.getElementById('krx-main-box');
+    if(!box) return;
+    
+    box.querySelectorAll('span').forEach(span=>{
+      const txt = span.textContent.trim();
+      if(txt === '×' || txt === '−' || txt === '+'){
+        if(span.dataset.collapseHandlerInstalled === '1') return;
+        
+        span.style.display = '';
+        span.style.cursor = 'pointer';
+        span.title = '박스 접기/펼치기';
+        
+        span.onclick = function(e){
+          e.stopPropagation();
+          e.preventDefault();
+          const children = Array.from(box.children);
+          const isCollapsed = box.dataset.collapsed === '1';
+          
+          if(isCollapsed){
+            children.forEach((c,i)=>{ if(i>0) c.style.display = ''; });
+            box.dataset.collapsed = '0';
+            span.textContent = '−';
+          } else {
+            children.forEach((c,i)=>{ if(i>0) c.style.display = 'none'; });
+            box.dataset.collapsed = '1';
+            span.textContent = '+';
+          }
+          box.style.height = 'auto';
+        };
+        
+        if(txt === '×') span.textContent = '−';
+        span.dataset.collapseHandlerInstalled = '1';
+      }
+    });
+  }
+  
+  function install(){
+    restoreAndSetup();
+    if(window._collapseObserver) window._collapseObserver.disconnect();
+    window._collapseObserver = new MutationObserver(restoreAndSetup);
+    window._collapseObserver.observe(document.body, {childList:true, subtree:true});
+    window._patch13Installed = true;
+    console.log('✅ Patch #13 설치 (KRX 박스 접기/펼치기)');
+  }
+  
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>setTimeout(install,2500));
+  else setTimeout(install,2500);
+})();
+</script>
 </body>
 </html>
