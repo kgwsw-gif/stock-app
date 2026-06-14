@@ -14749,5 +14749,275 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   else setTimeout(install, 6000);
 })();
 </script>
+  <script>
+// Patch #21 - 매집 박스 종목 클릭 → 상세 차트 모달
+(function(){
+  function drawChart(canvas, data, foreignData){
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0,0,W,H);
+    if(!data || data.length < 5) return;
+    
+    const padL = 50, padR = 50, padT = 20, padB = 30;
+    const chartW = W - padL - padR;
+    const priceH = (H - padT - padB) * 0.6;
+    const obvH = (H - padT - padB) * 0.18;
+    const frH = (H - padT - padB) * 0.18;
+    const gapH = 8;
+    const priceTop = padT;
+    const obvTop = padT + priceH + gapH;
+    const frTop = obvTop + obvH + gapH;
+    
+    const closes = data.map(d=>d.close), highs = data.map(d=>d.high), lows = data.map(d=>d.low), volumes = data.map(d=>d.volume);
+    const obv = [0];
+    for(let i=1;i<closes.length;i++){
+      if(closes[i]>closes[i-1]) obv.push(obv[i-1]+volumes[i]);
+      else if(closes[i]<closes[i-1]) obv.push(obv[i-1]-volumes[i]);
+      else obv.push(obv[i-1]);
+    }
+    const N = data.length, cw = chartW / N;
+    
+    // 캔들 영역
+    const maxP = Math.max(...highs), minP = Math.min(...lows);
+    const rangeP = maxP - minP || 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#64748b';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'right';
+    for(let i=0;i<=4;i++){
+      const y = priceTop + (priceH * i / 4);
+      const v = maxP - (rangeP * i / 4);
+      ctx.beginPath();
+      ctx.moveTo(padL, y); ctx.lineTo(W-padR, y);
+      ctx.stroke();
+      ctx.fillText(v.toLocaleString(undefined,{maximumFractionDigits:0}), padL-4, y+3);
+    }
+    data.forEach((d,i)=>{
+      const x = padL + i * cw + cw/2;
+      const yH = priceTop + (1 - (d.high - minP) / rangeP) * priceH;
+      const yL = priceTop + (1 - (d.low - minP) / rangeP) * priceH;
+      const yO = priceTop + (1 - (d.open - minP) / rangeP) * priceH;
+      const yC = priceTop + (1 - (d.close - minP) / rangeP) * priceH;
+      const isUp = d.close >= d.open;
+      ctx.strokeStyle = isUp ? '#ef4444' : '#3b82f6';
+      ctx.fillStyle = isUp ? '#ef4444' : '#3b82f6';
+      ctx.beginPath();
+      ctx.moveTo(x, yH); ctx.lineTo(x, yL);
+      ctx.stroke();
+      const bw = Math.max(1, cw * 0.6);
+      ctx.fillRect(x - bw/2, Math.min(yO,yC), bw, Math.max(1, Math.abs(yC-yO)));
+    });
+    if(closes.length >= 20){
+      ctx.strokeStyle = '#fbbf24';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for(let i=19;i<closes.length;i++){
+        const ma = closes.slice(i-19, i+1).reduce((a,b)=>a+b,0) / 20;
+        const x = padL + i * cw + cw/2;
+        const y = priceTop + (1 - (ma - minP) / rangeP) * priceH;
+        if(i===19) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+    }
+    
+    // OBV 영역
+    const maxOBV = Math.max(...obv), minOBV = Math.min(...obv);
+    const rangeOBV = maxOBV - minOBV || 1;
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.beginPath();
+    ctx.moveTo(padL, obvTop); ctx.lineTo(W-padR, obvTop);
+    ctx.moveTo(padL, obvTop + obvH); ctx.lineTo(W-padR, obvTop + obvH);
+    ctx.stroke();
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    obv.forEach((v,i)=>{
+      const x = padL + i * cw + cw/2;
+      const y = obvTop + (1 - (v - minOBV) / rangeOBV) * obvH;
+      if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    });
+    ctx.stroke();
+    ctx.fillStyle = '#10b981';
+    ctx.font = 'bold 9px sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText('OBV', padL-4, obvTop + obvH/2 + 3);
+    
+    // 외인 영역
+    if(foreignData && foreignData.length >= 5){
+      const rates = foreignData.map(d=>d.foreignRate).filter(v=>v!=null && !isNaN(v));
+      if(rates.length >= 5){
+        const maxFR = Math.max(...rates), minFR = Math.min(...rates);
+        const rangeFR = maxFR - minFR || 1;
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+        ctx.beginPath();
+        ctx.moveTo(padL, frTop); ctx.lineTo(W-padR, frTop);
+        ctx.moveTo(padL, frTop + frH); ctx.lineTo(W-padR, frTop + frH);
+        ctx.stroke();
+        ctx.strokeStyle = '#a78bfa';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        const frCount = Math.min(rates.length, N);
+        const frOffset = N - frCount;
+        rates.slice(-frCount).forEach((v,i)=>{
+          const x = padL + (i + frOffset) * cw + cw/2;
+          const y = frTop + (1 - (v - minFR) / rangeFR) * frH;
+          if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+        });
+        ctx.stroke();
+        ctx.fillStyle = '#a78bfa';
+        ctx.font = 'bold 9px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.fillText('외인', padL-4, frTop + frH/2 - 2);
+        ctx.font = '8px sans-serif';
+        ctx.fillStyle = '#64748b';
+        ctx.fillText(`${maxFR.toFixed(1)}%`, padL-4, frTop + 7);
+        ctx.fillText(`${minFR.toFixed(1)}%`, padL-4, frTop + frH);
+      }
+    }
+    
+    // 날짜 라벨
+    ctx.fillStyle = '#64748b';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    for(let i=0;i<5;i++){
+      const idx = Math.floor((N-1) * i / 4);
+      const x = padL + idx * cw + cw/2;
+      const date = data[idx].date.substring(5);
+      ctx.fillText(date, x, H - 10);
+    }
+  }
+  
+  async function showDetailModal(stock){
+    document.getElementById('maejip-detail-modal')?.remove();
+    const modal = document.createElement('div');
+    modal.id = 'maejip-detail-modal';
+    modal.style.cssText = `position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;background:rgba(0,0,0,0.7)!important;z-index:99999!important;display:flex!important;align-items:center!important;justify-content:center!important;`;
+    const panel = document.createElement('div');
+    panel.style.cssText = `background:linear-gradient(135deg,#1e293b 0%,#0f172a 100%);color:#e2e8f0;border-radius:12px;padding:20px;width:720px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.6);font-family:-apple-system,sans-serif;`;
+    
+    // breakdown이 없을 수도 있으므로 안전 처리
+    const bd = stock.breakdown || {};
+    const dt = stock.detail || {};
+    const obvLabel = dt.obvLabel || stock.obvLabel || '';
+    const priceChange = dt.priceChange !== undefined ? dt.priceChange : (stock.priceChange || 0);
+    const volRatio = dt.volRatio !== undefined ? dt.volRatio : (stock.volRatio || 0);
+    const frChange20 = dt.frChange20 !== undefined ? dt.frChange20 : (stock.frChange20 || null);
+    
+    panel.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div>
+          <div style="font-size:18px;font-weight:bold;">${stock.name} (${stock.code})</div>
+          <div style="font-size:13px;color:#94a3b8;margin-top:4px;">${stock.grade} · ${stock.total}점</div>
+        </div>
+        <span id="maejip-modal-close" style="cursor:pointer;font-size:24px;padding:0 8px;">×</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;font-size:11px;">
+        <div style="background:rgba(255,255,255,0.05);padding:8px;border-radius:6px;"><div style="color:#94a3b8;">OBV</div><div style="font-weight:bold;">${bd.OBV ?? '-'}</div></div>
+        <div style="background:rgba(255,255,255,0.05);padding:8px;border-radius:6px;"><div style="color:#94a3b8;">시장상대</div><div style="font-weight:bold;">${bd.시장 ?? '-'}</div></div>
+        <div style="background:rgba(255,255,255,0.05);padding:8px;border-radius:6px;"><div style="color:#94a3b8;">거래량</div><div style="font-weight:bold;">${bd.거래량 ?? '-'}</div></div>
+        <div style="background:rgba(255,255,255,0.05);padding:8px;border-radius:6px;"><div style="color:#94a3b8;">가격위치</div><div style="font-weight:bold;">${bd.위치 ?? '-'}</div></div>
+        <div style="background:rgba(255,255,255,0.05);padding:8px;border-radius:6px;"><div style="color:#94a3b8;">변동성</div><div style="font-weight:bold;">${bd.변동성 ?? '-'}</div></div>
+        <div style="background:rgba(255,255,255,0.05);padding:8px;border-radius:6px;"><div style="color:#94a3b8;">외인</div><div style="font-weight:bold;">${bd.외인 ?? '-'}</div></div>
+      </div>
+      <div style="font-size:12px;color:#cbd5e1;margin-bottom:8px;">
+        ${obvLabel} · 가격 ${priceChange>0?'+':''}${priceChange}% · 거래량 ${volRatio}배
+        ${frChange20!==null && frChange20!==undefined ? ` · 외인 ${frChange20>0?'+':''}${frChange20}%p` : ''}
+      </div>
+      <div id="maejip-chart-loading" style="text-align:center;padding:40px;color:#94a3b8;">📊 차트 데이터 로딩...</div>
+      <canvas id="maejip-chart-canvas" width="680" height="400" style="display:none;background:rgba(0,0,0,0.2);border-radius:6px;"></canvas>
+      <div style="margin-top:10px;font-size:10px;color:#64748b;display:flex;gap:14px;">
+        <span><span style="color:#ef4444;">▮</span> 양봉</span>
+        <span><span style="color:#3b82f6;">▮</span> 음봉</span>
+        <span><span style="color:#fbbf24;">━</span> MA20</span>
+        <span><span style="color:#10b981;">━</span> OBV</span>
+        <span><span style="color:#a78bfa;">━</span> 외인비율</span>
+      </div>
+    `;
+    modal.appendChild(panel);
+    document.body.appendChild(modal);
+    document.getElementById('maejip-modal-close').onclick = ()=>modal.remove();
+    modal.onclick = e=>{ if(e.target === modal) modal.remove(); };
+    
+    try{
+      const [data, foreignData] = await Promise.all([
+        window.StockAPI.fetchKR(stock.code,'day','20260301','20260613'),
+        window.fetchDailyWithForeign(stock.code, 90)
+      ]);
+      const loading = document.getElementById('maejip-chart-loading');
+      const canvas = document.getElementById('maejip-chart-canvas');
+      if(loading) loading.style.display = 'none';
+      if(canvas){
+        canvas.style.display = 'block';
+        const recent = data.slice(-60);
+        const recentFR = foreignData ? foreignData.slice(-60) : null;
+        drawChart(canvas, recent, recentFR);
+      }
+    }catch(e){
+      const loading = document.getElementById('maejip-chart-loading');
+      if(loading) loading.textContent = '❌ 차트 로드 실패: ' + e.message;
+    }
+  }
+  
+  function installClickHandler(){
+    if(window._chartClickHandler){
+      document.removeEventListener('click', window._chartClickHandler, true);
+    }
+    window._chartClickHandler = function(e){
+      const box = document.getElementById('maejip-box');
+      if(!box || !box.contains(e.target)) return;
+      let target = e.target;
+      while(target && target !== box){
+        if(target.style && target.style.borderLeft && target.style.borderLeft.includes('solid')){
+          const nameEl = target.querySelector('span');
+          const name = nameEl?.textContent?.trim();
+          if(!name) return;
+          const list = window._maeJipResults || window._maeJipResultsV21 || [];
+          const stock = list.find(s => s.name === name);
+          if(stock){
+            e.stopPropagation();
+            e.preventDefault();
+            showDetailModal(stock);
+          }
+          return;
+        }
+        target = target.parentElement;
+      }
+    };
+    document.addEventListener('click', window._chartClickHandler, true);
+    
+    // 매집 박스 종목 항목에 cursor:pointer 표시
+    function markCursor(){
+      const items = document.querySelectorAll('#maejip-box [data-body] > div');
+      items.forEach(item => {
+        if(item.style.borderLeft && item.style.borderLeft.includes('solid')){
+          item.style.cursor = 'pointer';
+          item.title = '클릭하여 상세 차트 보기';
+        }
+      });
+    }
+    markCursor();
+    
+    // 박스 재생성 감지
+    if(window._chartCursorObserver) window._chartCursorObserver.disconnect();
+    window._chartCursorObserver = new MutationObserver(()=>setTimeout(markCursor, 100));
+    window._chartCursorObserver.observe(document.body, {childList:true, subtree:true});
+  }
+  
+  // 전역 노출 (다른 곳에서도 활용 가능)
+  window.showStockDetailModal = showDetailModal;
+  
+  function install(){
+    installClickHandler();
+    window._patch21Installed = true;
+    window._patch21Version = 'v1';
+    console.log('✅ Patch #21 설치 (차트 모달)');
+  }
+  
+  if(document.readyState==='loading')
+    document.addEventListener('DOMContentLoaded', ()=>setTimeout(install, 7000));
+  else setTimeout(install, 7000);
+})();
+</script>
 </body>
 </html>
