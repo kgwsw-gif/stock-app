@@ -15889,18 +15889,22 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     return d;
   }
   function formatDate(d){
-    return d.toISOString().slice(0,10);
-  }
+  const kst = new Date(d.getTime() + 9*3600000);
+  return kst.toISOString().slice(0,10);
+}
   function isMarketClosed(){
-    const now = new Date();
-    const day = now.getDay();
-    if(day === 0 || day === 6) return true; // 주말
-    const minutes = now.getHours() * 60 + now.getMinutes();
-    return minutes >= 16 * 60 + 30; // 16:30 이후
-  }
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9*3600000);
+  const day = kst.getUTCDay();
+  if(day === 0 || day === 6) return true;
+  const minutes = kst.getUTCHours() * 60 + kst.getUTCMinutes();
+  return minutes >= 16 * 60 + 30;
+}
   function todayKR(){
-    return formatDate(new Date());
-  }
+  const now = new Date();
+  const kst = new Date(now.getTime() + 9*3600000);
+  return kst.toISOString().slice(0,10);
+}
 
   /* === 데이터 I/O === */
   function loadHistory(){
