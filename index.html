@@ -14321,5 +14321,86 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   else setTimeout(install,4000);
 })();
 </script>
+  <script>
+// Patch #18 - 매집 모니터 박스 위치 고정 (좌측 하단)
+(function(){
+  function positionMaejipBox(){
+    const box = document.getElementById('maejip-box') || document.querySelector('[data-maejip-box]');
+    if(!box) return false;
+    
+    if(box.dataset.positioned === '1') return true;
+    
+    box.style.cssText = `
+      position: fixed !important;
+      bottom: 20px !important; left: 20px !important;
+      top: auto !important; right: auto !important;
+      width: 340px !important; max-height: 60vh !important;
+      overflow-y: auto !important;
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%) !important;
+      color: #e2e8f0 !important; border-radius: 12px !important;
+      padding: 14px !important;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5) !important;
+      z-index: 9996 !important;
+      font-family: -apple-system, sans-serif !important;
+      font-size: 12px !important;
+    `;
+    
+    // 접기 버튼
+    box.querySelectorAll('[data-maejip-toggle]').forEach(el=>el.remove());
+    const toggleBtn = document.createElement('span');
+    toggleBtn.dataset.maejipToggle = '1';
+    toggleBtn.textContent = sessionStorage.getItem('maejip_collapsed')==='1' ? '+' : '−';
+    toggleBtn.title = '접기/펼치기';
+    toggleBtn.style.cssText = `
+      position: absolute !important;
+      top: 10px !important; right: 14px !important;
+      cursor: pointer !important; font-size: 22px !important;
+      color: #fff !important; font-weight: bold !important;
+      user-select: none !important; padding: 0 8px !important;
+      z-index: 10 !important;
+    `;
+    
+    function applyCollapse(){
+      const collapsed = sessionStorage.getItem('maejip_collapsed')==='1';
+      Array.from(box.children).forEach((c,i)=>{
+        if(c.dataset.maejipToggle === '1') return;
+        if(i > 0) c.style.display = collapsed ? 'none' : '';
+      });
+      toggleBtn.textContent = collapsed ? '+' : '−';
+    }
+    
+    toggleBtn.addEventListener('click', e=>{
+      e.stopPropagation(); e.stopImmediatePropagation(); e.preventDefault();
+      const was = sessionStorage.getItem('maejip_collapsed')==='1';
+      sessionStorage.setItem('maejip_collapsed', was ? '0' : '1');
+      applyCollapse();
+    }, true);
+    
+    box.appendChild(toggleBtn);
+    applyCollapse();
+    box.dataset.positioned = '1';
+    return true;
+  }
+  
+  function install(){
+    positionMaejipBox();
+    if(window._maejipPosObserver) window._maejipPosObserver.disconnect();
+    window._maejipPosObserver = new MutationObserver(muts=>{
+      muts.forEach(m=>m.addedNodes.forEach(n=>{
+        if(n.nodeType===1 && (n.id==='maejip-box' || n.dataset?.maejipBox)){
+          setTimeout(positionMaejipBox, 50);
+        }
+      }));
+    });
+    window._maejipPosObserver.observe(document.body,{childList:true,subtree:true});
+    window._patch18Installed = true;
+    console.log('✅ Patch #18 설치 (매집 박스 좌측 하단 고정 + 접기)');
+  }
+  
+  if(document.readyState==='loading')
+    document.addEventListener('DOMContentLoaded', ()=>setTimeout(install, 3000));
+  else setTimeout(install, 3000);
+})();
+</script>
 </body>
 </html>
