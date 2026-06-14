@@ -13586,5 +13586,181 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   }
 })();
 </script>
+  <script>
+(function(){
+  // ===== 1. KOSPI200 실제 지수 동적 조회 =====
+  let kospi200Level = 350; // 기본값
+  let kospi200LastFetch = 0;
+  async function fetchKospi200Level(){
+    const now = Date.now();
+    if(now - kospi200LastFetch < 300000) return kospi200Level; // 5분 캐시
+    try{
+      const r = await fetch('https://stock-proxy.kgwsw.workers.dev/us/chart?symbol=%5EKS200');
+      const j = await r.json();
+      const closes = j?.chart?.result?.[0]?.indicators?.quote?.[0]?.close;
+      if(closes && closes.length){
+        const last = closes.filter(x=>x!=null).pop();
+        if(last) { kospi200Level = last; kospi200LastFetch = now; console.log('📊 KOSPI200 실시간:', last.toFixed(2)); }
+      }
+    }catch(e){
+      // fallback: KS11 (KOSPI) / 7.5 ≈ KOSPI200 근사
+      try{
+        const r2 = await fetch('https://stock-proxy.kgwsw.workers.dev/us/chart?symbol=%5EKS11');
+        const j2 = await r2.json();
+        const c = j2?.chart?.result?.[0]?.indicators?.quote?.[0]?.close;
+        if(c && c.length){
+          const last = c.filter(x=>x!=null).pop();
+          if(last){ kospi200Level = last/7.5; kospi200LastFetch = now; }
+        }
+      }catch(e2){console.warn('KOSPI200 조회 실패, 기본값 사용:', kospi200Level);}
+    }
+    return kospi200Level;
+  }
+
+  // ===== 2. 외국인 거래대금 대비 비중 계산 =====
+  // 일평균 외국인 KOSPI 거래대금 약 3~5조원 → 비중 % 환산
+  function calcForeignRatio(amountEok){
+    if(amountEok==null) return null;
+    const avgDailyVolume = 40000; // 4조원 (억원 단위)
+    return (Math.abs(amountEok)/avgDailyVolume*100).toFixed(1);
+  }
+
+  // ===== 3. 미니 차트용 히스토리 =====
+  function getRecentHistory(){
+    try{
+      const h = JSON.parse(localStorage.getItem('wtd_signal_history')||'[]');
+      return h.slice(-7).filter(r=>r.nextKospiChange!=null);
+    }catch(e){return [];}
+  }
+  function renderMiniChart(history){
+    if(!history.length) return '<div style="color:#94a3b8;font-size:10px;text-align:center;padding:4px;">📉 차트 데이터 수집 중 (1~2주 후 표시)</div>';
+    const w=280, h=40, max=Math.max(...history.map(r=>Math.abs(r.nextKospiChange)),1);
+    const bw=w/history.length-2;
+    const bars=history.map((r,i)=>{
+      const v=r.nextKospiChange, bh=Math.abs(v)/max*(h-10);
+      const x=i*(bw+2)+2, y=v>=0?(h/2-bh):(h/2);
+      const color=v>=0?'#34d399':'#f87171';
+      return `<rect x="${x}" y="${y}" width="${bw}" height="${bh}" fill="${color}" rx="2"/><text x="${x+bw/2}" y="${v>=0?y-2:y+bh+9}" font-size="8" fill="${color}" text-anchor="middle">${v>=0?'+':''}${v.toFixed(1)}</text>`;
+    }).join('');
+    return `<svg width="${w}" height="${h}" style="display:block;margin:4px auto;"><line x1="0" y1="${h/2}" x2="${w}" y2="${h/2}" stroke="#475569" stroke-width="1" stroke-dasharray="2,2"/>${bars}</svg>`;
+  }
+
+  // ===== KRX 박스 렌더링 =====
+  async function renderModernKrxBox(){
+    const data=window._lastKrxData; if(!data) return;
+    const old=document.getElementById('krx-main-box'); if(old) old.remove();
+
+    const fK = data.kospi?.eok?.['외국인합계'];
+    const iK = data.kospi?.eok?.['기관합계'];
+    const fQ = data.kosdaq?.eok?.['외국인합계'];
+    const iQ = data.kosdaq?.eok?.['기관합계'];
+    const fF = data.futures?.['외국인합계'];
+
+    // 명목가치 (실시간 KOSPI200 지수 사용)
+    const k200 = await fetchKospi200Level();
+    const futNotionalEok = fF!=null ? Math.round((fF * k200 * 250000)/1e8) : null;
+
+    // 거래대금 비중
+    const fKRatio = calcForeignRatio(fK);
+
+    // 종합 신호
+    const total = (fK||0)+(iK||0);
+    let signal='중립', sigColor='#94a3b8', sigIcon='➖', sigDesc='관망';
+    if(total>10000){signal='강한 매수';sigColor='#34d399';sigIcon='🚀';sigDesc='외국인·기관 쌍끌이 매수. 익일 상승 가능성 높음.';}
+    else if(total>0){signal='매수 우세';sigColor='#6ee7b7';sigIcon='📈';sigDesc='매수 우위. 상승 기대.';}
+    else if(total<-10000){signal='강한 매도';sigColor='#f87171';sigIcon='📉';sigDesc='외국인·기관 동반 매도. 익일 하락 가능성.';}
+    else if(total<0){signal='매도 우세';sigColor='#fca5a5';sigIcon='🔻';sigDesc='매도 우위. 하락 주의.';}
+
+    // 선물 인사이트
+    let futInsight='';
+    if(fF!=null){
+      if(fF>3000) futInsight='→ 대규모 매수 → 강한 상승 베팅';
+      else if(fF>1000) futInsight='→ 매수 우세 → 상승 기대';
+      else if(fF>0) futInsight='→ 소폭 매수 → 관망에 가까움';
+      else if(fF>-1000) futInsight='→ 소폭 매도 → 관망';
+      else if(fF>-3000) futInsight='→ 매도 우세 → 하락 주의';
+      else futInsight='→ 대규모 매도 → ⚠️ 왝더독 의심';
+    }
+
+    // 휴장일 라벨
+    const bd=data.base_date||'';
+    const baseDateStr=bd?`${bd.slice(0,4)}-${bd.slice(4,6)}-${bd.slice(6,8)}`:'';
+    const today=new Date(); today.setHours(0,0,0,0);
+    const baseDate=bd?new Date(+bd.slice(0,4),+bd.slice(4,6)-1,+bd.slice(6,8)):null;
+    const diffDays=baseDate?Math.round((today-baseDate)/86400000):0;
+    const dow=today.getDay(), dowName=['일','월','화','수','목','금','토'][dow];
+    const isHoliday=diffDays>0;
+    const todayStr=today.toISOString().slice(0,10);
+
+    // 미니 차트
+    const history=getRecentHistory();
+    const miniChart=renderMiniChart(history);
+
+    const fmtEok=v=>v==null?'-':(v>=0?'+':'')+v.toLocaleString()+' 억';
+    const fmtCon=v=>v==null?'-':(v>=0?'+':'')+v.toLocaleString()+' 계약';
+    const colorOf=v=>v==null?'#94a3b8':v>=0?'#34d399':'#f87171';
+
+    const box=document.createElement('div');
+    box.id='krx-main-box';
+    box.style.cssText='position:fixed;top:60px;right:20px;width:340px;z-index:9999;background:linear-gradient(135deg,#1e293b 0%,#0f172a 100%);border:1px solid #334155;border-radius:14px;padding:14px 16px;color:#f1f5f9;font-family:-apple-system,"Segoe UI",sans-serif;font-size:13px;box-shadow:0 10px 30px rgba(0,0,0,0.5);cursor:pointer;';
+    box.innerHTML=`
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div style="font-weight:700;font-size:15px;"><span style="background:#3b82f6;padding:2px 6px;border-radius:4px;font-size:11px;margin-right:6px;">KR</span>KRX 수급 <span style="color:#34d399;font-size:10px;">● 실시간</span></div>
+        <span style="cursor:pointer;color:#94a3b8;font-size:18px;" onclick="event.stopPropagation();document.getElementById('krx-main-box').remove();">×</span>
+      </div>
+      ${isHoliday?`<div style="background:#fef3c7;color:#92400e;padding:4px 8px;border-radius:6px;font-size:10px;margin-bottom:8px;">📅 오늘 ${todayStr} (${dowName}) · ${dow===0||dow===6?'주말':'휴장'}<br>표시: 마지막 영업일 <b>${baseDateStr}</b> (D-${diffDays})</div>`:''}
+      <div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:8px 10px;margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:11px;color:#cbd5e1;">📅 ${baseDateStr}</span>
+          <span style="color:${sigColor};font-weight:700;font-size:13px;">${sigIcon} ${signal}</span>
+        </div>
+        <div style="font-size:11px;color:#cbd5e1;margin-top:4px;">💡 ${sigDesc}</div>
+      </div>
+
+      <div style="color:#a5b4fc;font-size:11px;font-weight:600;margin:8px 0 4px;">▸ KOSPI 현물 (억원)</div>
+      <div style="display:flex;justify-content:space-between;padding:3px 0;"><span style="color:#cbd5e1;">외국인</span><span style="color:${colorOf(fK)};font-weight:700;">${fmtEok(fK)}</span></div>
+      ${fKRatio?`<div style="font-size:10px;color:#94a3b8;text-align:right;margin-top:-2px;">↳ 일평균 대비 약 ${fKRatio}%</div>`:''}
+      <div style="display:flex;justify-content:space-between;padding:3px 0;"><span style="color:#cbd5e1;">기관</span><span style="color:${colorOf(iK)};font-weight:700;">${fmtEok(iK)}</span></div>
+
+      <div style="color:#a5b4fc;font-size:11px;font-weight:600;margin:8px 0 4px;">▸ KOSDAQ 현물 (억원)</div>
+      <div style="display:flex;justify-content:space-between;padding:3px 0;"><span style="color:#cbd5e1;">외국인</span><span style="color:${colorOf(fQ)};font-weight:700;">${fmtEok(fQ)}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:3px 0;"><span style="color:#cbd5e1;">기관</span><span style="color:${colorOf(iQ)};font-weight:700;">${fmtEok(iQ)}</span></div>
+
+      ${fF!=null?`
+      <div style="color:#a5b4fc;font-size:11px;font-weight:600;margin:8px 0 4px;">▸ KOSPI200 선물 (계약)</div>
+      <div style="display:flex;justify-content:space-between;padding:3px 0;"><span style="color:#cbd5e1;">외국인</span><span style="color:${colorOf(fF)};font-weight:700;">${fmtCon(fF)}</span></div>
+      <div style="font-size:10px;color:#cbd5e1;margin-top:4px;padding:4px 6px;background:rgba(255,255,255,0.03);border-radius:4px;">
+        💰 명목가치 약 ${futNotionalEok>=0?'+':''}${futNotionalEok?.toLocaleString()}억원 <span style="color:#94a3b8;">(KOSPI200=${k200.toFixed(1)}pt)</span><br>
+        ${futInsight}
+      </div>`:''}
+
+      <div style="color:#a5b4fc;font-size:11px;font-weight:600;margin:10px 0 2px;">▸ 시그널 적중 추이 (최근 ${history.length}일)</div>
+      ${miniChart}
+
+      <div style="background:linear-gradient(90deg,#8b5cf6,#ec4899);text-align:center;padding:8px;border-radius:8px;margin-top:10px;font-weight:700;color:#fff;font-size:12px;">🐶 클릭하여 왝더독 분석 실행</div>
+    `;
+    box.onclick=e=>{
+      if(e.target.closest('[onclick*="remove"]'))return;
+      if(typeof window.showWagTheDog==='function') window.showWagTheDog();
+    };
+    box._modernDesign=true;
+    box._clickHandlerInstalled=true;
+    document.body.appendChild(box);
+  }
+
+  window.renderModernKrxBox=renderModernKrxBox;
+  window._modernDesignInstalled=true;
+
+  function init(){
+    setTimeout(renderModernKrxBox,1500);
+    setInterval(()=>{
+      const b=document.getElementById('krx-main-box');
+      if(!b || !b._modernDesign) renderModernKrxBox();
+    },5000);
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init); else init();
+  console.log('✨ KRX 박스 v2.4 (실시간 지수+거래비중+미니차트) 설치 완료');
+})();
+</script>
 </body>
 </html>
