@@ -1,8 +1,7 @@
 """
-한국 증시 외국인/기관 매매동향 수집기 v5
-- 네이버 금융 PC: 일별 투자자 매매동향
-- bizdate 파라미터 필수 (오늘 날짜 자동 입력)
-- 단위: 억원 → 원으로 변환 저장
+한국 증시 외국인/기관 매매동향 수집기 v6
+- 네이버 금융: 현물(KOSPI/KOSDAQ) + 선물(KOSPI200) 통합 수집
+- 왝더독 분석용 외국인 선물 데이터 포함
 """
 from datetime import datetime, timezone, timedelta
 import json
@@ -26,13 +25,11 @@ HEADERS = {
 
 
 def parse_int(s):
-    """억원 단위 문자열 → 정수. 콤마, +/-, 공백 처리. 음수 인식."""
     if s is None:
         return 0
     s = str(s).strip().replace(",", "").replace(" ", "").replace("+", "")
     if not s or s in ("-", "--"):
         return 0
-    # 음수 부호와 숫자, 점만 남기기
     s = re.sub(r"[^\d\-\.]", "", s)
     if not s or s == "-":
         return 0
@@ -42,12 +39,11 @@ def parse_int(s):
         return 0
 
 
-def fetch_naver_investor_market(sosok_code, market_name):
+def fetch_naver_market(sosok_code, market_name):
     """
-    네이버 금융 일별 투자자 매매동향
-    sosok_code: '01'=KOSPI, '02'=KOSDAQ
+    sosok_code: '01'=KOSPI, '02'=KOSDAQ, '03'=선물(KOSPI200)
+    단위: 현물=억원, 선물=계약
     """
-    # bizdate를 오늘로 명시 (필수!)
     url = f"https://finance.naver.com/sise/investorDealTrendDay.naver?bizdate={today_str}&sosok={sosok_code}&page=1"
     print(f"\n   [{market_name}] {url}")
 
@@ -56,7 +52,6 @@ def fetch_naver_investor_market(sosok_code, market_name):
         print(f"   HTTP {res.status_code}, {len(res.content)} bytes")
 
         if res.status_code != 200:
-            print(f"   응답 본문 (처음 300자): {res.text[:300]}")
             return None
 
         res.encoding = "euc-kr"
@@ -68,57 +63,47 @@ def fetch_naver_investor_market(sosok_code, market_name):
             return None
 
         rows = table.find_all("tr")
-        print(f"   테이블 행 수: {len(rows)}")
-
-        # 데이터 행 탐색 (날짜 형식 26.06.12 또는 2026.06.12)
         data_row = None
         for tr in rows:
             tds = tr.find_all("td")
             if len(tds) >= 10:
                 first_text = tds[0].get_text(strip=True)
-                # 날짜 패턴: YY.MM.DD 또는 YYYY.MM.DD
                 if re.match(r"^\d{2,4}[.\-/]\d{1,2}[.\-/]\d{1,2}$", first_text):
                     data_row = tds
                     break
 
         if not data_row:
-            print(f"   데이터 행 없음. tr 수: {len(rows)}")
-            for i, tr in enumerate(rows[:8]):
-                tds = tr.find_all("td")
-                print(f"   행 {i} (td {len(tds)}개): {tr.get_text(strip=True)[:120]}")
+            print(f"   데이터 행 없음")
             return None
 
-        # 날짜 정규화 (26.06.12 → 20260612)
         date_str = data_row[0].get_text(strip=True)
         date_clean = re.sub(r"[^\d]", "", date_str)
-        if len(date_clean) == 6:  # YYMMDD
-            date_norm = "20" + date_clean
-        else:
-            date_norm = date_clean
+        date_norm = "20" + date_clean if len(date_clean) == 6 else date_clean
 
-        # 컬럼 인덱스
-        # 0:날짜 1:개인 2:외국인 3:기관계 4:금융투자 5:보험 6:투신 7:은행 8:기타금융 9:연기금등 10:기타법인
         indiv = parse_int(data_row[1].get_text(strip=True))
         foreign = parse_int(data_row[2].get_text(strip=True))
         inst = parse_int(data_row[3].get_text(strip=True))
         finance = parse_int(data_row[4].get_text(strip=True))
         pension = parse_int(data_row[9].get_text(strip=True)) if len(data_row) > 9 else 0
 
+        unit = "계약" if sosok_code == "03" else "억"
         print(f"   날짜: {date_norm}")
-        print(f"   개인:    {indiv:>10,} 억")
-        print(f"   외국인:  {foreign:>10,} 억")
-        print(f"   기관계:  {inst:>10,} 억")
-        print(f"   금융투자:{finance:>10,} 억")
-        print(f"   연기금등:{pension:>10,} 억")
+        print(f"   개인:    {indiv:>10,} {unit}")
+        print(f"   외국인:  {foreign:>10,} {unit}")
+        print(f"   기관계:  {inst:>10,} {unit}")
+        print(f"   금융투자:{finance:>10,} {unit}")
+        print(f"   연기금등:{pension:>10,} {unit}")
 
-        # 억원 → 원 (1억 = 1e8 원)
+        # 현물(01,02)는 억→원 환산, 선물(03)은 계약수 그대로
+        multiplier = 1 if sosok_code == "03" else 100000000
         return {
             "date": date_norm,
-            "외국인합계": foreign * 100000000,
-            "기관합계": inst * 100000000,
-            "개인": indiv * 100000000,
-            "금융투자": finance * 100000000,
-            "연기금등": pension * 100000000,
+            "외국인합계": foreign * multiplier,
+            "기관합계": inst * multiplier,
+            "개인": indiv * multiplier,
+            "금융투자": finance * multiplier,
+            "연기금등": pension * multiplier,
+            "unit": unit,
         }
 
     except Exception as e:
@@ -127,13 +112,14 @@ def fetch_naver_investor_market(sosok_code, market_name):
         return None
 
 
-def fetch_naver_investor():
+def fetch_naver_all():
     print("=" * 60)
-    print("Source 1: 네이버 금융 (투자자별 일별 매매동향)")
+    print("Source: 네이버 금융 (현물 + 선물 매매동향)")
     print("=" * 60)
 
-    kospi = fetch_naver_investor_market("01", "KOSPI")
-    kosdaq = fetch_naver_investor_market("02", "KOSDAQ")
+    kospi = fetch_naver_market("01", "KOSPI")
+    kosdaq = fetch_naver_market("02", "KOSDAQ")
+    futures = fetch_naver_market("03", "KOSPI200 선물")
 
     if not kospi or not kosdaq:
         return None
@@ -142,7 +128,15 @@ def fetch_naver_investor():
     return {
         "source": "naver",
         "base_date": base_date,
-        "data": {"kospi": kospi, "kosdaq": kosdaq},
+        "data": {
+            "kospi": kospi,
+            "kosdaq": kosdaq,
+            "futures": futures or {
+                "date": base_date,
+                "외국인합계": 0, "기관합계": 0, "개인": 0,
+                "금융투자": 0, "연기금등": 0, "unit": "계약"
+            },
+        },
     }
 
 
@@ -157,18 +151,21 @@ def use_mock():
             "kospi": {"date": today_str, "외국인합계": -2775400000000, "기관합계": 1234500000000,
                       "개인": 1540900000000, "금융투자": 567800000000, "연기금등": -89000000000},
             "kosdaq": {"date": today_str, "외국인합계": 297400000000, "기관합계": -123400000000,
-                       "개인": -174000000000, "금융투자": 34500000000, "연기금등": 5600000000}
+                       "개인": -174000000000, "금융투자": 34500000000, "연기금등": 5600000000},
+            "futures": {"date": today_str, "외국인합계": 887, "기관합계": -2276,
+                        "개인": 1319, "금융투자": -5624, "연기금등": 34, "unit": "계약"}
         }
     }
 
 
-data = fetch_naver_investor() or use_mock()
+data = fetch_naver_all() or use_mock()
 
 
 def to_eok(v):
     return round(v / 1e8, 1)
 
 
+# kospi, kosdaq은 억 단위 변환, futures는 계약수 그대로
 for market_key in ("kospi", "kosdaq"):
     m = data["data"].get(market_key, {})
     eok = {}
@@ -179,6 +176,11 @@ for market_key in ("kospi", "kosdaq"):
             eok[k] = v
     data["data"][market_key]["eok"] = eok
 
+# futures는 그대로 (단위가 계약수)
+if "futures" in data["data"]:
+    fut = data["data"]["futures"]
+    fut["계약"] = {k: v for k, v in fut.items() if k != "unit"}
+
 output = {
     "updated_at": now_kst.isoformat(),
     "updated_at_kst": now_kst.strftime("%Y-%m-%d %H:%M:%S"),
@@ -186,6 +188,7 @@ output = {
     "base_date": data["base_date"],
     "kospi": data["data"]["kospi"],
     "kosdaq": data["data"]["kosdaq"],
+    "futures": data["data"].get("futures", {}),
 }
 
 os.makedirs("data", exist_ok=True)
@@ -205,3 +208,9 @@ if output["source"] == "naver":
     for k, v in output["kosdaq"]["eok"].items():
         if isinstance(v, (int, float)):
             print(f"   {k:<10}: {v:>12,.1f}")
+    print(f"\n🎯 KOSPI200 선물 요약 (계약)")
+    fut = output.get("futures", {})
+    for k in ["외국인합계", "기관합계", "개인", "금융투자", "연기금등"]:
+        v = fut.get(k, 0)
+        if isinstance(v, (int, float)):
+            print(f"   {k:<10}: {v:>12,}")
