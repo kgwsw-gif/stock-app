@@ -13762,5 +13762,41 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('✨ KRX 박스 v2.4 (실시간 지수+거래비중+미니차트) 설치 완료');
 })();
 </script>
+  <script>
+// Patch #9: 중복 휴장일 라벨 차단 (MutationObserver 방식)
+(function(){
+  function installBlocker(){
+    if(window._labelBlocker) return;
+    
+    // applyHolidayLabel 무력화
+    window.applyHolidayLabel = function(){};
+    
+    // MutationObserver로 .krx-holiday-label 생성 즉시 차단
+    window._labelBlocker = new MutationObserver((mutations)=>{
+      mutations.forEach(m=>{
+        m.addedNodes.forEach(node=>{
+          if(node.nodeType===1){
+            if(node.classList?.contains('krx-holiday-label')){
+              node.remove();
+            } else if(node.querySelector?.('.krx-holiday-label')){
+              node.querySelectorAll('.krx-holiday-label').forEach(el=>el.remove());
+            }
+          }
+        });
+      });
+    });
+    window._labelBlocker.observe(document.body, {childList:true, subtree:true});
+    
+    // 초기 잔존 라벨 제거
+    document.querySelectorAll('.krx-holiday-label').forEach(el=>el.remove());
+    
+    window._duplicateLabelBlocked = true;
+    console.log('✅ 중복 휴장일 라벨 차단 활성화 (Patch #9)');
+  }
+  
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>setTimeout(installBlocker,2000));
+  else setTimeout(installBlocker,2000);
+})();
+</script>
 </body>
 </html>
