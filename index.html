@@ -14662,5 +14662,92 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   else setTimeout(install, 5000);
 })();
 </script>
+  <script>
+// Patch #20 - 종목명 매핑 캐시 (KOSPI/KOSDAQ 386종목)
+(function(){
+  const CACHE_KEY = 'stock_name_map';
+  const TTL = 7 * 86400000; // 7일
+  
+  async function fetchPage(sosok, page){
+    const url = `https://finance.naver.com/sise/sise_market_sum.naver?sosok=${sosok}&page=${page}`;
+    const r = await fetch('https://corsproxy.io/?' + encodeURIComponent(url));
+    const buf = await r.arrayBuffer();
+    const txt = new TextDecoder('euc-kr').decode(buf);
+    const matches = [...txt.matchAll(/code=(\d{6})[^>]*>([^<]+)</g)];
+    const map = {};
+    matches.forEach(m => {
+      if(!map[m[1]] && m[2].length < 20 && !/^[\d,.\-+]+$/.test(m[2])){
+        map[m[1]] = m[2].trim();
+      }
+    });
+    return map;
+  }
+  
+  async function rebuildNameMap(){
+    const nameMap = {};
+    // KOSPI 1~5페이지 (250종목)
+    for(let p=1; p<=5; p++){
+      try{
+        Object.assign(nameMap, await fetchPage(0, p));
+        await new Promise(r => setTimeout(r, 400));
+      }catch(e){}
+    }
+    // KOSDAQ 1~3페이지 (150종목)
+    for(let p=1; p<=3; p++){
+      try{
+        Object.assign(nameMap, await fetchPage(1, p));
+        await new Promise(r => setTimeout(r, 400));
+      }catch(e){}
+    }
+    return nameMap;
+  }
+  
+  async function loadNameMap(){
+    // 1. localStorage 캐시 확인
+    try{
+      const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+      if(cached && cached.ts && (Date.now() - cached.ts < TTL) && cached.data){
+        const count = Object.keys(cached.data).length;
+        if(count >= 300){
+          window._stockNameMap = cached.data;
+          console.log(`✅ Patch #20: 종목명 캐시 복원 (${count}개, ${Math.floor((Date.now()-cached.ts)/3600000)}시간 전)`);
+          return cached.data;
+        }
+      }
+    }catch(e){}
+    
+    // 2. 캐시 없거나 오래됨 → 새로 수집
+    console.log('📡 Patch #20: 종목명 새로 수집 중...');
+    const nameMap = await rebuildNameMap();
+    const count = Object.keys(nameMap).length;
+    if(count >= 300){
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ts: Date.now(), data: nameMap}));
+      window._stockNameMap = nameMap;
+      console.log(`✅ Patch #20: 종목명 ${count}개 수집 완료`);
+    } else {
+      console.warn(`⚠️ Patch #20: 종목명 ${count}개만 확보 (부족)`);
+      window._stockNameMap = nameMap;
+    }
+    return nameMap;
+  }
+  
+  // 전역 노출
+  window.loadStockNameMap = loadNameMap;
+  window.rebuildStockNameMap = async function(){
+    localStorage.removeItem(CACHE_KEY);
+    return await loadNameMap();
+  };
+  
+  function install(){
+    loadNameMap();
+    window._patch20Installed = true;
+    window._patch20Version = 'v1';
+  }
+  
+  if(document.readyState==='loading')
+    document.addEventListener('DOMContentLoaded', ()=>setTimeout(install, 6000));
+  else setTimeout(install, 6000);
+})();
+</script>
 </body>
 </html>
