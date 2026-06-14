@@ -13428,5 +13428,163 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   }
 })();
 </script>
+  <script>
+// ============================================
+// KRX 박스 디자인 v2.1 (G) - 모던 다크 그라데이션
+// ============================================
+(function(){
+  function renderModernKrxBox(){
+    const data = window._lastKrxData;
+    if(!data) return;
+    
+    const old = document.getElementById('krx-main-box');
+    if(old) old.remove();
+    
+    const kospi = data.kospi?.eok || {};
+    const kosdaq = data.kosdaq?.eok || {};
+    const futures = data.futures || {};
+    
+    const fK = kospi['외국인합계'];
+    const iK = kospi['기관합계'];
+    const fQ = kosdaq['외국인합계'];
+    const iQ = kosdaq['기관합계'];
+    const fF = futures['외국인합계'];
+    
+    const fmt = v => v==null ? '-' : (v>=0?'+':'') + v.toLocaleString();
+    const sourceTag = data.source === 'naver' ? '실시간' : (data.source === 'mock' ? 'MOCK' : data.source || '?');
+    const sourceColor = data.source === 'naver' ? '#10b981' : '#f59e0b';
+    const baseDate = data.base_date || '';
+    const baseDateStr = baseDate ? `${baseDate.substring(0,4)}-${baseDate.substring(4,6)}-${baseDate.substring(6,8)}` : '-';
+    
+    let holidayInfo = null;
+    if(baseDate){
+      const bDate = new Date(parseInt(baseDate.substring(0,4)), parseInt(baseDate.substring(4,6))-1, parseInt(baseDate.substring(6,8)));
+      const today = new Date(); today.setHours(0,0,0,0); bDate.setHours(0,0,0,0);
+      const diff = Math.round((today - bDate)/(1000*60*60*24));
+      if(diff > 0){
+        const dow = today.getDay();
+        const dowName = ['일','월','화','수','목','금','토'][dow];
+        let reason = (dow===0||dow===6) ? `주말(${dowName})` : (diff>=2 ? '공휴일 추정' : '장 시작 전');
+        holidayInfo = { reason, diff, todayStr: today.toISOString().slice(0,10) };
+      }
+    }
+    
+    const totalForeign = (fK||0) + (fQ||0);
+    const totalInst = (iK||0) + (iQ||0);
+    let overallSignal = '중립';
+    let overallColor = '#cbd5e1';
+    let overallIcon = '➖';
+    if(totalForeign > 5000 && totalInst > 5000){ overallSignal='강한 매수'; overallColor='#34d399'; overallIcon='🚀'; }
+    else if(totalForeign > 0 && totalInst > 0){ overallSignal='매수 우세'; overallColor='#4ade80'; overallIcon='📈'; }
+    else if(totalForeign < -5000 && totalInst < -5000){ overallSignal='강한 매도'; overallColor='#f87171'; overallIcon='📉'; }
+    else if(totalForeign < 0 && totalInst < 0){ overallSignal='매도 우세'; overallColor='#fb923c'; overallIcon='🔻'; }
+    
+    const box = document.createElement('div');
+    box.id = 'krx-main-box';
+    box.style.cssText = `
+      position:fixed; top:60px; right:20px; z-index:9999;
+      background:linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      border-radius:12px; padding:14px 16px;
+      box-shadow:0 10px 40px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.1);
+      font-family:-apple-system, 'Segoe UI', sans-serif;
+      color:#f1f5f9; width:320px; max-width:90vw;
+      cursor:pointer; transition:transform 0.2s, box-shadow 0.2s;
+    `;
+    box.onmouseenter = () => { box.style.transform='translateY(-2px)'; box.style.boxShadow='0 14px 50px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.15)'; };
+    box.onmouseleave = () => { box.style.transform=''; box.style.boxShadow='0 10px 40px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.1)'; };
+    
+    const valBlock = (label, val, unit) => {
+      const color = val==null ? '#94a3b8' : (val>0 ? '#34d399' : (val<0 ? '#f87171' : '#cbd5e1'));
+      return `<div style="display:flex; justify-content:space-between; align-items:baseline; padding:5px 0; border-bottom:1px solid rgba(255,255,255,0.06);">
+        <span style="color:#cbd5e1; font-size:12px; font-weight:500;">${label}</span>
+        <span style="color:${color}; font-weight:700; font-size:13px;">${fmt(val)} <span style="font-size:10px; opacity:0.85; font-weight:500;">${unit}</span></span>
+      </div>`;
+    };
+    
+    box.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <div style="display:flex; align-items:center; gap:6px;">
+          <span style="font-size:16px;">🇰🇷</span>
+          <span style="font-weight:700; font-size:14px; color:#ffffff;">KRX 수급</span>
+          <span style="background:${sourceColor}25; color:${sourceColor}; font-size:10px; padding:2px 6px; border-radius:10px; font-weight:700;">● ${sourceTag}</span>
+        </div>
+        <span class="krx-close-btn" style="cursor:pointer; color:#94a3b8; font-size:18px; line-height:1; padding:0 4px;">×</span>
+      </div>
+      <div style="background:rgba(255,255,255,0.08); border-radius:8px; padding:8px 10px; margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-size:11px; color:#e2e8f0; font-weight:500;">📅 ${baseDateStr}</span>
+          <span style="font-size:11px; font-weight:700; color:${overallColor};">${overallIcon} ${overallSignal}</span>
+        </div>
+        ${holidayInfo ? `<div style="font-size:10px; color:#fcd34d; margin-top:4px; font-weight:500;">⚠️ ${holidayInfo.todayStr} ${holidayInfo.reason} · D-${holidayInfo.diff}</div>` : ''}
+      </div>
+      <div style="margin-bottom:8px;">
+        <div style="font-size:11px; color:#a5b4fc; font-weight:700; margin-bottom:4px; letter-spacing:0.5px;">▸ KOSPI 현물 (억원)</div>
+        ${valBlock('외국인', fK, '억')}
+        ${valBlock('기관', iK, '억')}
+      </div>
+      <div style="margin-bottom:8px;">
+        <div style="font-size:11px; color:#a5b4fc; font-weight:700; margin-bottom:4px; letter-spacing:0.5px;">▸ KOSDAQ 현물 (억원)</div>
+        ${valBlock('외국인', fQ, '억')}
+        ${valBlock('기관', iQ, '억')}
+      </div>
+      ${fF!=null ? `<div style="margin-bottom:8px;">
+        <div style="font-size:11px; color:#a5b4fc; font-weight:700; margin-bottom:4px; letter-spacing:0.5px;">▸ KOSPI200 선물 (계약)</div>
+        ${valBlock('외국인', fF, '계약')}
+      </div>` : ''}
+      <div style="text-align:center; padding:9px; margin-top:8px; background:linear-gradient(90deg, rgba(59,130,246,0.25), rgba(168,85,247,0.25)); border-radius:6px; font-size:12px; color:#ffffff; font-weight:600;">
+        🐶 클릭하여 왝더독 분석 실행
+      </div>
+    `;
+    
+    box.querySelector('.krx-close-btn').onclick = (e) => { e.stopPropagation(); box.remove(); };
+    box.onclick = function(e){
+      if(e.target.classList.contains('krx-close-btn')) return;
+      if(typeof window.showWagTheDog === 'function') window.showWagTheDog();
+    };
+    box._clickHandlerInstalled = true;
+    box._modernDesign = true;
+    
+    document.body.appendChild(box);
+  }
+  
+  window.renderModernKrxBox = renderModernKrxBox;
+  
+  function installModernDesign(){
+    // 데이터 로드 대기
+    if(!window._lastKrxData){
+      setTimeout(installModernDesign, 800);
+      return;
+    }
+    if(window._modernDesignInstalled) return;
+    window._modernDesignInstalled = true;
+    
+    // 초기 렌더
+    renderModernKrxBox();
+    
+    // 원본 박스가 다시 만들어지면 새 디자인으로 자동 교체
+    const mo = new MutationObserver(() => {
+      const box = document.getElementById('krx-main-box');
+      if(box && !box._modernDesign){
+        renderModernKrxBox();
+      }
+    });
+    mo.observe(document.body, { childList: true });
+    
+    // 데이터 갱신 시 박스도 갱신 (주기적)
+    setInterval(() => {
+      const box = document.getElementById('krx-main-box');
+      if(!box && window._lastKrxData) renderModernKrxBox();
+    }, 5000);
+    
+    console.log('✅ KRX 박스 모던 디자인 v2.1 설치 완료');
+  }
+  
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', () => setTimeout(installModernDesign, 1500));
+  } else {
+    setTimeout(installModernDesign, 1500);
+  }
+})();
+</script>
 </body>
 </html>
