@@ -1,7 +1,8 @@
 """
-한국 증시 외국인/기관 매매동향 수집기 v3
-- 네이버 금융 모바일 (인증 불필요)
-- pykrx 대체
+한국 증시 외국인/기관 매매동향 수집기 v4
+- 네이버 금융 PC: 일별 투자자 매매동향
+- 단위: 억원 (그대로 사용)
+- 엔드포인트: /sise/investorDealTrendDay.naver?sosok={01|02}
 """
 from datetime import datetime, timezone, timedelta
 import json
@@ -9,6 +10,7 @@ import os
 import re
 import traceback
 import requests
+from bs4 import BeautifulSoup
 
 KST = timezone(timedelta(hours=9))
 now_kst = datetime.now(KST)
@@ -16,18 +18,22 @@ today_str = now_kst.strftime("%Y%m%d")
 print(f"현재(KST): {now_kst.strftime('%Y-%m-%d %H:%M:%S')}")
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "ko-KR,ko;q=0.9",
-    "Referer": "https://m.stock.naver.com/",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+    "Referer": "https://finance.naver.com/sise/sise_trans_style.naver",
 }
 
 
-def parse_num(s):
-    """문자열에서 숫자만 추출. 콤마/공백 제거. 음수 처리."""
+def parse_int(s):
+    """억원 단위 문자열 → 정수. 콤마, +/-, 공백, '↑↓' 처리."""
     if s is None:
         return 0
-    s = str(s).strip().replace(",", "").replace(" ", "")
+    s = str(s).strip().replace(",", "").replace(" ", "").replace("+", "")
+    if not s or s in ("-", "--", "0"):
+        return 0
+    # 빨간색/파란색 화살표 등 제거
+    s = re.sub(r"[^\d\-\.]", "", s)
     if not s or s == "-":
         return 0
     try:
@@ -36,96 +42,102 @@ def parse_num(s):
         return 0
 
 
-def fetch_naver_investor():
+def fetch_naver_investor_market(sosok_code, market_name):
     """
-    네이버 금융 모바일 API에서 외국인/기관 매매 동향 수집
-    엔드포인트: https://m.stock.naver.com/api/index/{code}/investor/daily
-    KOSPI: KOSPI, KOSDAQ: KOSDAQ
+    네이버 금융 일별 투자자 매매동향 (억원 단위)
+    sosok_code: '01' = KOSPI, '02' = KOSDAQ
     """
-    print("=" * 60)
-    print("Source 1: 네이버 금융 모바일 (외국인/기관 일별)")
-    print("=" * 60)
+    url = f"https://finance.naver.com/sise/investorDealTrendDay.naver?bizdate=&sosok={sosok_code}&page=1"
+    print(f"\n   [{market_name}] {url}")
 
-    result = {}
-    base_date = None
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=15)
+        print(f"   HTTP {res.status_code}, {len(res.content)} bytes")
 
-    for market_code, market_key in [("KOSPI", "kospi"), ("KOSDAQ", "kosdaq")]:
-        url = f"https://m.stock.naver.com/api/index/{market_code}/investor/daily"
-        print(f"\n   [{market_code}] {url}")
-
-        try:
-            res = requests.get(url, headers=HEADERS, timeout=15)
-            print(f"   HTTP {res.status_code}, {len(res.content)} bytes")
-
-            if res.status_code != 200:
-                print(f"   응답 본문 (처음 200자): {res.text[:200]}")
-                return None
-
-            data = res.json()
-            # data 구조: 보통 {"datas":[{...}], ...} 또는 [{...}]
-            if isinstance(data, dict):
-                items = data.get("datas") or data.get("data") or data.get("result") or []
-            elif isinstance(data, list):
-                items = data
-            else:
-                items = []
-
-            if not items:
-                print(f"   빈 데이터: {str(data)[:300]}")
-                return None
-
-            print(f"   {len(items)}건 수신, 첫 항목 키: {list(items[0].keys()) if items else '(없음)'}")
-
-            # 가장 최근 일자
-            latest = items[0]
-            print(f"   첫 항목 내용 (처음 500자): {str(latest)[:500]}")
-
-            # 날짜 키 찾기
-            date_val = latest.get("bizdate") or latest.get("date") or latest.get("localTradedAt") or latest.get("dt") or ""
-            date_val = str(date_val).replace("-", "").replace(".", "")[:8]
-            if date_val:
-                base_date = date_val
-
-            # 외국인/기관 키 후보들
-            foreign = parse_num(
-                latest.get("foreignerPureBuyQuant") or
-                latest.get("foreignPureBuyAmt") or
-                latest.get("foreignerNetBuy") or
-                latest.get("foreign") or 0
-            )
-            inst = parse_num(
-                latest.get("organPureBuyQuant") or
-                latest.get("organPureBuyAmt") or
-                latest.get("organNetBuy") or
-                latest.get("organ") or
-                latest.get("institution") or 0
-            )
-            indiv = parse_num(
-                latest.get("individualPureBuyQuant") or
-                latest.get("individualPureBuyAmt") or
-                latest.get("individualNetBuy") or
-                latest.get("individual") or 0
-            )
-
-            result[market_key] = {
-                "date": base_date or today_str,
-                "외국인합계": foreign,
-                "기관합계": inst,
-                "개인": indiv,
-                "금융투자": 0,
-                "연기금등": 0,
-            }
-            print(f"   {market_code}: 외국인 {foreign:>15,}, 기관 {inst:>15,}, 개인 {indiv:>15,}")
-
-        except Exception as e:
-            print(f"   {market_code} 예외: {type(e).__name__}: {e}")
-            print(traceback.format_exc())
+        if res.status_code != 200:
+            print(f"   응답 본문 (처음 300자): {res.text[:300]}")
             return None
 
-    if not result or len(result) < 2:
+        # 네이버는 EUC-KR 인코딩
+        res.encoding = "euc-kr"
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        # 일별 순매수 테이블 찾기
+        table = soup.find("table", summary=re.compile("일자별 순매수"))
+        if table is None:
+            print(f"   테이블 없음. HTML 일부:")
+            print(res.text[:500])
+            return None
+
+        rows = table.find_all("tr")
+        print(f"   테이블 행 수: {len(rows)}")
+
+        # 헤더 두 줄 건너뛰고 첫 데이터 행 찾기
+        data_row = None
+        for tr in rows:
+            tds = tr.find_all("td")
+            if len(tds) >= 10:
+                # 첫 칸이 날짜 형식인지 확인
+                first_text = tds[0].get_text(strip=True)
+                if re.match(r"\d{4}[.\-]\d{1,2}[.\-]\d{1,2}", first_text) or re.match(r"\d{2}[.\-]\d{2}[.\-]\d{2}", first_text):
+                    data_row = tds
+                    break
+
+        if not data_row:
+            print(f"   데이터 행 없음. 전체 tr 수: {len(rows)}")
+            for i, tr in enumerate(rows[:5]):
+                print(f"   행 {i}: {tr.get_text(strip=True)[:100]}")
+            return None
+
+        # 컬럼: 날짜 | 개인 | 외국인 | 기관계 | 금융투자 | 보험 | 투신 | 은행 | 기타금융 | 연기금등 | 기타법인
+        date_str = data_row[0].get_text(strip=True)
+        date_norm = re.sub(r"[^\d]", "", date_str)
+        if len(date_norm) == 6:  # YYMMDD → YYYYMMDD
+            date_norm = "20" + date_norm
+
+        indiv = parse_int(data_row[1].get_text(strip=True))
+        foreign = parse_int(data_row[2].get_text(strip=True))
+        inst = parse_int(data_row[3].get_text(strip=True))
+        finance = parse_int(data_row[4].get_text(strip=True))
+        pension = parse_int(data_row[9].get_text(strip=True)) if len(data_row) > 9 else 0
+
+        print(f"   날짜: {date_norm}")
+        print(f"   개인: {indiv:>10,} 억 / 외국인: {foreign:>10,} 억 / 기관: {inst:>10,} 억")
+        print(f"   금융투자: {finance:>10,} 억 / 연기금등: {pension:>10,} 억")
+
+        # 단위: 억원 → 원 (1e8 곱하기)
+        return {
+            "date": date_norm,
+            "외국인합계": foreign * 100000000,
+            "기관합계": inst * 100000000,
+            "개인": indiv * 100000000,
+            "금융투자": finance * 100000000,
+            "연기금등": pension * 100000000,
+        }
+
+    except Exception as e:
+        print(f"   {market_name} 예외: {type(e).__name__}: {e}")
+        print(traceback.format_exc())
         return None
 
-    return {"source": "naver", "data": result, "base_date": base_date or today_str}
+
+def fetch_naver_investor():
+    print("=" * 60)
+    print("Source 1: 네이버 금융 (투자자별 일별 매매동향)")
+    print("=" * 60)
+
+    kospi = fetch_naver_investor_market("01", "KOSPI")
+    kosdaq = fetch_naver_investor_market("02", "KOSDAQ")
+
+    if not kospi or not kosdaq:
+        return None
+
+    base_date = kospi.get("date") or kosdaq.get("date") or today_str
+    return {
+        "source": "naver",
+        "base_date": base_date,
+        "data": {"kospi": kospi, "kosdaq": kosdaq},
+    }
 
 
 def use_mock():
