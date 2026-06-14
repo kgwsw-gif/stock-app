@@ -1,26 +1,30 @@
 """
-한국 증시 외국인/기관 매매동향 통합 수집기
-- 1순위: pykrx (KRX 공식)
-- 2순위: 네이버 금융
-- 3순위: MOCK (테스트용)
+한국 증시 외국인/기관 매매동향 통합 수집기 v2
 """
 from datetime import datetime, timezone, timedelta
 import json
 import time
 import os
-import requests
-from bs4 import BeautifulSoup
+import traceback
 
 KST = timezone(timedelta(hours=9))
 now_kst = datetime.now(KST)
 today_str = now_kst.strftime("%Y%m%d")
 print(f"현재(KST): {now_kst.strftime('%Y-%m-%d %H:%M:%S')}")
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-    "Referer": "https://finance.naver.com/",
-    "Accept-Language": "ko-KR,ko;q=0.9",
-}
+
+def find_row(df, candidates):
+    for name in candidates:
+        if name in df.index:
+            return name
+    return None
+
+
+def find_col(df, candidates):
+    for name in candidates:
+        if name in df.columns:
+            return name
+    return None
 
 
 def try_pykrx():
@@ -29,106 +33,105 @@ def try_pykrx():
     print("=" * 60)
     try:
         from pykrx import stock
+        print("   pykrx import 성공")
 
         d = datetime.strptime(today_str, "%Y%m%d")
         last_bday = None
-        for i in range(10):
+        for i in range(15):
             ds = d.strftime("%Y%m%d")
             try:
-                df = stock.get_market_ohlcv(ds, market="KOSPI")
-                if df is not None and not df.empty:
+                df_test = stock.get_market_ohlcv(ds, market="KOSPI")
+                if df_test is not None and not df_test.empty:
                     last_bday = ds
                     break
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"   {ds} OHLCV 시도 실패: {type(e).__name__}: {e}")
             d -= timedelta(days=1)
-            time.sleep(0.5)
+            time.sleep(0.3)
 
         if not last_bday:
-            print("   영업일 탐색 실패 (KRX 점검 중일 가능성)")
+            print("   영업일 탐색 실패")
             return None
 
         print(f"   영업일: {last_bday}")
 
-        def safe(df, idx, col):
-            try:
-                return int(df.loc[idx, col])
-            except Exception:
-                return 0
-
         result = {}
         for market in ("KOSPI", "KOSDAQ"):
+            print(f"\n   [{market}] 투자자별 매매 조회...")
             df = stock.get_market_trading_value_by_investor(last_bday, last_bday, market)
+
             if df is None or df.empty:
                 print(f"   {market} 빈 응답")
                 return None
+
+            print(f"   DataFrame shape: {df.shape}")
+            print(f"   인덱스: {list(df.index)}")
+            print(f"   컬럼: {list(df.columns)}")
+
+            col_buy = find_col(df, ["순매수", "순매수거래대금", "거래대금"])
+            if col_buy is None:
+                print(f"   순매수 컬럼 없음")
+                return None
+
+            row_foreign = find_row(df, ["외국인합계", "외국인", "기타외국인"])
+            row_inst = find_row(df, ["기관합계", "기관"])
+            row_indiv = find_row(df, ["개인"])
+            row_finance = find_row(df, ["금융투자"])
+            row_pension = find_row(df, ["연기금등", "연기금", "연기금 등"])
+
+            def get(row):
+                if row is None or row not in df.index:
+                    return 0
+                try:
+                    return int(df.loc[row, col_buy])
+                except Exception:
+                    return 0
+
+            foreign_total = get(row_foreign)
+            if row_foreign == "외국인" and "기타외국인" in df.index:
+                try:
+                    foreign_total += int(df.loc["기타외국인", col_buy])
+                except Exception:
+                    pass
+
             result[market.lower()] = {
                 "date": last_bday,
-                "외국인합계": safe(df, "외국인합계", "순매수"),
-                "기관합계": safe(df, "기관합계", "순매수"),
-                "개인": safe(df, "개인", "순매수"),
-                "금융투자": safe(df, "금융투자", "순매수"),
-                "연기금등": safe(df, "연기금등", "순매수"),
+                "외국인합계": foreign_total,
+                "기관합계": get(row_inst),
+                "개인": get(row_indiv),
+                "금융투자": get(row_finance),
+                "연기금등": get(row_pension),
             }
-            print(f"   {market}: 외국인 {result[market.lower()]['외국인합계']:>15,} 원")
+            print(f"   {market}: 외국인 {foreign_total:>15,} 원, 기관 {get(row_inst):>15,} 원")
 
         return {"source": "pykrx", "data": result, "base_date": last_bday}
 
-    except Exception as e:
-        print(f"   pykrx 실패: {e}")
-        return None
-
-
-def try_naver():
-    print("\n" + "=" * 60)
-    print("Source 2: 네이버 금융")
-    print("=" * 60)
-    try:
-        url = "https://finance.naver.com/sise/sise_index.naver?code=KOSPI"
-        print(f"   {url}")
-        res = requests.get(url, headers=HEADERS, timeout=10)
-        res.encoding = "euc-kr"
-        soup = BeautifulSoup(res.text, "html.parser")
-        print(f"   페이지 로드 성공 ({len(res.text)} bytes)")
-        # 추후 정확한 셀렉터 확정 후 활성화
+    except ImportError as e:
+        print(f"   pykrx import 실패: {e}")
         return None
     except Exception as e:
-        print(f"   네이버 실패: {e}")
+        print(f"   pykrx 예외: {type(e).__name__}: {e}")
+        print(traceback.format_exc())
         return None
 
 
 def use_mock():
     print("\n" + "=" * 60)
-    print("Source 3: MOCK 데이터 (파이프라인 검증)")
+    print("Source 3: MOCK 데이터")
     print("=" * 60)
-    print("   실제 데이터 수집 실패. MOCK 데이터로 진행합니다.")
-    print("   KST 07:30 이후 다시 실행하면 실제 데이터 수집됩니다.")
     return {
         "source": "mock",
         "base_date": today_str,
         "data": {
-            "kospi": {
-                "date": today_str,
-                "외국인합계": -2775400000000,
-                "기관합계": 1234500000000,
-                "개인": 1540900000000,
-                "금융투자": 567800000000,
-                "연기금등": -89000000000,
-            },
-            "kosdaq": {
-                "date": today_str,
-                "외국인합계": 297400000000,
-                "기관합계": -123400000000,
-                "개인": -174000000000,
-                "금융투자": 34500000000,
-                "연기금등": 5600000000,
-            }
+            "kospi": {"date": today_str, "외국인합계": -2775400000000, "기관합계": 1234500000000,
+                      "개인": 1540900000000, "금융투자": 567800000000, "연기금등": -89000000000},
+            "kosdaq": {"date": today_str, "외국인합계": 297400000000, "기관합계": -123400000000,
+                       "개인": -174000000000, "금융투자": 34500000000, "연기금등": 5600000000}
         }
     }
 
 
-# 실행
-data = try_pykrx() or try_naver() or use_mock()
+data = try_pykrx() or use_mock()
 
 
 def to_eok(v):
@@ -159,15 +162,5 @@ with open("data/krx_investor.json", "w", encoding="utf-8") as f:
     json.dump(output, f, ensure_ascii=False, indent=2)
 
 print("\n" + "=" * 60)
-print(f"저장 완료: data/krx_investor.json (source: {output['source']})")
+print(f"저장 완료 (source: {output['source']})")
 print("=" * 60)
-
-print(f"\nKOSPI 요약 (억원)")
-for k, v in output["kospi"].get("eok", {}).items():
-    if isinstance(v, (int, float)):
-        print(f"   {k:<10}: {v:>12,.1f}")
-
-print(f"\nKOSDAQ 요약 (억원)")
-for k, v in output["kosdaq"].get("eok", {}).items():
-    if isinstance(v, (int, float)):
-        print(f"   {k:<10}: {v:>12,.1f}")
