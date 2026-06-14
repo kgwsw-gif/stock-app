@@ -1,123 +1,136 @@
 """
-한국 증시 외국인/기관 매매동향 통합 수집기 v2
+한국 증시 외국인/기관 매매동향 수집기 v3
+- 네이버 금융 모바일 (인증 불필요)
+- pykrx 대체
 """
 from datetime import datetime, timezone, timedelta
 import json
-import time
 import os
+import re
 import traceback
+import requests
 
 KST = timezone(timedelta(hours=9))
 now_kst = datetime.now(KST)
 today_str = now_kst.strftime("%Y%m%d")
 print(f"현재(KST): {now_kst.strftime('%Y-%m-%d %H:%M:%S')}")
 
-
-def find_row(df, candidates):
-    for name in candidates:
-        if name in df.index:
-            return name
-    return None
-
-
-def find_col(df, candidates):
-    for name in candidates:
-        if name in df.columns:
-            return name
-    return None
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ko-KR,ko;q=0.9",
+    "Referer": "https://m.stock.naver.com/",
+}
 
 
-def try_pykrx():
-    print("=" * 60)
-    print("Source 1: pykrx (KRX 공식)")
-    print("=" * 60)
+def parse_num(s):
+    """문자열에서 숫자만 추출. 콤마/공백 제거. 음수 처리."""
+    if s is None:
+        return 0
+    s = str(s).strip().replace(",", "").replace(" ", "")
+    if not s or s == "-":
+        return 0
     try:
-        from pykrx import stock
-        print("   pykrx import 성공")
+        return int(float(s))
+    except ValueError:
+        return 0
 
-        d = datetime.strptime(today_str, "%Y%m%d")
-        last_bday = None
-        for i in range(15):
-            ds = d.strftime("%Y%m%d")
-            try:
-                df_test = stock.get_market_ohlcv(ds, market="KOSPI")
-                if df_test is not None and not df_test.empty:
-                    last_bday = ds
-                    break
-            except Exception as e:
-                print(f"   {ds} OHLCV 시도 실패: {type(e).__name__}: {e}")
-            d -= timedelta(days=1)
-            time.sleep(0.3)
 
-        if not last_bday:
-            print("   영업일 탐색 실패")
+def fetch_naver_investor():
+    """
+    네이버 금융 모바일 API에서 외국인/기관 매매 동향 수집
+    엔드포인트: https://m.stock.naver.com/api/index/{code}/investor/daily
+    KOSPI: KOSPI, KOSDAQ: KOSDAQ
+    """
+    print("=" * 60)
+    print("Source 1: 네이버 금융 모바일 (외국인/기관 일별)")
+    print("=" * 60)
+
+    result = {}
+    base_date = None
+
+    for market_code, market_key in [("KOSPI", "kospi"), ("KOSDAQ", "kosdaq")]:
+        url = f"https://m.stock.naver.com/api/index/{market_code}/investor/daily"
+        print(f"\n   [{market_code}] {url}")
+
+        try:
+            res = requests.get(url, headers=HEADERS, timeout=15)
+            print(f"   HTTP {res.status_code}, {len(res.content)} bytes")
+
+            if res.status_code != 200:
+                print(f"   응답 본문 (처음 200자): {res.text[:200]}")
+                return None
+
+            data = res.json()
+            # data 구조: 보통 {"datas":[{...}], ...} 또는 [{...}]
+            if isinstance(data, dict):
+                items = data.get("datas") or data.get("data") or data.get("result") or []
+            elif isinstance(data, list):
+                items = data
+            else:
+                items = []
+
+            if not items:
+                print(f"   빈 데이터: {str(data)[:300]}")
+                return None
+
+            print(f"   {len(items)}건 수신, 첫 항목 키: {list(items[0].keys()) if items else '(없음)'}")
+
+            # 가장 최근 일자
+            latest = items[0]
+            print(f"   첫 항목 내용 (처음 500자): {str(latest)[:500]}")
+
+            # 날짜 키 찾기
+            date_val = latest.get("bizdate") or latest.get("date") or latest.get("localTradedAt") or latest.get("dt") or ""
+            date_val = str(date_val).replace("-", "").replace(".", "")[:8]
+            if date_val:
+                base_date = date_val
+
+            # 외국인/기관 키 후보들
+            foreign = parse_num(
+                latest.get("foreignerPureBuyQuant") or
+                latest.get("foreignPureBuyAmt") or
+                latest.get("foreignerNetBuy") or
+                latest.get("foreign") or 0
+            )
+            inst = parse_num(
+                latest.get("organPureBuyQuant") or
+                latest.get("organPureBuyAmt") or
+                latest.get("organNetBuy") or
+                latest.get("organ") or
+                latest.get("institution") or 0
+            )
+            indiv = parse_num(
+                latest.get("individualPureBuyQuant") or
+                latest.get("individualPureBuyAmt") or
+                latest.get("individualNetBuy") or
+                latest.get("individual") or 0
+            )
+
+            result[market_key] = {
+                "date": base_date or today_str,
+                "외국인합계": foreign,
+                "기관합계": inst,
+                "개인": indiv,
+                "금융투자": 0,
+                "연기금등": 0,
+            }
+            print(f"   {market_code}: 외국인 {foreign:>15,}, 기관 {inst:>15,}, 개인 {indiv:>15,}")
+
+        except Exception as e:
+            print(f"   {market_code} 예외: {type(e).__name__}: {e}")
+            print(traceback.format_exc())
             return None
 
-        print(f"   영업일: {last_bday}")
-
-        result = {}
-        for market in ("KOSPI", "KOSDAQ"):
-            print(f"\n   [{market}] 투자자별 매매 조회...")
-            df = stock.get_market_trading_value_by_investor(last_bday, last_bday, market)
-
-            if df is None or df.empty:
-                print(f"   {market} 빈 응답")
-                return None
-
-            print(f"   DataFrame shape: {df.shape}")
-            print(f"   인덱스: {list(df.index)}")
-            print(f"   컬럼: {list(df.columns)}")
-
-            col_buy = find_col(df, ["순매수", "순매수거래대금", "거래대금"])
-            if col_buy is None:
-                print(f"   순매수 컬럼 없음")
-                return None
-
-            row_foreign = find_row(df, ["외국인합계", "외국인", "기타외국인"])
-            row_inst = find_row(df, ["기관합계", "기관"])
-            row_indiv = find_row(df, ["개인"])
-            row_finance = find_row(df, ["금융투자"])
-            row_pension = find_row(df, ["연기금등", "연기금", "연기금 등"])
-
-            def get(row):
-                if row is None or row not in df.index:
-                    return 0
-                try:
-                    return int(df.loc[row, col_buy])
-                except Exception:
-                    return 0
-
-            foreign_total = get(row_foreign)
-            if row_foreign == "외국인" and "기타외국인" in df.index:
-                try:
-                    foreign_total += int(df.loc["기타외국인", col_buy])
-                except Exception:
-                    pass
-
-            result[market.lower()] = {
-                "date": last_bday,
-                "외국인합계": foreign_total,
-                "기관합계": get(row_inst),
-                "개인": get(row_indiv),
-                "금융투자": get(row_finance),
-                "연기금등": get(row_pension),
-            }
-            print(f"   {market}: 외국인 {foreign_total:>15,} 원, 기관 {get(row_inst):>15,} 원")
-
-        return {"source": "pykrx", "data": result, "base_date": last_bday}
-
-    except ImportError as e:
-        print(f"   pykrx import 실패: {e}")
+    if not result or len(result) < 2:
         return None
-    except Exception as e:
-        print(f"   pykrx 예외: {type(e).__name__}: {e}")
-        print(traceback.format_exc())
-        return None
+
+    return {"source": "naver", "data": result, "base_date": base_date or today_str}
 
 
 def use_mock():
     print("\n" + "=" * 60)
-    print("Source 3: MOCK 데이터")
+    print("Fallback: MOCK 데이터")
     print("=" * 60)
     return {
         "source": "mock",
@@ -131,7 +144,8 @@ def use_mock():
     }
 
 
-data = try_pykrx() or use_mock()
+# 실행
+data = fetch_naver_investor() or use_mock()
 
 
 def to_eok(v):
