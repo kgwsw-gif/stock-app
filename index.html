@@ -15250,5 +15250,306 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('✅ Patch #22 Part 1 로드 (분석엔진+인사이트)');
 })();
 </script>
+  <script>
+// Patch #22 Part 2 - 스크리닝 UI (진행률/결과 모달/버튼)
+(function(){
+  // ===== 1. 진행률 박스 =====
+  function showProgress(current, total, currentName, status){
+    let box = document.getElementById('screen-progress');
+    if(!box){
+      box = document.createElement('div');
+      box.id = 'screen-progress';
+      box.style.cssText = `position:fixed!important;top:50%!important;left:50%!important;transform:translate(-50%,-50%)!important;width:380px!important;background:linear-gradient(135deg,#1e293b 0%,#0f172a 100%)!important;color:#e2e8f0!important;padding:20px!important;border-radius:12px!important;box-shadow:0 20px 60px rgba(0,0,0,0.6)!important;z-index:99998!important;font-family:-apple-system,sans-serif!important;`;
+      document.body.appendChild(box);
+    }
+    const pct = total > 0 ? (current/total*100) : 0;
+    box.innerHTML = `
+      <div style="font-size:14px;font-weight:bold;margin-bottom:10px;">🔍 전체 시장 스크리닝</div>
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:8px;">${status}</div>
+      <div style="background:rgba(255,255,255,0.1);border-radius:8px;height:8px;overflow:hidden;margin-bottom:8px;">
+        <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,#10b981,#3b82f6);transition:width 0.3s;"></div>
+      </div>
+      <div style="font-size:11px;display:flex;justify-content:space-between;">
+        <span>${current} / ${total}</span>
+        <span>${pct.toFixed(0)}%</span>
+      </div>
+      <div style="font-size:11px;color:#cbd5e1;margin-top:6px;min-height:14px;">${currentName || ''}</div>
+    `;
+  }
+  function hideProgress(){
+    setTimeout(()=>document.getElementById('screen-progress')?.remove(), 1500);
+  }
+  
+  // ===== 2. 스크리닝 실행 함수 =====
+  async function runScreening(){
+    if(!window.SHARES_DATA || !window._analyzeSingleStock){
+      alert('스크리닝 모듈 로드 안됨');
+      return null;
+    }
+    
+    // 시장 수익률 계산 (KOSPI200)
+    let marketRet = 5.0;
+    try{
+      if(window.fetchKospi200Daily){
+        const k = await window.fetchKospi200Daily(40);
+        const arr = Array.isArray(k) ? k : (k?.data || []);
+        if(arr.length >= 20){
+          const c = arr.map(d => d.close || d[4]).filter(v=>v);
+          marketRet = (c[c.length-1] - c[c.length-20]) / c[c.length-20] * 100;
+        }
+      }
+    }catch(e){}
+    
+    const codes = Object.keys(window.SHARES_DATA);
+    const results = [];
+    const failed = [];
+    const batchSize = 5;
+    const startTs = Date.now();
+    
+    showProgress(0, codes.length, '', '시작 중...');
+    
+    for(let i=0; i<codes.length; i+=batchSize){
+      const batch = codes.slice(i, i+batchSize);
+      const promises = batch.map(async (code, idx) => {
+        await new Promise(r => setTimeout(r, idx * 200));
+        const name = window._stockNameMap?.[code] || code;
+        const cur = i + idx + 1;
+        showProgress(cur, codes.length, `분석 중: ${name}`, '데이터 수집 + 점수 계산');
+        try{
+          const r = await window._analyzeSingleStock(code, name, marketRet);
+          if(r) results.push(r); else failed.push(code);
+        }catch(e){ failed.push(code); }
+      });
+      await Promise.all(promises);
+      if(i + batchSize < codes.length){
+        await new Promise(r => setTimeout(r, 1500));
+      }
+    }
+    
+    const elapsed = Math.round((Date.now() - startTs) / 1000);
+    showProgress(codes.length, codes.length, '완료', `${elapsed}초 · 성공 ${results.length} · 실패 ${failed.length}`);
+    hideProgress();
+    
+    results.sort((a,b) => b.total - a.total);
+    window._screeningResults = results;
+    localStorage.setItem('screening_results', JSON.stringify({ts: Date.now(), data: results, marketRet, elapsed}));
+    
+    return {results, marketRet, elapsed, failed};
+  }
+  
+  // ===== 3. 결과 모달 (인사이트 + 상위 20종목 + 전체 리스트) =====
+  function showResultsModal(data){
+    document.getElementById('screening-results-modal')?.remove();
+    
+    const {results, marketRet, elapsed, failed} = data;
+    const watchlist = JSON.parse(localStorage.getItem('watchlist')||'[]');
+    const watchlistCodes = watchlist.map(w => w.code);
+    const insights = window._generateInsights(results, watchlistCodes);
+    
+    const modal = document.createElement('div');
+    modal.id = 'screening-results-modal';
+    modal.style.cssText = `position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;background:rgba(0,0,0,0.7)!important;z-index:99999!important;display:flex!important;align-items:center!important;justify-content:center!important;`;
+    
+    const panel = document.createElement('div');
+    panel.style.cssText = `background:linear-gradient(135deg,#1e293b 0%,#0f172a 100%);color:#e2e8f0;border-radius:12px;padding:20px;width:820px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.6);font-family:-apple-system,sans-serif;`;
+    
+    // 헤더
+    let html = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:10px;">
+        <div>
+          <div style="font-size:18px;font-weight:bold;">🔍 전체 시장 스크리닝 결과</div>
+          <div style="font-size:11px;color:#94a3b8;margin-top:4px;">
+            ${results.length}종목 분석 · ${elapsed}초 소요 · 시장 ${marketRet.toFixed(2)}% · ${new Date().toLocaleString('ko-KR')}
+          </div>
+        </div>
+        <span id="screen-modal-close" style="cursor:pointer;font-size:24px;padding:0 8px;">×</span>
+      </div>
+    `;
+    
+    // 인사이트 섹션
+    if(insights.length > 0){
+      html += `<div style="margin-bottom:16px;">
+        <div style="font-size:14px;font-weight:bold;margin-bottom:10px;">💡 자동 인사이트</div>`;
+      insights.forEach(ins => {
+        const color = ins.type==='warning' ? '#ef4444' : 
+                      ins.type==='buy_candidate' ? '#10b981' :
+                      ins.type==='foreign_buy' ? '#3b82f6' :
+                      ins.type==='obv_signal' ? '#a78bfa' :
+                      ins.type==='mood' ? '#fbbf24' : '#64748b';
+        html += `
+          <div style="background:rgba(255,255,255,0.04);padding:10px 12px;border-radius:8px;margin-bottom:6px;border-left:3px solid ${color};">
+            <div style="font-size:11px;color:#94a3b8;margin-bottom:3px;">${ins.icon || '•'} ${ins.title}</div>
+            <div style="font-size:12px;color:#e2e8f0;">${ins.text}</div>
+          </div>
+        `;
+      });
+      html += `</div>`;
+    }
+    
+    // 상위 20종목 테이블
+    html += `<div style="margin-bottom:14px;">
+      <div style="font-size:14px;font-weight:bold;margin-bottom:8px;">🏆 상위 20종목</div>
+      <table style="width:100%;font-size:11px;border-collapse:collapse;">
+        <thead>
+          <tr style="background:rgba(255,255,255,0.05);">
+            <th style="padding:6px 4px;text-align:left;color:#94a3b8;">#</th>
+            <th style="padding:6px 4px;text-align:left;color:#94a3b8;">종목명</th>
+            <th style="padding:6px 4px;text-align:left;color:#94a3b8;">섹터</th>
+            <th style="padding:6px 4px;text-align:right;color:#94a3b8;">점수</th>
+            <th style="padding:6px 4px;text-align:right;color:#94a3b8;">가격</th>
+            <th style="padding:6px 4px;text-align:right;color:#94a3b8;">거래량</th>
+            <th style="padding:6px 4px;text-align:right;color:#94a3b8;">외인</th>
+            <th style="padding:6px 4px;text-align:left;color:#94a3b8;">신호</th>
+          </tr>
+        </thead>
+        <tbody>`;
+    
+    results.slice(0,20).forEach((r,i)=>{
+      const isWatch = watchlistCodes.includes(r.code);
+      const scoreColor = r.total>=75 ? '#10b981' : r.total>=55 ? '#22c55e' : r.total>=35 ? '#94a3b8' : r.total>=15 ? '#f97316' : '#ef4444';
+      const priceColor = r.detail.priceChange > 0 ? '#ef4444' : r.detail.priceChange < 0 ? '#3b82f6' : '#94a3b8';
+      const frStr = r.detail.frChange20 !== null ? 
+        `<span style="color:${r.detail.frChange20>=0?'#10b981':'#ef4444'}">${r.detail.frChange20>0?'+':''}${r.detail.frChange20}%p</span>` : '-';
+      html += `
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.05);cursor:pointer;" data-stock-idx="${i}" class="screen-row">
+          <td style="padding:6px 4px;">${i+1}</td>
+          <td style="padding:6px 4px;">${r.grade} ${r.name}${isWatch?' ⭐':''}</td>
+          <td style="padding:6px 4px;color:#94a3b8;">${r.sector}</td>
+          <td style="padding:6px 4px;text-align:right;font-weight:bold;color:${scoreColor};">${r.total}</td>
+          <td style="padding:6px 4px;text-align:right;color:${priceColor};">${r.detail.priceChange>0?'+':''}${r.detail.priceChange}%</td>
+          <td style="padding:6px 4px;text-align:right;">${r.detail.volRatio}배</td>
+          <td style="padding:6px 4px;text-align:right;">${frStr}</td>
+          <td style="padding:6px 4px;color:#cbd5e1;">${r.detail.obvLabel}</td>
+        </tr>`;
+    });
+    html += `</tbody></table>
+      <div style="font-size:10px;color:#64748b;margin-top:6px;">⭐ = 관심종목 · 행 클릭 시 상세 차트 · 결과는 24시간 캐시</div>
+    </div>`;
+    
+    // 하위 5종목 (분산 의심)
+    const bottom = results.slice(-5).reverse();
+    if(bottom.length > 0){
+      html += `<div style="margin-bottom:10px;">
+        <div style="font-size:13px;font-weight:bold;margin-bottom:8px;color:#ef4444;">⚠️ 하위 5종목 (분산/약세)</div>
+        <div style="font-size:11px;color:#cbd5e1;">`;
+      bottom.forEach((r,i)=>{
+        const frStr = r.detail.frChange20 !== null ? `외인 ${r.detail.frChange20>0?'+':''}${r.detail.frChange20}%p` : '';
+        html += `<div style="padding:4px 0;">${r.grade} ${r.name} ${r.total}점 · 가격 ${r.detail.priceChange>0?'+':''}${r.detail.priceChange}% · ${frStr}</div>`;
+      });
+      html += `</div></div>`;
+    }
+    
+    // 푸터: 재실행 버튼
+    html += `<div style="text-align:center;margin-top:14px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.1);">
+      <button id="screen-rerun-btn" style="background:#3b82f6;color:white;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:bold;">🔄 다시 스크리닝</button>
+      <span style="margin-left:10px;font-size:10px;color:#64748b;">실패: ${failed?.length || 0}종목</span>
+    </div>`;
+    
+    panel.innerHTML = html;
+    modal.appendChild(panel);
+    document.body.appendChild(modal);
+    
+    // 이벤트
+    document.getElementById('screen-modal-close').onclick = ()=>modal.remove();
+    modal.onclick = e=>{ if(e.target === modal) modal.remove(); };
+    
+    // 행 클릭 → 차트 모달
+    panel.querySelectorAll('.screen-row').forEach(row=>{
+      row.addEventListener('click', e=>{
+        const idx = parseInt(row.dataset.stockIdx);
+        const stock = results[idx];
+        if(stock && window.showStockDetailModal){
+          window.showStockDetailModal(stock);
+        }
+      });
+    });
+    
+    // 재실행
+    document.getElementById('screen-rerun-btn').onclick = async ()=>{
+      modal.remove();
+      const data = await runScreening();
+      if(data) showResultsModal(data);
+    };
+  }
+  
+  // ===== 4. 스크리닝 시작 (캐시 확인 → 실행 or 캐시 사용) =====
+  async function startScreening(forceFresh){
+    // 캐시 확인 (24시간)
+    if(!forceFresh){
+      try{
+        const cached = JSON.parse(localStorage.getItem('screening_results') || 'null');
+        if(cached && cached.ts && (Date.now() - cached.ts < 86400000) && cached.data?.length > 0){
+          const hours = Math.floor((Date.now() - cached.ts) / 3600000);
+          const minutes = Math.floor(((Date.now() - cached.ts) % 3600000) / 60000);
+          const useCache = confirm(`${hours}시간 ${minutes}분 전 결과가 있습니다.\n\n[확인] 캐시된 결과 보기\n[취소] 새로 스크리닝 (3~4분 소요)`);
+          if(useCache){
+            window._screeningResults = cached.data;
+            showResultsModal({results: cached.data, marketRet: cached.marketRet || 5, elapsed: cached.elapsed || 0});
+            return;
+          }
+        }
+      }catch(e){}
+    }
+    
+    const data = await runScreening();
+    if(data) showResultsModal(data);
+  }
+  
+  // ===== 5. 매집 박스에 "전체 스크리닝" 버튼 추가 =====
+  function addScreeningButton(){
+    const box = document.getElementById('maejip-box');
+    if(!box) return;
+    if(box.querySelector('[data-screen-btn]')) return;
+    
+    const btn = document.createElement('button');
+    btn.dataset.screenBtn = '1';
+    btn.textContent = '🔍 전체 시장 스크리닝';
+    btn.style.cssText = `
+      width:100%; margin-top:8px; padding:8px 12px;
+      background:linear-gradient(135deg,#3b82f6,#8b5cf6);
+      color:white; border:none; border-radius:8px;
+      cursor:pointer; font-size:12px; font-weight:bold;
+      transition:opacity 0.2s;
+    `;
+    btn.onmouseover = ()=>btn.style.opacity = '0.85';
+    btn.onmouseout = ()=>btn.style.opacity = '1';
+    btn.addEventListener('click', e=>{
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      startScreening(false);
+    }, true);
+    
+    // body 영역 끝에 삽입 (footer 위)
+    const body = box.querySelector('[data-body]');
+    if(body){
+      body.appendChild(btn);
+    } else {
+      box.appendChild(btn);
+    }
+  }
+  
+  // 전역 노출
+  window.runFullScreening = runScreening;
+  window.showScreeningResults = showResultsModal;
+  window.startScreening = startScreening;
+  
+  function install(){
+    addScreeningButton();
+    // 매집 박스 재생성 감지
+    if(window._screenBtnObserver) window._screenBtnObserver.disconnect();
+    window._screenBtnObserver = new MutationObserver(()=>setTimeout(addScreeningButton, 200));
+    window._screenBtnObserver.observe(document.body, {childList:true, subtree:true});
+    window._patch22Installed = true;
+    window._patch22Version = 'v1';
+    console.log('✅ Patch #22 설치 (전체 스크리닝 UI)');
+    console.log('💡 매집 박스의 "🔍 전체 시장 스크리닝" 버튼 클릭');
+  }
+  
+  if(document.readyState==='loading')
+    document.addEventListener('DOMContentLoaded', ()=>setTimeout(install, 8000));
+  else setTimeout(install, 8000);
+})();
+</script>
 </body>
 </html>
