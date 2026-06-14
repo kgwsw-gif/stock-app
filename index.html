@@ -13811,5 +13811,86 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   window._patch10Installed = true;
 })();
 </script>
+ <script>
+// Patch #11: AI 인사이트 외국인 선물 점수 추가 (후처리)
+(function(){
+  function patchInsightScore(){
+    let insightBox = null;
+    document.querySelectorAll('div').forEach(el=>{
+      const t = el.textContent || '';
+      if(t.includes('AI 종합 인사이트') && t.includes('권장 행동') && el.children.length < 50){
+        if(!insightBox || el.contains(insightBox)) insightBox = el;
+      }
+    });
+    if(!insightBox || insightBox.dataset.futScorePatched) return;
+    
+    const fF = window._lastKrxData?.futures?.['외국인합계'];
+    if(fF == null) return;
+    
+    let score = 0, desc = '';
+    if(fF >= 5000) {score=15; desc='대규모 매수, 강한 상승 베팅';}
+    else if(fF >= 2000) {score=10; desc='매수 우세, 상승 기대';}
+    else if(fF >= 500) {score=5; desc='소폭 매수, 관망에 가까움';}
+    else if(fF >= -500) {score=0; desc='관망';}
+    else if(fF >= -2000) {score=-5; desc='소폭 매도';}
+    else if(fF >= -5000) {score=-10; desc='매도 우세, 하락 주의';}
+    else {score=-15; desc='⚠️ 왝더독 의심, 대규모 매도 베팅';}
+    
+    const walker = document.createTreeWalker(insightBox, NodeFilter.SHOW_TEXT);
+    let node, target = null;
+    while(node = walker.nextNode()){
+      if(/외국인 선물\s*[+\-]?\d+계약/.test(node.textContent) && !node.textContent.includes('점)')){
+        target = node; break;
+      }
+    }
+    
+    if(target){
+      target.textContent = target.textContent.replace(
+        /(외국인 선물\s*[+\-]?\d+계약)/,
+        `$1 - ${desc} (${score>=0?'+':''}${score}점)`
+      );
+      
+      const totalMatch = insightBox.innerHTML.match(/강한 매수 신호 \(\+(\d+)점\)|매수 신호 \(\+(\d+)점\)|중립 \(([-+]?\d+)점\)|매도 신호 \(([-+]?\d+)점\)/);
+      if(totalMatch){
+        const oldTotal = parseInt(totalMatch[1]||totalMatch[2]||totalMatch[3]||totalMatch[4]);
+        const newTotal = oldTotal + score;
+        let newLabel = '중립';
+        if(newTotal >= 50) newLabel = '🚀 강한 매수 신호';
+        else if(newTotal >= 20) newLabel = '📈 매수 신호';
+        else if(newTotal >= -20) newLabel = '➖ 중립';
+        else if(newTotal >= -50) newLabel = '🔻 매도 신호';
+        else newLabel = '📉 강한 매도 신호';
+        
+        const tw = document.createTreeWalker(insightBox, NodeFilter.SHOW_TEXT);
+        let n2;
+        while(n2 = tw.nextNode()){
+          if(n2.textContent.includes('AI 종합 인사이트')){
+            n2.textContent = n2.textContent.replace(
+              /AI 종합 인사이트:.*?\([+\-]?\d+점\)/,
+              `AI 종합 인사이트: ${newLabel} (${newTotal>=0?'+':''}${newTotal}점)`
+            );
+            break;
+          }
+        }
+      }
+      insightBox.dataset.futScorePatched = '1';
+    }
+  }
+  
+  function install(){
+    if(window._insightPatchObserver) window._insightPatchObserver.disconnect();
+    window._insightPatchObserver = new MutationObserver(()=>{
+      setTimeout(patchInsightScore, 100);
+    });
+    window._insightPatchObserver.observe(document.body, {childList:true, subtree:true, characterData:true});
+    patchInsightScore();
+    window._patch11Installed = true;
+    console.log('✅ Patch #11 설치 (AI 인사이트 외국인 선물 점수)');
+  }
+  
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>setTimeout(install,2000));
+  else setTimeout(install,2000);
+})();
+</script> 
 </body>
 </html>
