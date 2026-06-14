@@ -13280,5 +13280,42 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('✅ 휴장일 라벨 패치 설치 완료 (C)');
 })();
 </script>
+  <script>
+// ============================================
+// 뉴스 함수 → Cloudflare Worker 리다이렉트 (D)
+// ============================================
+(function(){
+  function installNewsPatch(){
+    if(typeof window._fetchStockNews !== 'function'){
+      setTimeout(installNewsPatch, 500); return;
+    }
+    if(window._newsWorkerPatchInstalled) return;
+    window._newsWorkerPatchInstalled = true;
+    
+    const WORKER_URL = 'https://stock-proxy.kgwsw.workers.dev/naver/news';
+    
+    window._fetchStockNews = async function(query){
+      const q = String(query || '').trim();
+      if(!q) return [];
+      try {
+        const r = await fetch(WORKER_URL + '?q=' + encodeURIComponent(q));
+        const j = await r.json();
+        if(j.items && Array.isArray(j.items)) return j.items;
+        return [];
+      } catch(e){
+        console.warn('뉴스 호출 실패:', e.message);
+        return [];
+      }
+    };
+    console.log('✅ 뉴스 함수 Worker 리다이렉트 설치 완료');
+  }
+  
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', installNewsPatch);
+  } else {
+    installNewsPatch();
+  }
+})();
+</script>
 </body>
 </html>
