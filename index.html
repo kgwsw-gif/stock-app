@@ -14146,5 +14146,223 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   else setTimeout(install,3000);
 })();
 </script>
+  <script>
+// Patch #16 - KOSPI200 베이시스 표시 (한경 마켓 09월물 + 야후 현물)
+(function(){
+  const PROXY = 'https://corsproxy.io/?';
+  const HK_URL = 'https://markets.hankyung.com/indices/kospi-future';
+  const YH_URL = 'https://query1.finance.yahoo.com/v8/finance/chart/^KS200?interval=1d';
+  const CACHE_MS = 5*60*1000; // 5분 캐시
+  let cache = {data:null, ts:0};
+
+  async function fetchFutures(){
+    try{
+      const r = await fetch(PROXY + encodeURIComponent(HK_URL));
+      const html = await r.text();
+      const m = html.match(/curprc:(\d+\.?\d*),chgprc:(-?\d+\.?\d*),chgrate:(-?\d+\.?\d*)/);
+      if(m) return {price:parseFloat(m[1]), change:parseFloat(m[2]), rate:parseFloat(m[3])};
+      // 폴백: 코스피200 선물 헤더
+      const idx = html.indexOf('코스피200 선물');
+      if(idx>0){
+        const section = html.substring(idx, idx+800);
+        const pm = section.match(/(\d{1,2},\d{3}\.\d{1,2})/);
+        if(pm) return {price:parseFloat(pm[1].replace(',','')), change:null, rate:null};
+      }
+      return null;
+    }catch(e){return null;}
+  }
+
+  async function fetchSpot(){
+    if(window._cachedKospi200?.value) return window._cachedKospi200.value;
+    try{
+      const r = await fetch(PROXY + encodeURIComponent(YH_URL));
+      const j = await r.json();
+      return j.chart.result[0].meta.regularMarketPrice;
+    }catch(e){return 1291.32;}
+  }
+
+  async function getBasisData(){
+    if(cache.data && Date.now()-cache.ts < CACHE_MS) return cache.data;
+    const [fut, spot] = await Promise.all([fetchFutures(), fetchSpot()]);
+    if(!fut) return null;
+    const basis = fut.price - spot;
+    cache = {data:{fut, spot, basis}, ts:Date.now()};
+    return cache.data;
+  }
+
+  function interpretBasis(basis){
+    if(basis >= 15) return {label:'🚀🚀 강한 콘탱고 (과열 가능)', color:'#10b981'};
+    if(basis >= 5)  return {label:'📈 정상 콘탱고 (상승 기대)',   color:'#22c55e'};
+    if(basis >= 0)  return {label:'➖ 약한 콘탱고 (중립)',         color:'#94a3b8'};
+    if(basis >= -5) return {label:'📉 약한 백워데이션',             color:'#fb923c'};
+    return {label:'⚠️ 강한 백워데이션 (하락 우려)', color:'#ef4444'};
+  }
+
+  async function injectBasis(){
+    const box = document.getElementById('krx-main-box');
+    if(!box) return;
+    const data = await getBasisData();
+    if(!data) return;
+    const existing = box.querySelector('[data-basis]');
+    if(existing && existing.dataset.basisValue === data.basis.toFixed(2)) return;
+    if(existing) existing.remove();
+
+    const {label, color} = interpretBasis(data.basis);
+    const el = document.createElement('div');
+    el.dataset.basis = '1';
+    el.dataset.basisValue = data.basis.toFixed(2);
+    el.style.cssText = `margin:6px 12px;font-size:11px;color:#cbd5e1;padding:8px;background:rgba(255,255,255,0.05);border-radius:6px;border-left:3px solid ${color};`;
+    el.innerHTML = `
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+        <span>📐 베이시스 (선물-현물)</span>
+        <span style="color:${color};font-weight:600;">${data.basis>=0?'+':''}${data.basis.toFixed(2)}pt</span>
+      </div>
+      <div style="font-size:10px;color:#94a3b8;">
+        선물 ${data.fut.price} − 현물 ${data.spot.toFixed(2)} → ${label}
+      </div>
+    `;
+    const strengthBar = box.querySelector('[data-strength-bar]');
+    if(strengthBar) strengthBar.parentNode.insertBefore(el, strengthBar.nextSibling);
+    else box.appendChild(el);
+  }
+
+  function install(){
+    injectBasis();
+    if(window._basisObserver) window._basisObserver.disconnect();
+    window._basisObserver = new MutationObserver(muts=>{
+      const boxAdded = muts.some(m =>
+        Array.from(m.addedNodes).some(n =>
+          n.nodeType===1 && (n.id==='krx-main-box' || n.querySelector?.('#krx-main-box'))
+        )
+      );
+      if(boxAdded) setTimeout(injectBasis, 300);
+    });
+    window._basisObserver.observe(document.body,{childList:true,subtree:true});
+    setInterval(injectBasis, 5*60*1000); // 5분마다 갱신
+    window._patch16Installed = true;
+    console.log('✅ Patch #16 설치 (KOSPI200 베이시스 표시)');
+  }
+  if(document.readyState==='loading')
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(install,3500));
+  else setTimeout(install,3500);
+})();
+</script>
+
+<script>
+// Patch #17 - localStorage 시그널 히스토리 백업/복원 UI
+(function(){
+  const STORAGE_KEYS = ['wtd_signal_history','wtd_results','wtd_last_inputs','krx_signal_hits'];
+
+  function exportData(){
+    const data = {};
+    Object.keys(localStorage).forEach(k=>{
+      if(STORAGE_KEYS.some(prefix => k.includes(prefix.split('_')[0]) || k.startsWith('wtd_') || k.startsWith('krx_'))){
+        try{
+          data[k] = JSON.parse(localStorage.getItem(k));
+        }catch(e){
+          data[k] = localStorage.getItem(k);
+        }
+      }
+    });
+    const blob = new Blob([JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      version: '1.0',
+      data
+    }, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const date = new Date().toISOString().slice(0,10);
+    a.href = url;
+    a.download = `wtd_backup_${date}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    const count = Object.keys(data).length;
+    alert(`✅ 백업 파일 다운로드 완료\n저장된 항목: ${count}개`);
+  }
+
+  function importData(){
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = async (e)=>{
+      const file = e.target.files[0];
+      if(!file) return;
+      try{
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        if(!parsed.data){
+          alert('❌ 잘못된 백업 파일 형식');
+          return;
+        }
+        const overwrite = confirm(`백업 파일을 가져오시겠습니까?\n\n내보낸 날짜: ${parsed.exportedAt}\n복원할 항목: ${Object.keys(parsed.data).length}개\n\n⚠️ 기존 데이터가 덮어쓰여집니다.`);
+        if(!overwrite) return;
+        Object.entries(parsed.data).forEach(([k,v])=>{
+          localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v));
+        });
+        alert(`✅ 복원 완료\n복원된 항목: ${Object.keys(parsed.data).length}개\n\n페이지를 새로고침합니다.`);
+        location.reload();
+      }catch(e){
+        alert(`❌ 복원 실패: ${e.message}`);
+      }
+    };
+    input.click();
+  }
+
+  function addBackupButtons(){
+    const box = document.getElementById('krx-main-box');
+    if(!box) return;
+    if(box.querySelector('[data-backup-ui]')) return;
+
+    const wrap = document.createElement('div');
+    wrap.dataset.backupUi = '1';
+    wrap.style.cssText = `margin:8px 12px;display:flex;gap:6px;font-size:10px;`;
+    wrap.innerHTML = `
+      <button data-export style="flex:1;padding:5px;background:rgba(34,197,94,0.15);color:#22c55e;border:1px solid #22c55e40;border-radius:4px;cursor:pointer;font-size:10px;">💾 백업 내보내기</button>
+      <button data-import style="flex:1;padding:5px;background:rgba(96,165,250,0.15);color:#60a5fa;border:1px solid #60a5fa40;border-radius:4px;cursor:pointer;font-size:10px;">📂 백업 복원</button>
+    `;
+    // 이벤트 캡처 단계로 박스 클릭 전파 차단
+    wrap.querySelector('[data-export]').addEventListener('click',e=>{
+      e.stopPropagation(); e.preventDefault(); exportData();
+    },true);
+    wrap.querySelector('[data-import]').addEventListener('click',e=>{
+      e.stopPropagation(); e.preventDefault(); importData();
+    },true);
+    // 박스 전체 클릭 핸들러 차단 (왝더독 실행 방지)
+    wrap.addEventListener('click', e=>e.stopPropagation(), true);
+
+    box.appendChild(wrap);
+  }
+
+  // 7일 이상 백업 안 했으면 헤더에 알림 표시
+  function checkBackupReminder(){
+    const last = localStorage.getItem('wtd_last_backup');
+    if(!last) return;
+    const days = Math.floor((Date.now()-parseInt(last))/(1000*60*60*24));
+    if(days > 7){
+      console.warn(`⚠️ 마지막 백업: ${days}일 전 — 백업을 권장합니다`);
+    }
+  }
+
+  function install(){
+    addBackupButtons();
+    if(window._backupObserver) window._backupObserver.disconnect();
+    window._backupObserver = new MutationObserver(muts=>{
+      const boxAdded = muts.some(m =>
+        Array.from(m.addedNodes).some(n =>
+          n.nodeType===1 && (n.id==='krx-main-box' || n.querySelector?.('#krx-main-box'))
+        )
+      );
+      if(boxAdded) setTimeout(addBackupButtons, 400);
+    });
+    window._backupObserver.observe(document.body,{childList:true,subtree:true});
+    checkBackupReminder();
+    window._patch17Installed = true;
+    console.log('✅ Patch #17 설치 (localStorage 백업/복원)');
+  }
+  if(document.readyState==='loading')
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(install,4000));
+  else setTimeout(install,4000);
+})();
+</script>
 </body>
 </html>
