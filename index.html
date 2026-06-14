@@ -13317,5 +13317,69 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   }
 })();
 </script>
+  <script>
+// ============================================
+// 박스 위치 자동 정렬 (E)
+// ============================================
+(function(){
+  function arrangeBoxes(){
+    const krx = document.getElementById('krx-main-box');
+    if(krx){
+      krx.style.top = '60px';
+      krx.style.right = '20px';
+      krx.style.maxWidth = '340px';
+    }
+    const hit = document.getElementById('hitrate-box');
+    if(hit){
+      if(krx){
+        const krxRect = krx.getBoundingClientRect();
+        hit.style.top = (krxRect.bottom + 10) + 'px';
+      } else {
+        hit.style.top = '260px';
+      }
+      hit.style.right = '20px';
+      hit.style.maxWidth = '340px';
+    }
+  }
+  
+  function installArranger(){
+    arrangeBoxes();
+    window._arrangeBoxes = arrangeBoxes;
+    
+    // KRX 박스 크기 변화 감지
+    const krx = document.getElementById('krx-main-box');
+    if(krx && window.ResizeObserver){
+      try {
+        const ro = new ResizeObserver(() => arrangeBoxes());
+        ro.observe(krx);
+      } catch(e){}
+    }
+    
+    // 윈도우 리사이즈
+    window.addEventListener('resize', arrangeBoxes);
+    
+    // 새 박스 생성 감지 (MutationObserver)
+    try {
+      const mo = new MutationObserver(() => {
+        if(document.getElementById('krx-main-box') && document.getElementById('hitrate-box')){
+          arrangeBoxes();
+        }
+      });
+      mo.observe(document.body, { childList: true });
+    } catch(e){}
+    
+    // 주기적 확인 (안전망)
+    setInterval(arrangeBoxes, 3000);
+    
+    console.log('✅ 박스 위치 자동 정렬 설치 완료');
+  }
+  
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', () => setTimeout(installArranger, 2000));
+  } else {
+    setTimeout(installArranger, 2000);
+  }
+})();
+</script>
 </body>
 </html>
