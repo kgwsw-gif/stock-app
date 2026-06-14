@@ -16196,5 +16196,196 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('   clearPredictionHistory() - 전체 삭제');
 })();
 </script>
+  <script>
+/* === Patch #24 Part 2 - 자동 스케줄러 === */
+(function(){
+  const LAST_RUN_KEY = 'p24_last_run';
+
+  function todayKR(){
+    const now = new Date();
+    const kst = new Date(now.getTime() + 9*3600000);
+    return kst.toISOString().slice(0,10);
+  }
+  function nowKR(){
+    return new Date(Date.now() + 9*3600000);
+  }
+  function getKSTHourMin(){
+    const k = nowKR();
+    return { h: k.getUTCHours(), m: k.getUTCMinutes(), day: k.getUTCDay() };
+  }
+  function isWeekday(){
+    const { day } = getKSTHourMin();
+    return day >= 1 && day <= 5;
+  }
+  function loadLastRun(){
+    try { return JSON.parse(localStorage.getItem(LAST_RUN_KEY) || '{}'); }
+    catch(e){ return {}; }
+  }
+  function saveLastRun(obj){
+    localStorage.setItem(LAST_RUN_KEY, JSON.stringify(obj));
+  }
+
+  /* === 작업 1: 자동 기록 (장 시작 전) === */
+  async function autoRecord(){
+    const date = todayKR();
+    const last = loadLastRun();
+    if(last.recordDate === date){
+      console.log(`ℹ️ 자동 기록 스킵: 오늘(${date}) 이미 기록됨`);
+      return false;
+    }
+    if(!isWeekday()){
+      console.log('ℹ️ 자동 기록 스킵: 주말');
+      return false;
+    }
+    const { h, m } = getKSTHourMin();
+    const minutes = h * 60 + m;
+    // 08:30 ~ 09:30 사이만 자동 기록 (장 시작 전후)
+    if(minutes < 8*60 + 30 || minutes > 9*60 + 30){
+      console.log(`ℹ️ 자동 기록 스킵: 기록 시간대 아님 (현재 ${h}:${String(m).padStart(2,'0')})`);
+      return false;
+    }
+
+    console.log('🔄 자동 기록 시작: 스크리닝 갱신 중...');
+    try {
+      if(typeof window.runFullScreening === 'function'){
+        // 캐시 있으면 그대로 사용, 없거나 1시간 이상 지났으면 재실행
+        const cached = JSON.parse(localStorage.getItem('screening_results') || 'null');
+        const ageMs = cached?.ts ? Date.now() - cached.ts : Infinity;
+        if(!cached?.data?.length || ageMs > 3600000){
+          console.log('   캐시 만료 → 스크리닝 재실행');
+          await window.runFullScreening({ silent: true });
+        }
+      }
+      const rec = window.recordPrediction({ force: true });
+      if(rec){
+        last.recordDate = date;
+        saveLastRun(last);
+        console.log(`✅ 자동 기록 완료: ${rec.date} → 검증대상 ${rec.targetDate}`);
+        showSchedulerToast(`📝 오늘 예측 ${rec.stocks.length}종목 기록 완료`, '#3b82f6');
+        return true;
+      }
+    } catch(e){
+      console.warn('자동 기록 실패:', e.message);
+    }
+    return false;
+  }
+
+  /* === 작업 2: 자동 검증 (장 마감 후) === */
+  async function autoValidate(){
+    const date = todayKR();
+    const last = loadLastRun();
+    if(last.validateDate === date){
+      console.log(`ℹ️ 자동 검증 스킵: 오늘(${date}) 이미 검증됨`);
+      return false;
+    }
+    const { h, m, day } = getKSTHourMin();
+    const minutes = h * 60 + m;
+    // 16:30 이후 (주말 무관 - 금요일 검증을 토요일에 할 수도)
+    if(day !== 0 && day !== 6 && minutes < 16*60 + 30){
+      console.log(`ℹ️ 자동 검증 스킵: 장 마감 전 (현재 ${h}:${String(m).padStart(2,'0')})`);
+      return false;
+    }
+
+    // 검증 대상 있는지 확인
+    const history = JSON.parse(localStorage.getItem('prediction_history') || '[]');
+    const pending = history.filter(h => !h.validated && h.targetDate <= date);
+    if(!pending.length){
+      console.log('ℹ️ 자동 검증 스킵: 대상 없음');
+      return false;
+    }
+
+    console.log(`🔄 자동 검증 시작: ${pending.length}건`);
+    try {
+      const results = await window.validatePredictions();
+      if(results?.length){
+        last.validateDate = date;
+        saveLastRun(last);
+        const latest = results[results.length - 1];
+        const msg = `🎯 ${latest.date} 적중률 ${latest.summary.hitRate.toFixed(1)}% (${latest.summary.hits}/${latest.summary.total})`;
+        console.log(`✅ 자동 검증 완료: ${msg}`);
+        showSchedulerToast(msg, '#10b981', 8000);
+
+        // OS 알림 (큰 이벤트)
+        if(typeof Notification !== 'undefined' && Notification.permission === 'granted'){
+          try {
+            new Notification('🎯 일일 적중률 검증 완료', {
+              body: `${latest.date} → ${latest.summary.hits}/${latest.summary.total} 적중 (${latest.summary.hitRate.toFixed(1)}%)\n평균수익률 ${latest.summary.avgReturn.toFixed(2)}%`,
+              tag: `validate_${latest.date}`
+            });
+          } catch(e){}
+        }
+        return true;
+      }
+    } catch(e){
+      console.warn('자동 검증 실패:', e.message);
+    }
+    return false;
+  }
+
+  /* === 토스트 (스케줄러 전용) === */
+  function showSchedulerToast(message, color = '#3b82f6', duration = 5000){
+    const t = document.createElement('div');
+    t.style.cssText = `
+      position:fixed; top:20px; left:50%; transform:translateX(-50%);
+      background:linear-gradient(135deg, ${color}ee 0%, ${color}99 100%);
+      color:#fff; padding:14px 24px; border-radius:10px;
+      font-family:-apple-system,sans-serif; font-size:14px; font-weight:600;
+      box-shadow:0 8px 24px rgba(0,0,0,0.4); z-index:99999;
+      animation:slideInTop 0.4s ease-out;
+    `;
+    t.textContent = message;
+    document.body.appendChild(t);
+    setTimeout(()=>{
+      t.style.transition = 'opacity 0.4s';
+      t.style.opacity = '0';
+      setTimeout(()=>t.remove(), 400);
+    }, duration);
+  }
+
+  /* === CSS 애니메이션 === */
+  if(!document.getElementById('p24-anim-css')){
+    const s = document.createElement('style');
+    s.id = 'p24-anim-css';
+    s.textContent = `@keyframes slideInTop { from{transform:translate(-50%,-60px);opacity:0;} to{transform:translate(-50%,0);opacity:1;} }`;
+    document.head.appendChild(s);
+  }
+
+  /* === 메인 체크 (페이지 로드 시 + 30분 주기) === */
+  async function schedulerTick(){
+    if(!isWeekday()){
+      // 주말이라도 금요일 검증이 남아있으면 진행
+      await autoValidate();
+      return;
+    }
+    await autoRecord();
+    await autoValidate();
+  }
+
+  /* === 수동 트리거 === */
+  window._runScheduler = schedulerTick;
+  window._resetScheduler = function(){
+    localStorage.removeItem(LAST_RUN_KEY);
+    console.log('🔄 스케줄러 상태 초기화 (오늘 기록/검증 다시 가능)');
+  };
+
+  /* === 초기화 === */
+  function init(){
+    // 페이지 로드 후 15초 뒤 첫 실행 (다른 패치 로드 대기)
+    setTimeout(schedulerTick, 15000);
+    // 30분마다 재체크
+    setInterval(schedulerTick, 30 * 60 * 1000);
+    window._patch24Part2Installed = true;
+    console.log('✅ Patch #24 Part 2 설치 완료 (자동 스케줄러)');
+    console.log('   기록 시간대: 평일 08:30~09:30 | 검증 시간대: 평일 16:30 이후');
+    console.log('   수동 실행: _runScheduler() | 초기화: _resetScheduler()');
+  }
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', ()=>setTimeout(init, 11000));
+  } else {
+    setTimeout(init, 11000);
+  }
+})();
+</script>
 </body>
 </html>
