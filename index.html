@@ -13893,54 +13893,44 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
 })();
 </script>
   <script>
-// Patch #12: 적중률 박스 위치 강제 고정 (깜빡임 방지)
+// Patch #12 v2 - 적중률 박스 우측 하단 고정 (KRX 박스와 분리)
 (function(){
-  function lockHitBox(){
-    const hitBox = document.getElementById('hitrate-box');
-    if(!hitBox) return false;
-    
-    hitBox.style.setProperty('top', '60px', 'important');
-    hitBox.style.setProperty('right', '20px', 'important');
-    hitBox.style.setProperty('left', 'auto', 'important');
-    hitBox.style.setProperty('bottom', 'auto', 'important');
-    hitBox.style.setProperty('position', 'fixed', 'important');
-    hitBox.style.setProperty('transition', 'none', 'important');
+  function moveHitBox(){
+    const hit = document.getElementById('hitrate-box');
+    if(!hit) return false;
+    hit.style.setProperty('top','auto','important');
+    hit.style.setProperty('left','auto','important');
+    hit.style.setProperty('right','20px','important');
+    hit.style.setProperty('bottom','20px','important');
+    hit.style.setProperty('position','fixed','important');
+    hit.style.setProperty('z-index','9997','important');
+    hit.style.setProperty('transition','none','important');
     return true;
   }
-  
-  function installLock(){
-    if(!lockHitBox()){
-      setTimeout(installLock, 1000);
-      return;
-    }
-    
-    const hitBox = document.getElementById('hitrate-box');
+  function install(){
+    if(!moveHitBox()){setTimeout(install,1000);return;}
+    const hit = document.getElementById('hitrate-box');
     if(window._hitBoxFixer) window._hitBoxFixer.disconnect();
-    
-    window._hitBoxFixer = new MutationObserver((muts)=>{
+    window._hitBoxFixer = new MutationObserver(muts=>{
       muts.forEach(m=>{
-        if(m.attributeName === 'style' && hitBox.style.top !== '60px'){
-          lockHitBox();
-        }
+        if(m.attributeName==='style' && hit.style.bottom!=='20px') moveHitBox();
       });
     });
-    window._hitBoxFixer.observe(hitBox, {attributes:true, attributeFilter:['style']});
-    
-    // _arrangeBoxes 래핑
+    window._hitBoxFixer.observe(hit,{attributes:true,attributeFilter:['style']});
     if(window._arrangeBoxes && !window._origArrangeBoxes){
       window._origArrangeBoxes = window._arrangeBoxes;
       window._arrangeBoxes = function(){
-        try{ window._origArrangeBoxes(); }catch(e){}
-        lockHitBox();
+        try{window._origArrangeBoxes();}catch(e){}
+        moveHitBox();
       };
     }
-    
     window._patch12Installed = true;
-    console.log('✅ Patch #12 설치 (적중률 박스 위치 고정)');
+    window._patch12Version = 'v2-bottom-right';
+    console.log('✅ Patch #12 v2 설치 (적중률 박스 우측 하단)');
   }
-  
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',()=>setTimeout(installLock,2500));
-  else setTimeout(installLock,2500);
+  if(document.readyState==='loading') 
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(install,2500));
+  else setTimeout(install,2500);
 })();
 </script>
   <script>
