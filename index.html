@@ -13985,5 +13985,166 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   else setTimeout(install,2500);
 })();
 </script>
+  <script>
+// Patch #14 - 선물·옵션 만기일 D-day 경고 (D-7 이하 표시)
+(function(){
+  function getSecondThursday(year, month){
+    const d = new Date(year, month-1, 1);
+    const firstDow = d.getDay();
+    let daysToThursday = (4 - firstDow + 7) % 7;
+    return new Date(year, month-1, 1 + daysToThursday + 7);
+  }
+  function getNextExpiry(){
+    const now = new Date();
+    const y = now.getFullYear(), m = now.getMonth()+1;
+    let expiry = getSecondThursday(y, m);
+    if(expiry < now){
+      const ny = m===12 ? y+1 : y;
+      const nm = m===12 ? 1 : m+1;
+      expiry = getSecondThursday(ny, nm);
+    }
+    return expiry;
+  }
+  function injectWarning(){
+    const box = document.getElementById('krx-main-box');
+    if(!box) return;
+    
+    const today = new Date();
+    today.setHours(0,0,0,0);
+    const expiry = getNextExpiry();
+    expiry.setHours(0,0,0,0);
+    const diff = Math.round((expiry-today)/(1000*60*60*24));
+    
+    const existing = box.querySelector('[data-expiry-warning]');
+    
+    if(diff > 7){
+      if(existing) existing.remove();
+      return;
+    }
+    
+    // 이미 같은 D-day 경고가 있으면 재생성 안 함 (무한 루프 방지)
+    if(existing && existing.dataset.expiryDay === String(diff)) return;
+    if(existing) existing.remove();
+    
+    let bg, color, icon, text;
+    if(diff === 0){
+      bg='rgba(239,68,68,0.2)'; color='#ef4444'; icon='🚨';
+      text=`오늘 선물·옵션 만기 (D-Day) — 마감 변동성 큼`;
+    } else if(diff <= 3){
+      bg='rgba(239,68,68,0.15)'; color='#ef4444'; icon='⚠️';
+      text=`만기 ${diff}일 전 (D-${diff}) ${expiry.toISOString().slice(0,10)} — 변동성 주의`;
+    } else {
+      bg='rgba(245,158,11,0.15)'; color='#f59e0b'; icon='📅';
+      text=`만기 ${diff}일 전 (D-${diff}) ${expiry.toISOString().slice(0,10)}`;
+    }
+    
+    const warning = document.createElement('div');
+    warning.dataset.expiryWarning = '1';
+    warning.dataset.expiryDay = String(diff);
+    warning.style.cssText = `background:${bg};color:${color};padding:8px 12px;border-radius:8px;margin:8px 12px;font-size:12px;font-weight:600;border:1px solid ${color}40;`;
+    warning.textContent = `${icon} ${text}`;
+    
+    if(box.children[1]) box.insertBefore(warning, box.children[1]);
+    else box.appendChild(warning);
+  }
+  function install(){
+    injectWarning();
+    if(window._expiryObserver) window._expiryObserver.disconnect();
+    window._expiryObserver = new MutationObserver(muts=>{
+      // 박스 자체가 새로 생성됐을 때만 반응 (무한 루프 방지)
+      const boxAdded = muts.some(m => 
+        Array.from(m.addedNodes).some(n => 
+          n.nodeType===1 && (n.id==='krx-main-box' || n.querySelector?.('#krx-main-box'))
+        )
+      );
+      if(boxAdded) setTimeout(injectWarning, 100);
+    });
+    window._expiryObserver.observe(document.body,{childList:true,subtree:true});
+    // 매일 자정에 재계산
+    setInterval(injectWarning, 60*60*1000);
+    window._patch14Installed = true;
+    console.log('✅ Patch #14 설치 (만기일 D-day 경고)');
+  }
+  if(document.readyState==='loading')
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(install,2500));
+  else setTimeout(install,2500);
+})();
+</script>
+
+<script>
+// Patch #15 - 선물 강도 지표 (외국인 KOSPI200 선물 / 일평균 8000계약)
+(function(){
+  const AVG_VOLUME = 8000;
+  function addStrengthBar(){
+    const box = document.getElementById('krx-main-box');
+    if(!box) return;
+    const fF = window._lastKrxData?.futures?.['외국인합계'];
+    if(fF == null) return;
+    
+    const strength = Math.min(Math.abs(fF)/AVG_VOLUME*100, 200);
+    const existing = box.querySelector('[data-strength-bar]');
+    
+    // 동일 값이면 재생성 안 함 (무한 루프 방지)
+    if(existing && existing.dataset.strengthValue === String(fF)) return;
+    if(existing) existing.remove();
+    
+    let label, color;
+    if(strength < 10){label='매우 약함'; color='#94a3b8';}
+    else if(strength < 25){label='약함'; color='#60a5fa';}
+    else if(strength < 50){label='보통'; color='#fbbf24';}
+    else if(strength < 100){label='강함'; color='#f97316';}
+    else {label='매우 강함'; color='#ef4444';}
+    
+    const direction = fF > 0 ? '매수' : (fF < 0 ? '매도' : '관망');
+    const barWidth = Math.min(strength, 100);
+    
+    const bar = document.createElement('div');
+    bar.dataset.strengthBar = '1';
+    bar.dataset.strengthValue = String(fF);
+    bar.style.cssText = `margin:6px 12px;font-size:11px;color:#cbd5e1;`;
+    bar.innerHTML = `
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+        <span>📊 매매 강도</span>
+        <span style="color:${color};font-weight:600;">${strength.toFixed(1)}% ${direction} (${label})</span>
+      </div>
+      <div style="background:rgba(255,255,255,0.1);height:6px;border-radius:3px;overflow:hidden;">
+        <div style="background:${color};width:${barWidth}%;height:100%;transition:width 0.3s;"></div>
+      </div>
+      <div style="font-size:10px;color:#94a3b8;margin-top:2px;">일평균 ${AVG_VOLUME.toLocaleString()}계약 대비</div>
+    `;
+    
+    // 명목가치 줄 다음에 삽입
+    const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+    let targetNode = null, node;
+    while(node = walker.nextNode()){
+      if(node.textContent.includes('명목가치')){ targetNode = node; break; }
+    }
+    if(targetNode?.parentElement?.parentElement){
+      targetNode.parentElement.parentElement.appendChild(bar);
+    } else {
+      box.appendChild(bar);
+    }
+  }
+  function install(){
+    addStrengthBar();
+    if(window._strengthObserver) window._strengthObserver.disconnect();
+    window._strengthObserver = new MutationObserver(muts=>{
+      // 박스 자체가 새로 추가됐을 때만 반응 (무한 루프 방지)
+      const boxAdded = muts.some(m => 
+        Array.from(m.addedNodes).some(n => 
+          n.nodeType===1 && (n.id==='krx-main-box' || n.querySelector?.('#krx-main-box'))
+        )
+      );
+      if(boxAdded) setTimeout(addStrengthBar, 200);
+    });
+    window._strengthObserver.observe(document.body,{childList:true,subtree:true});
+    window._patch15Installed = true;
+    console.log('✅ Patch #15 설치 (선물 강도 지표)');
+  }
+  if(document.readyState==='loading')
+    document.addEventListener('DOMContentLoaded',()=>setTimeout(install,3000));
+  else setTimeout(install,3000);
+})();
+</script>
 </body>
 </html>
