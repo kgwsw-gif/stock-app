@@ -15551,5 +15551,328 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   else setTimeout(install, 8000);
 })();
 </script>
+  <script>
+/* === Patch #23 - 알림 시스템 (알림 감지 + 토스트 + 히스토리 + 뱃지) === */
+(function(){
+  const SNAPSHOT_KEY = 'alertSnapshot';
+  const HISTORY_KEY = 'alertHistory';
+  const MAX_HISTORY = 50;
+  const CHECK_INTERVAL = 10 * 60 * 1000; // 10분
+
+  const ALERT_TYPES = {
+    score_up:   { icon:'🚀', color:'#10b981', label:'점수 급등' },
+    new_acc:    { icon:'🟢', color:'#22c55e', label:'신규 매집' },
+    foreign_in: { icon:'💰', color:'#f59e0b', label:'외인 유입' },
+    obv_accel:  { icon:'📈', color:'#3b82f6', label:'OBV 가속' }
+  };
+
+  function loadHistory(){
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+    catch(e){ return []; }
+  }
+  function saveHistory(arr){
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(arr.slice(0, MAX_HISTORY)));
+  }
+  function loadSnapshot(){
+    try { return JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || '{}'); }
+    catch(e){ return {}; }
+  }
+  function saveSnapshot(map){
+    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(map));
+  }
+
+  /* === 토스트 알림 === */
+  function showToast(alert){
+    const t = ALERT_TYPES[alert.type] || ALERT_TYPES.score_up;
+    const toast = document.createElement('div');
+    toast.style.cssText = `
+      position:fixed; top:${80 + (document.querySelectorAll('[data-alert-toast]').length * 90)}px;
+      right:20px; width:320px; padding:12px 14px;
+      background:linear-gradient(135deg, ${t.color}ee 0%, ${t.color}99 100%);
+      color:#fff; border-radius:10px; box-shadow:0 6px 20px rgba(0,0,0,0.4);
+      font-family:-apple-system,sans-serif; font-size:13px; z-index:99999;
+      animation:slideInRight 0.3s ease-out;
+      cursor:pointer;
+    `;
+    toast.dataset.alertToast = '1';
+    toast.innerHTML = `
+      <div style="font-weight:700; font-size:14px; margin-bottom:4px;">
+        ${t.icon} ${t.label} — ${alert.name}
+      </div>
+      <div style="font-size:12px; opacity:0.95;">${alert.message}</div>
+      <div style="font-size:10px; opacity:0.75; margin-top:4px;">${new Date(alert.ts).toLocaleTimeString('ko-KR')}</div>
+    `;
+    toast.addEventListener('click', ()=>{
+      if(window.showStockDetailModal && alert.code){
+        const stock = (window._screeningResults || window._maeJipResults || [])
+          .find(s => s.code === alert.code);
+        if(stock) window.showStockDetailModal(stock);
+      }
+      toast.remove();
+    });
+    document.body.appendChild(toast);
+    setTimeout(()=>{
+      toast.style.transition = 'opacity 0.3s';
+      toast.style.opacity = '0';
+      setTimeout(()=>toast.remove(), 300);
+    }, 5000);
+
+    // OS 알림
+    if(typeof Notification !== 'undefined' && Notification.permission === 'granted'){
+      try {
+        new Notification(`${t.icon} ${t.label} — ${alert.name}`, {
+          body: alert.message,
+          tag: `alert_${alert.code}_${alert.type}`,
+          silent: false
+        });
+      } catch(e){}
+    }
+  }
+
+  /* === 알림 감지 로직 === */
+  function detectAlerts(){
+    const current = window._screeningResults && window._screeningResults.length
+      ? window._screeningResults
+      : (window._maeJipResults || []);
+    if(!current.length) return [];
+
+    const snapshot = loadSnapshot();
+    const newAlerts = [];
+    const now = Date.now();
+    const newSnapshot = {};
+
+    current.forEach(s => {
+      if(!s.code) return;
+      newSnapshot[s.code] = {
+        score: s.score,
+        grade: s.grade,
+        obvLabel: s.obvLabel,
+        foreignChange: s.foreignChange20 ?? s.foreignChange ?? 0,
+        ts: now
+      };
+
+      const prev = snapshot[s.code];
+      if(!prev) return; // 첫 관측은 비교 불가
+
+      // 1. 점수 급등 (+10점 이상)
+      if(s.score - prev.score >= 10){
+        newAlerts.push({
+          type:'score_up', code:s.code, name:s.name, ts:now,
+          message:`${prev.score}점 → ${s.score}점 (+${s.score - prev.score})`
+        });
+      }
+      // 2. 신규 매집 (➖/🔴 → 🟢)
+      if(prev.grade && s.grade && prev.grade !== '🟢' && s.grade === '🟢'){
+        newAlerts.push({
+          type:'new_acc', code:s.code, name:s.name, ts:now,
+          message:`${prev.grade} → 🟢 매집 의심 진입 (${s.score}점)`
+        });
+      }
+      // 3. 외인 매수 전환 (-0.3 이하 → +0.3 이상)
+      const prevFR = prev.foreignChange ?? 0;
+      const curFR = newSnapshot[s.code].foreignChange;
+      if(prevFR <= -0.3 && curFR >= 0.3){
+        newAlerts.push({
+          type:'foreign_in', code:s.code, name:s.name, ts:now,
+          message:`외인 ${prevFR.toFixed(2)}%p → +${curFR.toFixed(2)}%p (매수 전환)`
+        });
+      }
+      // 4. OBV 가속 신호 (비가속 → 🚀 가속 매집)
+      if(prev.obvLabel && s.obvLabel &&
+         !prev.obvLabel.includes('가속') && s.obvLabel.includes('가속')){
+        newAlerts.push({
+          type:'obv_accel', code:s.code, name:s.name, ts:now,
+          message:`OBV ${prev.obvLabel} → ${s.obvLabel}`
+        });
+      }
+    });
+
+    saveSnapshot(newSnapshot);
+
+    // 히스토리에 추가
+    if(newAlerts.length){
+      const history = loadHistory();
+      saveHistory([...newAlerts, ...history]);
+    }
+
+    return newAlerts;
+  }
+
+  /* === 자동 체크 === */
+  async function autoCheck(){
+    try {
+      // 관심종목 우선 갱신
+      if(typeof window.runMaejipAnalysis === 'function'){
+        await window.runMaejipAnalysis();
+      }
+      const alerts = detectAlerts();
+      alerts.forEach((a, i) => setTimeout(()=>showToast(a), i * 600));
+      updateBadge();
+      if(alerts.length){
+        console.log(`🔔 알림 ${alerts.length}건 발생`, alerts);
+      }
+    } catch(e){
+      console.warn('알림 자동체크 오류:', e.message);
+    }
+  }
+
+  /* === 뱃지 (매집 박스 헤더) === */
+  function updateBadge(){
+    const box = document.getElementById('maejip-box');
+    if(!box) return;
+    const header = box.querySelector('div'); // 첫 div = 헤더
+    if(!header) return;
+
+    let badge = header.querySelector('[data-alert-badge]');
+    const history = loadHistory();
+    const recent = history.filter(a => Date.now() - a.ts < 24 * 3600 * 1000);
+
+    if(!badge){
+      badge = document.createElement('span');
+      badge.dataset.alertBadge = '1';
+      badge.style.cssText = `
+        display:inline-block; margin-left:8px; padding:2px 7px;
+        background:#ef4444; color:#fff; border-radius:10px;
+        font-size:10px; font-weight:700; cursor:pointer;
+        vertical-align:middle;
+      `;
+      badge.title = '알림 히스토리 보기';
+      badge.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        window.showAlertHistory();
+      });
+      header.appendChild(badge);
+    }
+    if(recent.length){
+      badge.textContent = `🔔 ${recent.length}`;
+      badge.style.display = 'inline-block';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  /* === 히스토리 모달 === */
+  window.showAlertHistory = function(){
+    let modal = document.getElementById('alert-history-modal');
+    if(modal){ modal.remove(); }
+    modal = document.createElement('div');
+    modal.id = 'alert-history-modal';
+    modal.style.cssText = `
+      position:fixed; top:0; left:0; width:100%; height:100%;
+      background:rgba(0,0,0,0.7); z-index:99998;
+      display:flex; align-items:center; justify-content:center;
+    `;
+    const history = loadHistory();
+    const inner = document.createElement('div');
+    inner.style.cssText = `
+      background:linear-gradient(135deg,#1e293b,#0f172a);
+      color:#e2e8f0; width:560px; max-height:80vh; overflow-y:auto;
+      border-radius:12px; padding:20px; font-family:-apple-system,sans-serif;
+      box-shadow:0 12px 40px rgba(0,0,0,0.6);
+    `;
+    inner.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+        <div style="font-size:18px; font-weight:700;">🔔 알림 히스토리 (최근 ${history.length}건)</div>
+        <div>
+          <button id="alert-clear-btn" style="background:#ef4444; color:#fff; border:none; padding:6px 12px; border-radius:6px; font-size:11px; cursor:pointer; margin-right:6px;">전체 삭제</button>
+          <button id="alert-close-btn" style="background:#64748b; color:#fff; border:none; padding:6px 12px; border-radius:6px; font-size:11px; cursor:pointer;">닫기</button>
+        </div>
+      </div>
+      <div id="alert-list"></div>
+    `;
+    modal.appendChild(inner);
+    document.body.appendChild(modal);
+
+    const list = inner.querySelector('#alert-list');
+    if(!history.length){
+      list.innerHTML = `<div style="text-align:center; padding:40px; color:#94a3b8;">아직 알림이 없습니다.<br><span style="font-size:11px;">10분마다 자동 체크되며, 변화 감지 시 알림이 쌓입니다.</span></div>`;
+    } else {
+      list.innerHTML = history.map(a => {
+        const t = ALERT_TYPES[a.type] || ALERT_TYPES.score_up;
+        const time = new Date(a.ts).toLocaleString('ko-KR', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+        return `
+          <div data-alert-code="${a.code}" style="padding:10px 12px; margin-bottom:6px; background:rgba(255,255,255,0.05); border-left:3px solid ${t.color}; border-radius:6px; cursor:pointer;">
+            <div style="display:flex; justify-content:space-between; font-size:13px; font-weight:600;">
+              <span>${t.icon} ${t.label} — ${a.name}</span>
+              <span style="font-size:10px; color:#94a3b8;">${time}</span>
+            </div>
+            <div style="font-size:11px; color:#cbd5e1; margin-top:3px;">${a.message}</div>
+          </div>
+        `;
+      }).join('');
+      list.querySelectorAll('[data-alert-code]').forEach(el => {
+        el.addEventListener('click', ()=>{
+          const code = el.dataset.alertCode;
+          const stock = (window._screeningResults || window._maeJipResults || [])
+            .find(s => s.code === code);
+          if(stock && window.showStockDetailModal){
+            modal.remove();
+            window.showStockDetailModal(stock);
+          }
+        });
+      });
+    }
+
+    inner.querySelector('#alert-close-btn').addEventListener('click', ()=>modal.remove());
+    inner.querySelector('#alert-clear-btn').addEventListener('click', ()=>{
+      if(confirm('알림 히스토리를 모두 삭제할까요?')){
+        localStorage.removeItem(HISTORY_KEY);
+        modal.remove();
+        updateBadge();
+      }
+    });
+    modal.addEventListener('click', (e)=>{ if(e.target === modal) modal.remove(); });
+  };
+
+  /* === CSS 애니메이션 주입 === */
+  if(!document.getElementById('alert-anim-css')){
+    const style = document.createElement('style');
+    style.id = 'alert-anim-css';
+    style.textContent = `
+      @keyframes slideInRight {
+        from { transform: translateX(400px); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  /* === 수동 트리거 === */
+  window._checkAlertsNow = autoCheck;
+  window._detectAlertsOnly = detectAlerts;
+
+  /* === 초기 설치 === */
+  function init(){
+    // 첫 스냅샷 저장 (관심종목 6 + 스크리닝 결과 있으면 함께)
+    const seed = window._screeningResults && window._screeningResults.length
+      ? window._screeningResults
+      : (window._maeJipResults || []);
+    if(seed.length && !Object.keys(loadSnapshot()).length){
+      const snap = {};
+      seed.forEach(s => {
+        if(s.code) snap[s.code] = {
+          score: s.score, grade: s.grade, obvLabel: s.obvLabel,
+          foreignChange: s.foreignChange20 ?? s.foreignChange ?? 0,
+          ts: Date.now()
+        };
+      });
+      saveSnapshot(snap);
+      console.log(`🔔 Patch #23: 초기 스냅샷 ${Object.keys(snap).length}종목 저장`);
+    }
+    updateBadge();
+    setInterval(autoCheck, CHECK_INTERVAL);
+    window._patch23Installed = true;
+    window._patch23Version = 'v1';
+    console.log('✅ Patch #23 설치 완료 — 10분마다 자동 알림 체크');
+    console.log('   수동 실행: _checkAlertsNow() | 히스토리: showAlertHistory()');
+  }
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', ()=>setTimeout(init, 9000));
+  } else {
+    setTimeout(init, 9000);
+  }
+})();
+</script>
 </body>
 </html>
