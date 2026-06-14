@@ -13210,5 +13210,75 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   }
 })();
 </script>
+  <script>
+// ============================================
+// 휴장일 라벨 (C) - 주말/공휴일 자동 안내
+// ============================================
+(function(){
+  function getHolidayLabel(){
+    const d = window._lastKrxData;
+    if(!d || !d.base_date) return null;
+    const bd = d.base_date;
+    const baseDate = new Date(
+      parseInt(bd.substring(0,4)),
+      parseInt(bd.substring(4,6)) - 1,
+      parseInt(bd.substring(6,8))
+    );
+    const today = new Date();
+    today.setHours(0,0,0,0);
+    baseDate.setHours(0,0,0,0);
+    const diffDays = Math.round((today - baseDate) / (1000*60*60*24));
+    const dow = today.getDay();
+    const dowName = ['일','월','화','수','목','금','토'][dow];
+    if(diffDays <= 0) return null;
+    let reason = '';
+    if(dow === 0 || dow === 6) reason = `주말 (${dowName}요일)`;
+    else if(diffDays >= 2) reason = '공휴일 추정';
+    else reason = '장 시작 전';
+    const baseDateStr = `${bd.substring(0,4)}-${bd.substring(4,6)}-${bd.substring(6,8)}`;
+    return { reason, baseDateStr, diffDays, todayStr: today.toISOString().slice(0,10), dowName };
+  }
+
+  function applyHolidayLabel(){
+    const info = getHolidayLabel();
+    const box = document.getElementById('krx-main-box');
+    if(!box) return;
+    const oldLabel = box.querySelector('.krx-holiday-label');
+    if(oldLabel) oldLabel.remove();
+    if(!info) return;
+    const label = document.createElement('div');
+    label.className = 'krx-holiday-label';
+    label.style.cssText = 'background:#f3f4f6;border:1px solid #d1d5db;border-radius:4px;padding:4px 8px;margin:6px 0;font-size:11px;color:#4b5563;line-height:1.4;';
+    label.innerHTML = `📅 오늘은 <b>${info.todayStr} (${info.dowName})</b> · ${info.reason}<br>표시 데이터: 마지막 영업일 <b>${info.baseDateStr}</b> (D-${info.diffDays})`;
+    const titleDiv = box.firstElementChild;
+    if(titleDiv && titleDiv.nextSibling){
+      box.insertBefore(label, titleDiv.nextSibling);
+    } else {
+      box.appendChild(label);
+    }
+  }
+
+  window.applyHolidayLabel = applyHolidayLabel;
+
+  // KRX 박스가 생성/재생성될 때마다 라벨도 자동 적용
+  function watchKrxBox(){
+    applyHolidayLabel();
+    // 박스가 사라졌다 다시 생기는 경우 대비, 주기적 체크
+    setInterval(() => {
+      const box = document.getElementById('krx-main-box');
+      if(box && !box.querySelector('.krx-holiday-label')){
+        applyHolidayLabel();
+      }
+    }, 3000);
+  }
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', () => setTimeout(watchKrxBox, 1500));
+  } else {
+    setTimeout(watchKrxBox, 1500);
+  }
+  console.log('✅ 휴장일 라벨 패치 설치 완료 (C)');
+})();
+</script>
 </body>
 </html>
