@@ -13798,5 +13798,18 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   else setTimeout(installBlocker,2000);
 })();
 </script>
+  <script>
+// Patch #10: "최근 0일" → "대기 중" 표시 개선
+(function(){
+  function fixLabel(){
+    const box = document.getElementById('krx-main-box');
+    if(box) box.innerHTML = box.innerHTML
+      .replace('최근 0일', '대기 중')
+      .replace('차트 데이터 수집 중 (1~2주 후 표시)', '🕐 첫 결과 대기 중 (월요일 종가 후 표시)');
+  }
+  setInterval(fixLabel, 5500);
+  window._patch10Installed = true;
+})();
+</script>
 </body>
 </html>
