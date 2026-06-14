@@ -1,8 +1,8 @@
 """
-한국 증시 외국인/기관 매매동향 수집기 v4
+한국 증시 외국인/기관 매매동향 수집기 v5
 - 네이버 금융 PC: 일별 투자자 매매동향
-- 단위: 억원 (그대로 사용)
-- 엔드포인트: /sise/investorDealTrendDay.naver?sosok={01|02}
+- bizdate 파라미터 필수 (오늘 날짜 자동 입력)
+- 단위: 억원 → 원으로 변환 저장
 """
 from datetime import datetime, timezone, timedelta
 import json
@@ -26,13 +26,13 @@ HEADERS = {
 
 
 def parse_int(s):
-    """억원 단위 문자열 → 정수. 콤마, +/-, 공백, '↑↓' 처리."""
+    """억원 단위 문자열 → 정수. 콤마, +/-, 공백 처리. 음수 인식."""
     if s is None:
         return 0
     s = str(s).strip().replace(",", "").replace(" ", "").replace("+", "")
-    if not s or s in ("-", "--", "0"):
+    if not s or s in ("-", "--"):
         return 0
-    # 빨간색/파란색 화살표 등 제거
+    # 음수 부호와 숫자, 점만 남기기
     s = re.sub(r"[^\d\-\.]", "", s)
     if not s or s == "-":
         return 0
@@ -44,10 +44,11 @@ def parse_int(s):
 
 def fetch_naver_investor_market(sosok_code, market_name):
     """
-    네이버 금융 일별 투자자 매매동향 (억원 단위)
-    sosok_code: '01' = KOSPI, '02' = KOSDAQ
+    네이버 금융 일별 투자자 매매동향
+    sosok_code: '01'=KOSPI, '02'=KOSDAQ
     """
-    url = f"https://finance.naver.com/sise/investorDealTrendDay.naver?bizdate=&sosok={sosok_code}&page=1"
+    # bizdate를 오늘로 명시 (필수!)
+    url = f"https://finance.naver.com/sise/investorDealTrendDay.naver?bizdate={today_str}&sosok={sosok_code}&page=1"
     print(f"\n   [{market_name}] {url}")
 
     try:
@@ -58,43 +59,45 @@ def fetch_naver_investor_market(sosok_code, market_name):
             print(f"   응답 본문 (처음 300자): {res.text[:300]}")
             return None
 
-        # 네이버는 EUC-KR 인코딩
         res.encoding = "euc-kr"
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # 일별 순매수 테이블 찾기
         table = soup.find("table", summary=re.compile("일자별 순매수"))
         if table is None:
-            print(f"   테이블 없음. HTML 일부:")
-            print(res.text[:500])
+            print(f"   테이블 없음")
             return None
 
         rows = table.find_all("tr")
         print(f"   테이블 행 수: {len(rows)}")
 
-        # 헤더 두 줄 건너뛰고 첫 데이터 행 찾기
+        # 데이터 행 탐색 (날짜 형식 26.06.12 또는 2026.06.12)
         data_row = None
         for tr in rows:
             tds = tr.find_all("td")
             if len(tds) >= 10:
-                # 첫 칸이 날짜 형식인지 확인
                 first_text = tds[0].get_text(strip=True)
-                if re.match(r"\d{4}[.\-]\d{1,2}[.\-]\d{1,2}", first_text) or re.match(r"\d{2}[.\-]\d{2}[.\-]\d{2}", first_text):
+                # 날짜 패턴: YY.MM.DD 또는 YYYY.MM.DD
+                if re.match(r"^\d{2,4}[.\-/]\d{1,2}[.\-/]\d{1,2}$", first_text):
                     data_row = tds
                     break
 
         if not data_row:
-            print(f"   데이터 행 없음. 전체 tr 수: {len(rows)}")
-            for i, tr in enumerate(rows[:5]):
-                print(f"   행 {i}: {tr.get_text(strip=True)[:100]}")
+            print(f"   데이터 행 없음. tr 수: {len(rows)}")
+            for i, tr in enumerate(rows[:8]):
+                tds = tr.find_all("td")
+                print(f"   행 {i} (td {len(tds)}개): {tr.get_text(strip=True)[:120]}")
             return None
 
-        # 컬럼: 날짜 | 개인 | 외국인 | 기관계 | 금융투자 | 보험 | 투신 | 은행 | 기타금융 | 연기금등 | 기타법인
+        # 날짜 정규화 (26.06.12 → 20260612)
         date_str = data_row[0].get_text(strip=True)
-        date_norm = re.sub(r"[^\d]", "", date_str)
-        if len(date_norm) == 6:  # YYMMDD → YYYYMMDD
-            date_norm = "20" + date_norm
+        date_clean = re.sub(r"[^\d]", "", date_str)
+        if len(date_clean) == 6:  # YYMMDD
+            date_norm = "20" + date_clean
+        else:
+            date_norm = date_clean
 
+        # 컬럼 인덱스
+        # 0:날짜 1:개인 2:외국인 3:기관계 4:금융투자 5:보험 6:투신 7:은행 8:기타금융 9:연기금등 10:기타법인
         indiv = parse_int(data_row[1].get_text(strip=True))
         foreign = parse_int(data_row[2].get_text(strip=True))
         inst = parse_int(data_row[3].get_text(strip=True))
@@ -102,10 +105,13 @@ def fetch_naver_investor_market(sosok_code, market_name):
         pension = parse_int(data_row[9].get_text(strip=True)) if len(data_row) > 9 else 0
 
         print(f"   날짜: {date_norm}")
-        print(f"   개인: {indiv:>10,} 억 / 외국인: {foreign:>10,} 억 / 기관: {inst:>10,} 억")
-        print(f"   금융투자: {finance:>10,} 억 / 연기금등: {pension:>10,} 억")
+        print(f"   개인:    {indiv:>10,} 억")
+        print(f"   외국인:  {foreign:>10,} 억")
+        print(f"   기관계:  {inst:>10,} 억")
+        print(f"   금융투자:{finance:>10,} 억")
+        print(f"   연기금등:{pension:>10,} 억")
 
-        # 단위: 억원 → 원 (1e8 곱하기)
+        # 억원 → 원 (1억 = 1e8 원)
         return {
             "date": date_norm,
             "외국인합계": foreign * 100000000,
@@ -156,7 +162,6 @@ def use_mock():
     }
 
 
-# 실행
 data = fetch_naver_investor() or use_mock()
 
 
@@ -190,3 +195,13 @@ with open("data/krx_investor.json", "w", encoding="utf-8") as f:
 print("\n" + "=" * 60)
 print(f"저장 완료 (source: {output['source']})")
 print("=" * 60)
+
+if output["source"] == "naver":
+    print(f"\n📊 KOSPI 요약 (억원)")
+    for k, v in output["kospi"]["eok"].items():
+        if isinstance(v, (int, float)):
+            print(f"   {k:<10}: {v:>12,.1f}")
+    print(f"\n📊 KOSDAQ 요약 (억원)")
+    for k, v in output["kosdaq"]["eok"].items():
+        if isinstance(v, (int, float)):
+            print(f"   {k:<10}: {v:>12,.1f}")
