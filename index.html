@@ -13282,28 +13282,71 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
 // 휴장일 라벨 (C) - 주말/공휴일 자동 안내
 // ============================================
 (function(){
+  if(!window.KrxDateUtils){
+    const fmtDate = new Intl.DateTimeFormat('en-CA', { timeZone:'Asia/Seoul', year:'numeric', month:'2-digit', day:'2-digit' });
+    const fmtWeekday = new Intl.DateTimeFormat('ko-KR', { timeZone:'Asia/Seoul', weekday:'short' });
+    const fmtDateTimeParts = new Intl.DateTimeFormat('en-CA', { timeZone:'Asia/Seoul', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false });
+
+    function getKstParts(date){
+      const parts = fmtDateTimeParts.formatToParts(date).reduce((acc, p) => { if(p.type !== 'literal') acc[p.type] = p.value; return acc; }, {});
+      return {
+        year:+parts.year,
+        month:+parts.month,
+        day:+parts.day,
+        hour:+parts.hour,
+        minute:+parts.minute,
+        ymd:`${parts.year}-${parts.month}-${parts.day}`
+      };
+    }
+    function getKstDateOnly(date){
+      const p = getKstParts(date);
+      return new Date(p.year, p.month - 1, p.day);
+    }
+    function getKstDowName(date){
+      return fmtWeekday.format(date).replace('요일','');
+    }
+    function formatBaseDate(baseDate){
+      const bd = String(baseDate || '');
+      return /^\d{8}$/.test(bd) ? `${bd.slice(0,4)}-${bd.slice(4,6)}-${bd.slice(6,8)}` : '';
+    }
+    function getStatusFromBaseDate(baseDate){
+      const bd = String(baseDate || '');
+      if(!/^\d{8}$/.test(bd)) return null;
+      const now = new Date();
+      const kst = getKstParts(now);
+      const today = new Date(kst.year, kst.month - 1, kst.day);
+      const base = new Date(+bd.slice(0,4), +bd.slice(4,6)-1, +bd.slice(6,8));
+      today.setHours(0,0,0,0);
+      base.setHours(0,0,0,0);
+      const diffDays = Math.round((today - base) / 86400000);
+      if(diffDays <= 0) return null;
+      const dow = today.getDay();
+      let reason = '';
+      if(dow === 0 || dow === 6) reason = '주말';
+      else if(diffDays >= 2) reason = '공휴일 추정';
+      else {
+        const mins = kst.hour * 60 + kst.minute;
+        if(mins < 9*60) reason = '장 시작 전';
+        else if(mins < 15*60 + 30) reason = '당일 데이터 대기';
+        else reason = '데이터 지연';
+      }
+      return {
+        reason,
+        baseDateStr: formatBaseDate(bd),
+        diffDays,
+        todayStr: kst.ymd,
+        dowName: getKstDowName(now),
+        isWeekend: dow === 0 || dow === 6
+      };
+    }
+
+    window.KrxDateUtils = { getKstParts, getKstDateOnly, getKstDowName, formatBaseDate, getStatusFromBaseDate };
+  }
+
   function getHolidayLabel(){
     const d = window._lastKrxData;
     if(!d || !d.base_date) return null;
-    const bd = d.base_date;
-    const baseDate = new Date(
-      parseInt(bd.substring(0,4)),
-      parseInt(bd.substring(4,6)) - 1,
-      parseInt(bd.substring(6,8))
-    );
-    const today = new Date();
-    today.setHours(0,0,0,0);
-    baseDate.setHours(0,0,0,0);
-    const diffDays = Math.round((today - baseDate) / (1000*60*60*24));
-    const dow = today.getDay();
-    const dowName = ['일','월','화','수','목','금','토'][dow];
-    if(diffDays <= 0) return null;
-    let reason = '';
-    if(dow === 0 || dow === 6) reason = `주말 (${dowName}요일)`;
-    else if(diffDays >= 2) reason = '공휴일 추정';
-    else reason = '장 시작 전';
-    const baseDateStr = `${bd.substring(0,4)}-${bd.substring(4,6)}-${bd.substring(6,8)}`;
-    return { reason, baseDateStr, diffDays, todayStr: today.toISOString().slice(0,10), dowName };
+    return window.KrxDateUtils.getStatusFromBaseDate(d.base_date);
   }
 
   function applyHolidayLabel(){
@@ -13316,7 +13359,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     const label = document.createElement('div');
     label.className = 'krx-holiday-label';
     label.style.cssText = 'background:#f3f4f6;border:1px solid #d1d5db;border-radius:4px;padding:4px 8px;margin:6px 0;font-size:11px;color:#4b5563;line-height:1.4;';
-    label.innerHTML = `📅 오늘은 <b>${info.todayStr} (${info.dowName})</b> · ${info.reason}<br>표시 데이터: 마지막 영업일 <b>${info.baseDateStr}</b> (D-${info.diffDays})`;
+    label.innerHTML = `📅 오늘 <b>${info.todayStr} (${info.dowName})</b> · ${info.reason}<br>표시 데이터: 마지막 영업일 <b>${info.baseDateStr}</b> (D-${info.diffDays})`;
     const titleDiv = box.firstElementChild;
     if(titleDiv && titleDiv.nextSibling){
       box.insertBefore(label, titleDiv.nextSibling);
@@ -13521,20 +13564,8 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     const sourceTag = data.source === 'naver' ? '실시간' : (data.source === 'mock' ? 'MOCK' : data.source || '?');
     const sourceColor = data.source === 'naver' ? '#10b981' : '#f59e0b';
     const baseDate = data.base_date || '';
-    const baseDateStr = baseDate ? `${baseDate.substring(0,4)}-${baseDate.substring(4,6)}-${baseDate.substring(6,8)}` : '-';
-    
-    let holidayInfo = null;
-    if(baseDate){
-      const bDate = new Date(parseInt(baseDate.substring(0,4)), parseInt(baseDate.substring(4,6))-1, parseInt(baseDate.substring(6,8)));
-      const today = new Date(); today.setHours(0,0,0,0); bDate.setHours(0,0,0,0);
-      const diff = Math.round((today - bDate)/(1000*60*60*24));
-      if(diff > 0){
-        const dow = today.getDay();
-        const dowName = ['일','월','화','수','목','금','토'][dow];
-        let reason = (dow===0||dow===6) ? `주말(${dowName})` : (diff>=2 ? '공휴일 추정' : '장 시작 전');
-        holidayInfo = { reason, diff, todayStr: today.toISOString().slice(0,10) };
-      }
-    }
+    const baseDateStr = window.KrxDateUtils.formatBaseDate(baseDate) || '-';
+    const holidayInfo = window.KrxDateUtils.getStatusFromBaseDate(baseDate);
     
     const totalForeign = (fK||0) + (fQ||0);
     const totalInst = (iK||0) + (iQ||0);
@@ -13582,7 +13613,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
           <span style="font-size:11px; color:#e2e8f0; font-weight:500;">📅 ${baseDateStr}</span>
           <span style="font-size:11px; font-weight:700; color:${overallColor};">${overallIcon} ${overallSignal}</span>
         </div>
-        ${holidayInfo ? `<div style="font-size:10px; color:#fcd34d; margin-top:4px; font-weight:500;">⚠️ ${holidayInfo.todayStr} ${holidayInfo.reason} · D-${holidayInfo.diff}</div>` : ''}
+        ${holidayInfo ? `<div style="font-size:10px; color:#fcd34d; margin-top:4px; font-weight:500;">⚠️ ${holidayInfo.todayStr} (${holidayInfo.dowName}) ${holidayInfo.reason} · 마지막 영업일 ${holidayInfo.baseDateStr} (D-${holidayInfo.diffDays})</div>` : ''}
       </div>
       <div style="margin-bottom:8px;">
         <div style="font-size:11px; color:#a5b4fc; font-weight:700; margin-bottom:4px; letter-spacing:0.5px;">▸ KOSPI 현물 (억원)</div>
@@ -13751,13 +13782,9 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
 
     // 휴장일 라벨
     const bd=data.base_date||'';
-    const baseDateStr=bd?`${bd.slice(0,4)}-${bd.slice(4,6)}-${bd.slice(6,8)}`:'';
-    const today=new Date(); today.setHours(0,0,0,0);
-    const baseDate=bd?new Date(+bd.slice(0,4),+bd.slice(4,6)-1,+bd.slice(6,8)):null;
-    const diffDays=baseDate?Math.round((today-baseDate)/86400000):0;
-    const dow=today.getDay(), dowName=['일','월','화','수','목','금','토'][dow];
-    const isHoliday=diffDays>0;
-    const todayStr=today.toISOString().slice(0,10);
+    const statusInfo = window.KrxDateUtils.getStatusFromBaseDate(bd);
+    const baseDateStr = window.KrxDateUtils.formatBaseDate(bd);
+    const isHoliday = !!statusInfo;
 
     // 미니 차트
     const history=getRecentHistory();
@@ -13775,7 +13802,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
         <div style="font-weight:700;font-size:15px;"><span style="background:#3b82f6;padding:2px 6px;border-radius:4px;font-size:11px;margin-right:6px;">KR</span>KRX 수급 <span style="color:#34d399;font-size:10px;">● 실시간</span></div>
         <span style="cursor:pointer;color:#94a3b8;font-size:18px;" onclick="event.stopPropagation();document.getElementById('krx-main-box').remove();">×</span>
       </div>
-      ${isHoliday?`<div style="background:#fef3c7;color:#92400e;padding:4px 8px;border-radius:6px;font-size:10px;margin-bottom:8px;">📅 오늘 ${todayStr} (${dowName}) · ${dow===0||dow===6?'주말':'휴장'}<br>표시: 마지막 영업일 <b>${baseDateStr}</b> (D-${diffDays})</div>`:''}
+      ${isHoliday?`<div style="background:#fef3c7;color:#92400e;padding:4px 8px;border-radius:6px;font-size:10px;margin-bottom:8px;">📅 오늘 ${statusInfo.todayStr} (${statusInfo.dowName}) · ${statusInfo.reason}<br>표시: 마지막 영업일 <b>${statusInfo.baseDateStr}</b> (D-${statusInfo.diffDays})</div>`:''}
       <div style="background:rgba(255,255,255,0.05);border-radius:8px;padding:8px 10px;margin-bottom:10px;">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <span style="font-size:11px;color:#cbd5e1;">📅 ${baseDateStr}</span>
