@@ -13,7 +13,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
   <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
   <style>
     *{-webkit-tap-highlight-color:transparent;box-sizing:border-box}
@@ -52,15 +52,54 @@
 <div id="root"></div>
 
 <script>
-// === CORS 프록시 자동 래퍼 (GitHub Pages/모바일용) ===
+// === 부팅 전 localStorage 손상 복구 ===
 (function(){
-  // PC 로컬 실행에서는 프록시 안 씀
-  if(location.protocol === 'file:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1'){
-    console.log('🏠 로컬 모드 - 프록시 비활성');
-    return;
+  const defaults = {
+    bsa_daily_log:'[]',
+    watchlist:'[]',
+    watchlist_v5:'[]',
+    holdings_v5:'[]',
+    sim_holdings:'[]',
+    sim_history:'[]',
+    tradeLog:'[]',
+    fundamentalManual:'{}',
+    macro_data:'null',
+    ls_config:'{}',
+    signal_history_v1:'[]',
+    wagthedog_log:'[]',
+    wtd_signal_history:'[]',
+    screening_results:'null',
+    prediction_history:'[]',
+    indicator_weights:'null'
+  };
+  const repaired = [];
+  Object.entries(defaults).forEach(([key, fallback]) => {
+    const raw = localStorage.getItem(key);
+    if(raw == null || raw === '') return;
+    try {
+      JSON.parse(raw);
+    } catch(err) {
+      try { localStorage.setItem(key + '_corrupt_backup_' + Date.now(), raw); } catch(_) {}
+      localStorage.setItem(key, fallback);
+      repaired.push({ key, error: err.message });
+    }
+  });
+  window.__startupStorageRepairLog = repaired;
+  if(repaired.length){
+    console.warn('🧹 손상된 localStorage 자동 복구:', repaired);
+  }
+})();
+</script>
+
+<script>
+// === CORS 프록시 자동 래퍼 (로컬 file:// 포함) ===
+(function(){
+  const isLocalLike = location.protocol === 'file:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  const PROXY = 'https://corsproxy.io/?';
+  if(isLocalLike){
+    console.log('🏠 로컬/개발 모드 - CORS 프록시 활성');
   }
   
-  const PROXY = 'https://corsproxy.io/?';
   const TARGETS = [
     'query1.finance.yahoo.com',
     'query2.finance.yahoo.com',
@@ -5661,7 +5700,8 @@ window.detectCandlePatterns=detectCandlePatterns;
 window.fetchAnalyst=fetchAnalyst;
 window.importBackup=importBackup;
 </script>
-<script type="text/babel">
+<script type="text/babel" data-presets="env,react">
+/** @jsxRuntime classic */
 const {useState,useRef,useEffect,useCallback,useMemo}=React;
 
 function ScoreRing({score,size}){
@@ -11622,18 +11662,10 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
           statusEl.textContent = '🌍 Yahoo Finance에서 실시간 데이터 수집 중...';
           statusEl.style.color = '#3b82f6';
           
-          // 로컬 파일(file://) 환경 감지
           const isLocal = location.protocol === 'file:';
           if(isLocal){
-            statusEl.innerHTML = '⚠️ <b>로컬 파일 환경(file://)</b><br>'+
-              'Yahoo Finance API가 CORS 정책으로 차단됩니다.<br>'+
-              '💡 <b>해결 방법</b>:<br>'+
-              '1️⃣ GitHub Pages URL로 접속하면 자동 수집 가능<br>'+
-              '2️⃣ 또는 아래 바로가기 버튼으로 값 확인 후 수동 입력';
-            statusEl.style.color = '#dc2626';
-            refreshBtn.disabled = false;
-            refreshBtn.textContent = '🔄 자동 수집';
-            return;
+            statusEl.innerHTML = '🛰️ <b>로컬 파일 환경 감지</b><br>Yahoo Finance 데이터를 CORS 프록시 경유로 수집 중...';
+            statusEl.style.color = '#2563eb';
           }
           
           try {
@@ -12042,76 +12074,63 @@ window.fetchGlobalMacro = async function(useCache = true){
   
   const result = {
     timestamp: new Date().toISOString(),
-    // 미국 증시
     dow: null, dowChange: null,
     nasdaq: null, nasdaqChange: null,
     snp: null, snpChange: null,
     usAvg: null,
-    // 변동성·환율
     vix: null,
     usdKrw: null, usdKrwChange: null,
-    // 한국
     kospi: null,
-    // 🆕 반도체 지표
     sox: null, soxChange: null,
     nvda: null, nvdaChange: null,
     mu: null, muChange: null,
     tsm: null, tsmChange: null,
     semiAvg: null,
-    // 🆕 미국 야간선물
     esFuture: null, esFutureChange: null,
     nqFuture: null, nqFutureChange: null,
     futureAvg: null,
-    // 🆕 한국 반도체
     samsung: null, samsungChange: null,
     skHynix: null, skHynixChange: null,
     errors: []
   };
-  
-     const fetchYahoo = async (symbol) => {
+
+  function toSeriesPoint(arr){
+    if(!arr || !arr.length) return { price:null, change:null, prev:null };
+    const last = arr[arr.length - 1];
+    const prev = arr.length >= 2 ? arr[arr.length - 2] : null;
+    const price = last && last.close != null ? Number(last.close) : null;
+    const prevPrice = prev && prev.close != null ? Number(prev.close) : null;
+    const change = (price != null && prevPrice != null && prevPrice !== 0)
+      ? ((price - prevPrice) / prevPrice * 100)
+      : null;
+    return { price: price, change: change, prev: prevPrice };
+  }
+
+  async function fetchViaWorker(symbol, label){
     try {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=10d`;
-      const r = await fetch(url);
-      if(!r.ok) throw new Error('HTTP ' + r.status);
-      const data = await r.json();
-      const result = data.chart?.result?.[0];
-      const meta = result?.meta;
-      if(!meta) throw new Error('데이터 없음');
-      
-      const current = meta.regularMarketPrice;
-      const closes = result?.indicators?.quote?.[0]?.close || [];
-      
-      // 🔧 정확한 어제 종가 찾기
-      // 1. close 배열에서 null/undefined 제외한 유효값들
-      const validCloses = closes.filter(c => c !== null && c !== undefined && !isNaN(c));
-      
-      let prev = null;
-      
-      if(validCloses.length >= 2){
-        const lastValid = validCloses[validCloses.length - 1];
-        // 마지막 유효 종가가 현재가와 거의 같으면 → 오늘 일봉 → 어제는 그 전 값
-        // 다르면 → 마지막 유효 종가가 어제 값 (미국처럼 오늘 장 안 열린 경우)
-        if(Math.abs(lastValid - current) / current < 0.001){
-          prev = validCloses[validCloses.length - 2];
-        } else {
-          prev = lastValid;
-        }
-      }
-      
-      // 폴백: close 배열로 못 찾으면 Yahoo의 chartPreviousClose 사용
-      if(!prev || prev <= 0){
-        prev = meta.chartPreviousClose || meta.previousClose;
-      }
-      
-      return {
-        price: current,
-        change: prev ? ((current - prev) / prev * 100) : 0,
-        prev: prev
-      };
+      const arr = await StockAPI.fetchUS(symbol, '1d', '1mo');
+      const point = toSeriesPoint(arr);
+      if(point.price == null) throw new Error('empty');
+      return point;
     } catch(e){
-      return { error: e.message };
+      console.warn('거시 수집 실패:', label || symbol, e && e.message ? e.message : e);
+      return { price:null, change:null, prev:null, error: e && e.message ? e.message : String(e) };
     }
-  };
+  }
+
+  async function fetchKrViaWorker(code, label){
+    try {
+      const end = new Date();
+      const start = new Date(end.getTime() - 40 * 24 * 60 * 60 * 1000);
+      const arr = await StockAPI.fetchKR(code, 'day', fD(start), fD(end));
+      const point = toSeriesPoint(arr);
+      if(point.price == null) throw new Error('empty');
+      return point;
+    } catch(e){
+      console.warn('거시 KRX 수집 실패:', label || code, e && e.message ? e.message : e);
+      return { price:null, change:null, prev:null, error: e && e.message ? e.message : String(e) };
+    }
+  }
   
   try {
     const [
@@ -12120,52 +12139,56 @@ window.fetchGlobalMacro = async function(useCache = true){
       esF, nqF,
       samsung, skHynix
     ] = await Promise.all([
-      fetchYahoo('^DJI'), fetchYahoo('^IXIC'), fetchYahoo('^GSPC'),
-      fetchYahoo('^VIX'), fetchYahoo('KRW=X'), fetchYahoo('^KS11'),
-      fetchYahoo('^SOX'), fetchYahoo('NVDA'), fetchYahoo('MU'), fetchYahoo('TSM'),
-      fetchYahoo('ES=F'), fetchYahoo('NQ=F'),
-      fetchYahoo('005930.KS'), fetchYahoo('000660.KS')
+      fetchViaWorker('^DJI', '다우'),
+      fetchViaWorker('^IXIC', '나스닥'),
+      fetchViaWorker('^GSPC', 'S&P500'),
+      fetchViaWorker('^VIX', 'VIX'),
+      fetchViaWorker('KRW=X', 'USD/KRW'),
+      fetchViaWorker('^KS11', 'KOSPI'),
+      fetchViaWorker('^SOX', 'SOX'),
+      fetchViaWorker('NVDA', 'NVDA'),
+      fetchViaWorker('MU', 'MU'),
+      fetchViaWorker('TSM', 'TSM'),
+      fetchViaWorker('ES=F', 'ES 선물'),
+      fetchViaWorker('NQ=F', 'NQ 선물'),
+      fetchKrViaWorker('005930', '삼성전자'),
+      fetchKrViaWorker('000660', 'SK하이닉스')
     ]);
     
-    // 미국 증시
-    if(dow.price){ result.dow = dow.price; result.dowChange = dow.change; } else result.errors.push('다우');
-    if(nasdaq.price){ result.nasdaq = nasdaq.price; result.nasdaqChange = nasdaq.change; } else result.errors.push('나스닥');
-    if(snp.price){ result.snp = snp.price; result.snpChange = snp.change; } else result.errors.push('S&P500');
-    if(result.dowChange !== null && result.nasdaqChange !== null && result.snpChange !== null){
+    if(dow.price != null){ result.dow = dow.price; result.dowChange = dow.change; } else result.errors.push('다우');
+    if(nasdaq.price != null){ result.nasdaq = nasdaq.price; result.nasdaqChange = nasdaq.change; } else result.errors.push('나스닥');
+    if(snp.price != null){ result.snp = snp.price; result.snpChange = snp.change; } else result.errors.push('S&P500');
+    if(result.dowChange != null && result.nasdaqChange != null && result.snpChange != null){
       result.usAvg = (result.dowChange + result.nasdaqChange + result.snpChange) / 3;
     }
     
-    // 변동성·환율
-    if(vix.price){ result.vix = vix.price; } else result.errors.push('VIX');
-    if(usdkrw.price){ result.usdKrw = usdkrw.price; result.usdKrwChange = usdkrw.price - usdkrw.prev; } else result.errors.push('USD/KRW');
-    if(kospi.price) result.kospi = kospi.price;
+    if(vix.price != null){ result.vix = vix.price; } else result.errors.push('VIX');
+    if(usdkrw.price != null){ result.usdKrw = usdkrw.price; result.usdKrwChange = usdkrw.price - usdkrw.prev; } else result.errors.push('USD/KRW');
+    if(kospi.price != null) result.kospi = kospi.price;
     
-    // 🆕 반도체
-    if(sox.price){ result.sox = sox.price; result.soxChange = sox.change; } else result.errors.push('SOX');
-    if(nvda.price){ result.nvda = nvda.price; result.nvdaChange = nvda.change; } else result.errors.push('NVDA');
-    if(mu.price){ result.mu = mu.price; result.muChange = mu.change; } else result.errors.push('MU');
-    if(tsm.price){ result.tsm = tsm.price; result.tsmChange = tsm.change; } else result.errors.push('TSM');
-    if(result.nvdaChange !== null && result.muChange !== null && result.tsmChange !== null){
+    if(sox.price != null){ result.sox = sox.price; result.soxChange = sox.change; } else result.errors.push('SOX');
+    if(nvda.price != null){ result.nvda = nvda.price; result.nvdaChange = nvda.change; } else result.errors.push('NVDA');
+    if(mu.price != null){ result.mu = mu.price; result.muChange = mu.change; } else result.errors.push('MU');
+    if(tsm.price != null){ result.tsm = tsm.price; result.tsmChange = tsm.change; } else result.errors.push('TSM');
+    if(result.nvdaChange != null && result.muChange != null && result.tsmChange != null){
       result.semiAvg = (result.nvdaChange + result.muChange + result.tsmChange) / 3;
     }
     
-    // 🆕 야간선물
-    if(esF.price){ result.esFuture = esF.price; result.esFutureChange = esF.change; } else result.errors.push('ES 선물');
-    if(nqF.price){ result.nqFuture = nqF.price; result.nqFutureChange = nqF.change; } else result.errors.push('NQ 선물');
-    if(result.esFutureChange !== null && result.nqFutureChange !== null){
+    if(esF.price != null){ result.esFuture = esF.price; result.esFutureChange = esF.change; } else result.errors.push('ES 선물');
+    if(nqF.price != null){ result.nqFuture = nqF.price; result.nqFutureChange = nqF.change; } else result.errors.push('NQ 선물');
+    if(result.esFutureChange != null && result.nqFutureChange != null){
       result.futureAvg = (result.esFutureChange + result.nqFutureChange) / 2;
     }
     
-    // 🆕 한국 반도체
-    if(samsung.price){ result.samsung = samsung.price; result.samsungChange = samsung.change; }
-    if(skHynix.price){ result.skHynix = skHynix.price; result.skHynixChange = skHynix.change; }
+    if(samsung.price != null){ result.samsung = samsung.price; result.samsungChange = samsung.change; }
+    if(skHynix.price != null){ result.skHynix = skHynix.price; result.skHynixChange = skHynix.change; }
     
     localStorage.setItem('global_macro_cache', JSON.stringify({
       fetchTime: Date.now(),
       data: result
     }));
     
-    console.log('✅ 전체 지표 수집 완료');
+    console.log('✅ 전체 지표 수집 완료', result);
     return result;
   } catch(e){
     console.error('❌ 수집 실패:', e);
@@ -12349,28 +12372,72 @@ console.log('✅ 글로벌 거시 지표 시스템 로드 완료');
 })();
 </script>
 <script>
-// === 보호 시스템 ===
+// === 부팅 안전 장치 (무한 새로고침 방지) ===
 (function(){
-  window.addEventListener('error', function(e){
-    if(e.message && e.message.indexOf('value') !== -1){
-      console.warn('🛡️ 에러 차단:', e.message);
-      e.preventDefault();
-      return true;
+  var bootError = '';
+
+  function escapeHtml(s){
+    return String(s || '').replace(/[&<>"']/g, function(ch){
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'})[ch];
+    });
+  }
+
+  function showBootOverlay(reason){
+    if(document.getElementById('boot-fail-overlay')) return;
+    var box = document.createElement('div');
+    box.id = 'boot-fail-overlay';
+    box.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(15,23,42,.92);display:flex;align-items:center;justify-content:center;padding:20px;';
+    box.innerHTML = '' +
+      '<div style="width:min(720px,100%);background:#fff;border-radius:16px;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.35);font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">' +
+      '<div style="font-size:20px;font-weight:800;color:#0f172a;margin-bottom:8px;">앱 부팅 실패</div>' +
+      '<div style="font-size:13px;line-height:1.6;color:#334155;margin-bottom:14px;">자동 새로고침은 막았습니다. 아래 오류와 저장소 복구 로그를 확인한 뒤 수동으로 재시도하세요.</div>' +
+      '<pre style="white-space:pre-wrap;word-break:break-word;background:#0f172a;color:#e2e8f0;border-radius:12px;padding:12px;font-size:12px;max-height:220px;overflow:auto;">' + escapeHtml(reason || '원인을 캡처하지 못했습니다.') + '</pre>' +
+      '<div id="boot-repair-log" style="margin-top:10px;font-size:12px;color:#475569;"></div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;">' +
+      '<button id="boot-reload-btn" style="padding:10px 14px;border:none;border-radius:10px;background:#2563eb;color:#fff;font-weight:700;cursor:pointer;">새로고침</button>' +
+      '<button id="boot-reset-btn" style="padding:10px 14px;border:none;border-radius:10px;background:#ef4444;color:#fff;font-weight:700;cursor:pointer;">핵심 저장소 초기화 후 재시도</button>' +
+      '<button id="boot-close-btn" style="padding:10px 14px;border:1px solid #cbd5e1;border-radius:10px;background:#fff;color:#0f172a;font-weight:700;cursor:pointer;">닫기</button>' +
+      '</div>' +
+      '</div>';
+    document.body.appendChild(box);
+
+    var repairLog = document.getElementById('boot-repair-log');
+    if(repairLog){
+      var repaired = Array.isArray(window.__startupStorageRepairLog) ? window.__startupStorageRepairLog : [];
+      repairLog.textContent = repaired.length ? ('자동 복구: ' + repaired.map(function(x){ return x.key; }).join(', ')) : '자동 복구된 저장소 없음';
     }
-  }, true);
-  
-  window.addEventListener('unhandledrejection', function(e){
-    e.preventDefault();
-  });
-  
-  setInterval(function(){
-    var r = document.getElementById('root');
-    if(r && r.innerHTML.trim() === ''){
-      console.log('🔄 빈 화면 감지, 새로고침');
+
+    document.getElementById('boot-reload-btn').onclick = function(){ location.reload(); };
+    document.getElementById('boot-close-btn').onclick = function(){ box.remove(); };
+    document.getElementById('boot-reset-btn').onclick = function(){
+      [
+        'bsa_daily_log','watchlist','watchlist_v5','holdings_v5','sim_holdings','sim_history',
+        'tradeLog','fundamentalManual','macro_data','signal_history_v1','wagthedog_log',
+        'wtd_signal_history','screening_results','prediction_history','indicator_weights'
+      ].forEach(function(key){ localStorage.removeItem(key); });
       location.reload();
+    };
+  }
+
+  window.addEventListener('error', function(e){
+    bootError = (e.error && e.error.stack) || e.message || String(e.error || e);
+    console.error('🚨 부팅 오류:', e.error || e.message || e);
+  }, true);
+
+  window.addEventListener('unhandledrejection', function(e){
+    bootError = (e.reason && (e.reason.stack || e.reason.message)) || String(e.reason || 'Unhandled promise rejection');
+    console.error('🚨 Promise 오류:', e.reason);
+  });
+
+  setTimeout(function(){
+    var r = document.getElementById('root');
+    var text = r ? (r.textContent || '').trim() : '';
+    if(!text){
+      console.warn('⚠️ root가 비어 있어 부팅 실패 UI를 표시합니다.');
+      showBootOverlay(bootError || 'root가 비어 있습니다. React 렌더 또는 초기 스크립트 오류 가능성이 큽니다.');
     }
-  }, 8000);
-  
+  }, 10000);
+
   setTimeout(function(){
     document.querySelectorAll('button').forEach(function(btn){
       if(btn.textContent && btn.textContent.indexOf('시장분석') !== -1){
@@ -12383,8 +12450,8 @@ console.log('✅ 글로벌 거시 지표 시스템 로드 완료');
       }
     });
   }, 3000);
-  
-  console.log('✅ 보호 시스템 활성화');
+
+  console.log('✅ 부팅 안전 장치 활성화');
 })();
 </script>
 <script>
@@ -14535,6 +14602,33 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     };
   }
   
+  function normalizeWatchItem(w){
+    if(!w) return null;
+    const symbol = String(w.symbol || w.name || '').trim();
+    const code = String(w.code || (window.KR_CODE && symbol ? window.KR_CODE[symbol] : '') || '').trim();
+    const name = String(w.name || (symbol && !/^\d{6}$/.test(symbol) ? symbol : '') || (window._stockNameMap && code ? window._stockNameMap[code] : '') || (window.KR_CODE ? Object.keys(window.KR_CODE).find(k => window.KR_CODE[k]===code) : '') || symbol || code).trim();
+    if(!code && !name && !symbol) return null;
+    return {...w, symbol: symbol || name || code, code: code || symbol, name: name || symbol || code};
+  }
+
+  function loadMaejipWatchlist(){
+    try{
+      const primary = JSON.parse(localStorage.getItem('watchlist_v5') || '[]');
+      const legacy = JSON.parse(localStorage.getItem('watchlist') || '[]');
+      const raw = Array.isArray(primary) && primary.length ? primary : (Array.isArray(legacy) ? legacy : []);
+      return raw.map(normalizeWatchItem).filter(Boolean);
+    }catch(e){
+      try{
+        const legacy = JSON.parse(localStorage.getItem('watchlist') || '[]');
+        return (Array.isArray(legacy) ? legacy : []).map(normalizeWatchItem).filter(Boolean);
+      }catch(e2){
+        return [];
+      }
+    }
+  }
+
+  window.loadMaejipWatchlist = loadMaejipWatchlist;
+
   // ===== 2. UI 렌더링 =====
   function renderBox(results){
     let box = document.getElementById('maejip-box');
@@ -14608,7 +14702,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   
   // ===== 3. 메인 분석 실행 =====
   async function runAnalysis(){
-    const watchlist = JSON.parse(localStorage.getItem('watchlist')||'[]').slice(0,6);
+    const watchlist = loadMaejipWatchlist();
     if(watchlist.length === 0){ console.log('관심종목 없음'); return; }
     
     let marketReturn = 5.0;
@@ -14702,6 +14796,22 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     return nameMap;
   }
   
+  function getReverseKrCodeMap(){
+    const reverseMap = {};
+    try{
+      Object.entries(window.KR_CODE || {}).forEach(([name, code]) => {
+        const normCode = String(code || '').trim();
+        const normName = String(name || '').trim();
+        if(/^\d{6}$/.test(normCode) && normName && !reverseMap[normCode]) reverseMap[normCode] = normName;
+      });
+    }catch(e){}
+    return reverseMap;
+  }
+
+  function mergeNameMap(baseMap){
+    return Object.assign({}, getReverseKrCodeMap(), baseMap || {});
+  }
+
   async function loadNameMap(){
     // 1. localStorage 캐시 확인
     try{
@@ -14709,16 +14819,17 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
       if(cached && cached.ts && (Date.now() - cached.ts < TTL) && cached.data){
         const count = Object.keys(cached.data).length;
         if(count >= 300){
-          window._stockNameMap = cached.data;
-          console.log(`✅ Patch #20: 종목명 캐시 복원 (${count}개, ${Math.floor((Date.now()-cached.ts)/3600000)}시간 전)`);
-          return cached.data;
+          const merged = mergeNameMap(cached.data);
+          window._stockNameMap = merged;
+          console.log(`✅ Patch #20: 종목명 캐시 복원 (${Object.keys(merged).length}개, ${Math.floor((Date.now()-cached.ts)/3600000)}시간 전)`);
+          return merged;
         }
       }
     }catch(e){}
     
     // 2. 캐시 없거나 오래됨 → 새로 수집
     console.log('📡 Patch #20: 종목명 새로 수집 중...');
-    const nameMap = await rebuildNameMap();
+    const nameMap = mergeNameMap(await rebuildNameMap());
     const count = Object.keys(nameMap).length;
     if(count >= 300){
       localStorage.setItem(CACHE_KEY, JSON.stringify({ts: Date.now(), data: nameMap}));
@@ -15054,8 +15165,27 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     '003490':'운송', '011200':'운송', '180640':'운송',
   };
   function getSector(code){ return SECTOR_MAP[code] || '기타'; }
+
+  function resolveStockName(code, name){
+    const rawName = (name == null ? '' : String(name)).trim();
+    if(rawName && !/^\d{6}$/.test(rawName)) return rawName;
+
+    const rawCode = String(code == null ? rawName : code).trim().padStart(6, '0');
+    if(!rawCode) return rawName || '';
+
+    if(window._stockNameMap && window._stockNameMap[rawCode]) return window._stockNameMap[rawCode];
+
+    if(window.KR_CODE){
+      const hit = Object.keys(window.KR_CODE).find(function(k){ return window.KR_CODE[k] === rawCode; });
+      if(hit) return hit;
+    }
+
+    return rawName || rawCode;
+  }
+  window.resolveStockName = resolveStockName;
   
   async function analyzeSingleStock(code, name, marketRet){
+    const resolvedName = resolveStockName(code, name);
     async function tryFetch(){
       const [data, foreignData] = await Promise.all([
         window.StockAPI.fetchKR(code,'day','20260301','20260613'),
@@ -15129,7 +15259,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     else grade = '🔴🔴';
     
     return {
-      code, name, sector: getSector(code),
+      code, name: resolvedName, sector: getSector(code),
       total, grade,
       breakdown: {OBV: obvScore, 시장: mktScore, 거래량: volScore, 위치: posScore, 변동성: cvScore, 외인: frScore},
       detail: {
@@ -15342,9 +15472,11 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     document.getElementById('screening-results-modal')?.remove();
     
     const {results, marketRet, elapsed, failed} = data;
-    const watchlist = JSON.parse(localStorage.getItem('watchlist')||'[]');
-    const watchlistCodes = watchlist.map(w => w.code);
-    const insights = window._generateInsights(results, watchlistCodes);
+    const nameResolver = window.resolveStockName || ((code, name) => name || code);
+    const normalizedResults = (results || []).map(r => ({...r, name: nameResolver(r.code, r.name)}));
+    const watchlist = (window.loadMaejipWatchlist ? window.loadMaejipWatchlist() : (()=>{ try{return JSON.parse(localStorage.getItem('watchlist_v5')||localStorage.getItem('watchlist')||'[]')}catch(e){return []} })());
+    const watchlistCodes = watchlist.map(w => String(w.code || (window.KR_CODE && w.symbol ? window.KR_CODE[w.symbol] : '') || '')).filter(Boolean);
+    const insights = window._generateInsights(normalizedResults, watchlistCodes);
     
     const modal = document.createElement('div');
     modal.id = 'screening-results-modal';
@@ -15359,7 +15491,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
         <div>
           <div style="font-size:18px;font-weight:bold;">🔍 전체 시장 스크리닝 결과</div>
           <div style="font-size:11px;color:#94a3b8;margin-top:4px;">
-            ${results.length}종목 분석 · ${elapsed}초 소요 · 시장 ${marketRet.toFixed(2)}% · ${new Date().toLocaleString('ko-KR')}
+            ${normalizedResults.length}종목 분석 · ${elapsed}초 소요 · 시장 ${marketRet.toFixed(2)}% · ${new Date().toLocaleString('ko-KR')}
           </div>
         </div>
         <span id="screen-modal-close" style="cursor:pointer;font-size:24px;padding:0 8px;">×</span>
@@ -15404,7 +15536,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
         </thead>
         <tbody>`;
     
-    results.slice(0,20).forEach((r,i)=>{
+    normalizedResults.slice(0,20).forEach((r,i)=>{
       const isWatch = watchlistCodes.includes(r.code);
       const scoreColor = r.total>=75 ? '#10b981' : r.total>=55 ? '#22c55e' : r.total>=35 ? '#94a3b8' : r.total>=15 ? '#f97316' : '#ef4444';
       const priceColor = r.detail.priceChange > 0 ? '#ef4444' : r.detail.priceChange < 0 ? '#3b82f6' : '#94a3b8';
@@ -15427,7 +15559,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     </div>`;
     
     // 하위 5종목 (분산 의심)
-    const bottom = results.slice(-5).reverse();
+    const bottom = normalizedResults.slice(-5).reverse();
     if(bottom.length > 0){
       html += `<div style="margin-bottom:10px;">
         <div style="font-size:13px;font-weight:bold;margin-bottom:8px;color:#ef4444;">⚠️ 하위 5종목 (분산/약세)</div>
@@ -15457,7 +15589,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     panel.querySelectorAll('.screen-row').forEach(row=>{
       row.addEventListener('click', e=>{
         const idx = parseInt(row.dataset.stockIdx);
-        const stock = results[idx];
+        const stock = normalizedResults[idx];
         if(stock && window.showStockDetailModal){
           window.showStockDetailModal(stock);
         }
@@ -16677,5 +16809,447 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   }
 })();
 </script>
+  <script>
+/* === Patch #24 Part 4 - 추이 그래프 + 지표 신뢰도 보강 === */
+(function(){
+  /* === 라인 차트 (Canvas) === */
+  function drawTrendChart(canvas, data){
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width = canvas.offsetWidth * 2;
+    const H = canvas.height = canvas.offsetHeight * 2;
+    ctx.scale(2, 2);
+    const w = W/2, h = H/2;
+    ctx.clearRect(0,0,w,h);
+
+    const padL = 40, padR = 20, padT = 20, padB = 30;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    // 배경
+    ctx.fillStyle = 'rgba(255,255,255,0.02)';
+    ctx.fillRect(padL, padT, plotW, plotH);
+
+    if(!data.length){
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('데이터 없음', w/2, h/2);
+      return;
+    }
+
+    // Y축 (0~100%)
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 1;
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.textAlign = 'right';
+    for(let i=0; i<=4; i++){
+      const y = padT + (plotH * i / 4);
+      const val = 100 - (i * 25);
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(w - padR, y);
+      ctx.stroke();
+      ctx.fillText(val + '%', padL - 4, y + 3);
+    }
+
+    // 50% 기준선
+    ctx.strokeStyle = 'rgba(245,158,11,0.4)';
+    ctx.setLineDash([4, 4]);
+    const y50 = padT + plotH * 0.5;
+    ctx.beginPath();
+    ctx.moveTo(padL, y50);
+    ctx.lineTo(w - padR, y50);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // X 좌표 함수
+    const xOf = i => padL + (data.length === 1 ? plotW/2 : (plotW * i / (data.length - 1)));
+    const yOf = v => padT + plotH * (1 - v/100);
+
+    // 전체 적중률 (파랑)
+    ctx.strokeStyle = '#3b82f6';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    data.forEach((d, i)=>{
+      const x = xOf(i), y = yOf(d.hitRate);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    data.forEach((d,i)=>{
+      ctx.fillStyle = '#3b82f6';
+      ctx.beginPath();
+      ctx.arc(xOf(i), yOf(d.hitRate), 3, 0, Math.PI*2);
+      ctx.fill();
+    });
+
+    // 🟢 등급 적중률 (녹색)
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let started = false;
+    data.forEach((d, i)=>{
+      if(d.greenHit == null) return;
+      const x = xOf(i), y = yOf(d.greenHit);
+      if(!started){ ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    data.forEach((d,i)=>{
+      if(d.greenHit == null) return;
+      ctx.fillStyle = '#10b981';
+      ctx.beginPath();
+      ctx.arc(xOf(i), yOf(d.greenHit), 3, 0, Math.PI*2);
+      ctx.fill();
+    });
+
+    // X축 라벨 (날짜)
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    const step = Math.max(1, Math.ceil(data.length / 8));
+    data.forEach((d, i)=>{
+      if(i % step !== 0 && i !== data.length-1) return;
+      const label = d.date.slice(5); // MM-DD
+      ctx.fillText(label, xOf(i), h - padB + 14);
+    });
+
+    // 범례
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#3b82f6';
+    ctx.fillRect(padL, 4, 10, 3);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('전체 적중률', padL + 14, 10);
+    ctx.fillStyle = '#10b981';
+    ctx.fillRect(padL + 100, 4, 10, 3);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('🟢 등급 적중률', padL + 114, 10);
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(padL + 220, 4, 10, 3);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('50% 기준선', padL + 234, 10);
+  }
+
+  /* === 대시보드에 그래프 패널 추가 === */
+  const _originalShow = window.showValidationDashboard;
+  window.showValidationDashboard = function(){
+    _originalShow();
+    setTimeout(()=>{
+      const panel = document.querySelector('#validation-dashboard > div');
+      if(!panel) return;
+
+      const history = JSON.parse(localStorage.getItem('prediction_history') || '[]');
+      const validated = history
+        .filter(h => h.validated && h.summary)
+        .map(h => ({
+          date: h.date,
+          hitRate: h.summary.hitRate,
+          greenHit: h.summary.greenHitRate,
+          redHit: h.summary.redHitRate,
+          avgReturn: h.summary.avgReturn
+        }));
+
+      // 기존 그래프 패널 제거
+      const oldGraph = panel.querySelector('#vd-trend-panel');
+      if(oldGraph) oldGraph.remove();
+
+      // 일별 기록 테이블 다음에 삽입
+      const trendDiv = document.createElement('div');
+      trendDiv.id = 'vd-trend-panel';
+      trendDiv.style.cssText = 'margin-bottom:18px;';
+      trendDiv.innerHTML = `
+        <div style="font-size:14px; font-weight:700; margin-bottom:10px;">📈 적중률 추이 (최근 ${validated.length}일)</div>
+        <div style="background:rgba(255,255,255,0.04); border-radius:8px; padding:10px;">
+          <canvas id="vd-trend-canvas" style="width:100%; height:220px; display:block;"></canvas>
+          ${validated.length === 0 ? '<div style="text-align:center; color:#94a3b8; font-size:11px; padding:10px;">검증된 데이터가 누적되면 추이가 표시됩니다</div>' : ''}
+        </div>
+      `;
+
+      // 지표별 신뢰도 섹션 앞에 삽입
+      const allDivs = panel.querySelectorAll('div');
+      let indicatorSection = null;
+      allDivs.forEach(d => {
+        if(d.textContent?.startsWith('🎯 지표별 누적 신뢰도') && !indicatorSection){
+          indicatorSection = d.parentElement;
+        }
+      });
+      if(indicatorSection) indicatorSection.parentElement.insertBefore(trendDiv, indicatorSection);
+      else panel.appendChild(trendDiv);
+
+      // 그래프 그리기
+      const canvas = trendDiv.querySelector('#vd-trend-canvas');
+      if(canvas && validated.length){
+        setTimeout(()=>drawTrendChart(canvas, validated), 100);
+      }
+    }, 50);
+  };
+
+  /* === 지표별 신뢰도 누적 보강 (breakdown 미존재 시 fallback) === */
+  // 기존 validatePredictions에서 breakdown이 없으면 지표 통계가 빈다.
+  // 종목 grade 기반으로라도 OBV/foreign 통계 보정.
+  const _origValidate = window.validatePredictions;
+  window.validatePredictions = async function(opts){
+    const result = await _origValidate(opts);
+    if(!result || !result.length) return result;
+
+    // breakdown 없는 종목들도 obvLabel, foreignChange20 기반으로 추가 집계
+    const weights = JSON.parse(localStorage.getItem('indicator_weights') || 'null');
+    if(!weights) return result;
+
+    result.forEach(rec => {
+      rec.stocks.forEach(s => {
+        if(s.hit === null) return;
+        if(s.breakdown) return; // 이미 집계됨
+
+        // OBV 가속 매집 신호
+        if(s.obvLabel && s.obvLabel.includes('가속')){
+          weights.obv.samples++;
+          if(s.hit) weights.obv.hits++;
+        }
+        // 외인 흐름 (+0.3%p 이상 매수)
+        if(s.foreignChange20 != null && s.foreignChange20 >= 0.3){
+          weights.foreign.samples++;
+          if(s.hit) weights.foreign.hits++;
+        }
+      });
+    });
+
+    // 적중률 재계산 + 가중치 보정
+    Object.keys(weights).forEach(k=>{
+      weights[k].hitRate = weights[k].samples
+        ? (weights[k].hits / weights[k].samples * 100)
+        : null;
+      if(weights[k].samples >= 20 && weights[k].hitRate != null){
+        weights[k].weight = Math.max(0.5, Math.min(1.5, 0.5 + weights[k].hitRate / 100));
+      }
+    });
+    localStorage.setItem('indicator_weights', JSON.stringify(weights));
+    console.log('   지표 신뢰도 누적 업데이트:', Object.entries(weights).map(([k,v])=>`${k}:${v.samples}샘플`).join(' | '));
+    return result;
+  };
+
+  window._patch24Part4Installed = true;
+  console.log('✅ Patch #24 Part 4 설치 완료 (추이 그래프 + 지표 신뢰도 보강)');
+})();
+</script>
+  <script>
+/* === Patch #24 Part 4 - 추이 그래프 + 지표 신뢰도 보강 === */
+(function(){
+  // 중복 설치 방지 (임시 주입 후 영구 설치 시)
+  if(window._patch24Part4Installed && window._patch24Part4Permanent){
+    console.log('ℹ️ Patch #24 Part 4 이미 영구 설치됨');
+    return;
+  }
+
+  /* === 라인 차트 (Canvas) === */
+  function drawTrendChart(canvas, data){
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width = canvas.offsetWidth * 2;
+    const H = canvas.height = canvas.offsetHeight * 2;
+    ctx.scale(2, 2);
+    const w = W/2, h = H/2;
+    ctx.clearRect(0,0,w,h);
+
+    const padL = 40, padR = 20, padT = 20, padB = 30;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    ctx.fillStyle = 'rgba(255,255,255,0.02)';
+    ctx.fillRect(padL, padT, plotW, plotH);
+
+    if(!data.length){
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('데이터 없음', w/2, h/2);
+      return;
+    }
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 1;
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.textAlign = 'right';
+    for(let i=0; i<=4; i++){
+      const y = padT + (plotH * i / 4);
+      const val = 100 - (i * 25);
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(w - padR, y);
+      ctx.stroke();
+      ctx.fillText(val + '%', padL - 4, y + 3);
+    }
+
+    ctx.strokeStyle = 'rgba(245,158,11,0.4)';
+    ctx.setLineDash([4, 4]);
+    const y50 = padT + plotH * 0.5;
+    ctx.beginPath();
+    ctx.moveTo(padL, y50);
+    ctx.lineTo(w - padR, y50);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const xOf = i => padL + (data.length === 1 ? plotW/2 : (plotW * i / (data.length - 1)));
+    const yOf = v => padT + plotH * (1 - v/100);
+
+    ctx.strokeStyle = '#3b82f6';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    data.forEach((d, i)=>{
+      const x = xOf(i), y = yOf(d.hitRate);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    data.forEach((d,i)=>{
+      ctx.fillStyle = '#3b82f6';
+      ctx.beginPath();
+      ctx.arc(xOf(i), yOf(d.hitRate), 3, 0, Math.PI*2);
+      ctx.fill();
+    });
+
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let started = false;
+    data.forEach((d, i)=>{
+      if(d.greenHit == null) return;
+      const x = xOf(i), y = yOf(d.greenHit);
+      if(!started){ ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    data.forEach((d,i)=>{
+      if(d.greenHit == null) return;
+      ctx.fillStyle = '#10b981';
+      ctx.beginPath();
+      ctx.arc(xOf(i), yOf(d.greenHit), 3, 0, Math.PI*2);
+      ctx.fill();
+    });
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    const step = Math.max(1, Math.ceil(data.length / 8));
+    data.forEach((d, i)=>{
+      if(i % step !== 0 && i !== data.length-1) return;
+      ctx.fillText(d.date.slice(5), xOf(i), h - padB + 14);
+    });
+
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#3b82f6';
+    ctx.fillRect(padL, 4, 10, 3);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('전체 적중률', padL + 14, 10);
+    ctx.fillStyle = '#10b981';
+    ctx.fillRect(padL + 100, 4, 10, 3);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('🟢 등급 적중률', padL + 114, 10);
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(padL + 220, 4, 10, 3);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('50% 기준선', padL + 234, 10);
+  }
+
+  /* === 대시보드 확장 === */
+  const _originalShow = window.showValidationDashboard;
+  if(typeof _originalShow !== 'function'){
+    console.warn('⚠️ Patch #24 Part 3가 먼저 설치되어야 합니다');
+    return;
+  }
+  window.showValidationDashboard = function(){
+    _originalShow();
+    setTimeout(()=>{
+      const panel = document.querySelector('#validation-dashboard > div');
+      if(!panel) return;
+
+      const history = JSON.parse(localStorage.getItem('prediction_history') || '[]');
+      const validated = history
+        .filter(h => h.validated && h.summary)
+        .map(h => ({
+          date: h.date,
+          hitRate: h.summary.hitRate,
+          greenHit: h.summary.greenHitRate,
+          redHit: h.summary.redHitRate,
+          avgReturn: h.summary.avgReturn
+        }));
+
+      const oldGraph = panel.querySelector('#vd-trend-panel');
+      if(oldGraph) oldGraph.remove();
+
+      const trendDiv = document.createElement('div');
+      trendDiv.id = 'vd-trend-panel';
+      trendDiv.style.cssText = 'margin-bottom:18px;';
+      trendDiv.innerHTML = `
+        <div style="font-size:14px; font-weight:700; margin-bottom:10px;">📈 적중률 추이 (최근 ${validated.length}일)</div>
+        <div style="background:rgba(255,255,255,0.04); border-radius:8px; padding:10px;">
+          <canvas id="vd-trend-canvas" style="width:100%; height:220px; display:block;"></canvas>
+          ${validated.length === 0 ? '<div style="text-align:center; color:#94a3b8; font-size:11px; padding:10px;">검증된 데이터가 누적되면 추이가 표시됩니다</div>' : ''}
+        </div>
+      `;
+
+      let indicatorSection = null;
+      panel.querySelectorAll('div').forEach(d => {
+        if(d.textContent?.startsWith('🎯 지표별 누적 신뢰도') && !indicatorSection){
+          indicatorSection = d.parentElement;
+        }
+      });
+      if(indicatorSection) indicatorSection.parentElement.insertBefore(trendDiv, indicatorSection);
+      else panel.appendChild(trendDiv);
+
+      const canvas = trendDiv.querySelector('#vd-trend-canvas');
+      if(canvas && validated.length){
+        setTimeout(()=>drawTrendChart(canvas, validated), 100);
+      }
+    }, 50);
+  };
+
+  /* === 지표 신뢰도 누적 보강 === */
+  const _origValidate = window.validatePredictions;
+  if(typeof _origValidate === 'function'){
+    window.validatePredictions = async function(opts){
+      const result = await _origValidate(opts);
+      if(!result || !result.length) return result;
+
+      const weights = JSON.parse(localStorage.getItem('indicator_weights') || 'null');
+      if(!weights) return result;
+
+      result.forEach(rec => {
+        rec.stocks.forEach(s => {
+          if(s.hit === null) return;
+          if(s.breakdown) return;
+
+          if(s.obvLabel && s.obvLabel.includes('가속')){
+            weights.obv.samples++;
+            if(s.hit) weights.obv.hits++;
+          }
+          if(s.foreignChange20 != null && s.foreignChange20 >= 0.3){
+            weights.foreign.samples++;
+            if(s.hit) weights.foreign.hits++;
+          }
+        });
+      });
+
+      Object.keys(weights).forEach(k=>{
+        weights[k].hitRate = weights[k].samples
+          ? (weights[k].hits / weights[k].samples * 100)
+          : null;
+        if(weights[k].samples >= 20 && weights[k].hitRate != null){
+          weights[k].weight = Math.max(0.5, Math.min(1.5, 0.5 + weights[k].hitRate / 100));
+        }
+      });
+      localStorage.setItem('indicator_weights', JSON.stringify(weights));
+      console.log('   지표 신뢰도 누적:', Object.entries(weights).map(([k,v])=>`${k}:${v.samples}샘플`).join(' | '));
+      return result;
+    };
+  }
+
+  window._patch24Part4Installed = true;
+  window._patch24Part4Permanent = true;
+  console.log('✅ Patch #24 Part 4 영구 설치 (추이 그래프 + 지표 신뢰도 보강)');
+})();
+</script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v833ccba57c9e4d2798f2e76cebdd09a11778172276447" integrity="sha512-57MDmcccJXYtNnH+ZiBwzC4jb2rvgVCEokYN+L/nLlmO8rfYT/gIpW2A569iJ/3b+0UEasghjuZH/ma3wIs/EQ==" data-cf-beacon='{"version":"2024.11.0","token":"4edd5f8ec12a48cfa682ab8261b80a79","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
 </body>
 </html>
