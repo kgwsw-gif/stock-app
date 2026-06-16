@@ -16901,5 +16901,222 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('✅ Patch #24 Part 4 설치 완료 (추이 그래프 + 지표 신뢰도 보강)');
 })();
 </script>
+  <script>
+/* === Patch #24 Part 4 - 추이 그래프 + 지표 신뢰도 보강 === */
+(function(){
+  // 중복 설치 방지 (임시 주입 후 영구 설치 시)
+  if(window._patch24Part4Installed && window._patch24Part4Permanent){
+    console.log('ℹ️ Patch #24 Part 4 이미 영구 설치됨');
+    return;
+  }
+
+  /* === 라인 차트 (Canvas) === */
+  function drawTrendChart(canvas, data){
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width = canvas.offsetWidth * 2;
+    const H = canvas.height = canvas.offsetHeight * 2;
+    ctx.scale(2, 2);
+    const w = W/2, h = H/2;
+    ctx.clearRect(0,0,w,h);
+
+    const padL = 40, padR = 20, padT = 20, padB = 30;
+    const plotW = w - padL - padR;
+    const plotH = h - padT - padB;
+
+    ctx.fillStyle = 'rgba(255,255,255,0.02)';
+    ctx.fillRect(padL, padT, plotW, plotH);
+
+    if(!data.length){
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('데이터 없음', w/2, h/2);
+      return;
+    }
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 1;
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#94a3b8';
+    ctx.textAlign = 'right';
+    for(let i=0; i<=4; i++){
+      const y = padT + (plotH * i / 4);
+      const val = 100 - (i * 25);
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(w - padR, y);
+      ctx.stroke();
+      ctx.fillText(val + '%', padL - 4, y + 3);
+    }
+
+    ctx.strokeStyle = 'rgba(245,158,11,0.4)';
+    ctx.setLineDash([4, 4]);
+    const y50 = padT + plotH * 0.5;
+    ctx.beginPath();
+    ctx.moveTo(padL, y50);
+    ctx.lineTo(w - padR, y50);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const xOf = i => padL + (data.length === 1 ? plotW/2 : (plotW * i / (data.length - 1)));
+    const yOf = v => padT + plotH * (1 - v/100);
+
+    ctx.strokeStyle = '#3b82f6';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    data.forEach((d, i)=>{
+      const x = xOf(i), y = yOf(d.hitRate);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    data.forEach((d,i)=>{
+      ctx.fillStyle = '#3b82f6';
+      ctx.beginPath();
+      ctx.arc(xOf(i), yOf(d.hitRate), 3, 0, Math.PI*2);
+      ctx.fill();
+    });
+
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    let started = false;
+    data.forEach((d, i)=>{
+      if(d.greenHit == null) return;
+      const x = xOf(i), y = yOf(d.greenHit);
+      if(!started){ ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    data.forEach((d,i)=>{
+      if(d.greenHit == null) return;
+      ctx.fillStyle = '#10b981';
+      ctx.beginPath();
+      ctx.arc(xOf(i), yOf(d.greenHit), 3, 0, Math.PI*2);
+      ctx.fill();
+    });
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    const step = Math.max(1, Math.ceil(data.length / 8));
+    data.forEach((d, i)=>{
+      if(i % step !== 0 && i !== data.length-1) return;
+      ctx.fillText(d.date.slice(5), xOf(i), h - padB + 14);
+    });
+
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#3b82f6';
+    ctx.fillRect(padL, 4, 10, 3);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('전체 적중률', padL + 14, 10);
+    ctx.fillStyle = '#10b981';
+    ctx.fillRect(padL + 100, 4, 10, 3);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('🟢 등급 적중률', padL + 114, 10);
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(padL + 220, 4, 10, 3);
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillText('50% 기준선', padL + 234, 10);
+  }
+
+  /* === 대시보드 확장 === */
+  const _originalShow = window.showValidationDashboard;
+  if(typeof _originalShow !== 'function'){
+    console.warn('⚠️ Patch #24 Part 3가 먼저 설치되어야 합니다');
+    return;
+  }
+  window.showValidationDashboard = function(){
+    _originalShow();
+    setTimeout(()=>{
+      const panel = document.querySelector('#validation-dashboard > div');
+      if(!panel) return;
+
+      const history = JSON.parse(localStorage.getItem('prediction_history') || '[]');
+      const validated = history
+        .filter(h => h.validated && h.summary)
+        .map(h => ({
+          date: h.date,
+          hitRate: h.summary.hitRate,
+          greenHit: h.summary.greenHitRate,
+          redHit: h.summary.redHitRate,
+          avgReturn: h.summary.avgReturn
+        }));
+
+      const oldGraph = panel.querySelector('#vd-trend-panel');
+      if(oldGraph) oldGraph.remove();
+
+      const trendDiv = document.createElement('div');
+      trendDiv.id = 'vd-trend-panel';
+      trendDiv.style.cssText = 'margin-bottom:18px;';
+      trendDiv.innerHTML = `
+        <div style="font-size:14px; font-weight:700; margin-bottom:10px;">📈 적중률 추이 (최근 ${validated.length}일)</div>
+        <div style="background:rgba(255,255,255,0.04); border-radius:8px; padding:10px;">
+          <canvas id="vd-trend-canvas" style="width:100%; height:220px; display:block;"></canvas>
+          ${validated.length === 0 ? '<div style="text-align:center; color:#94a3b8; font-size:11px; padding:10px;">검증된 데이터가 누적되면 추이가 표시됩니다</div>' : ''}
+        </div>
+      `;
+
+      let indicatorSection = null;
+      panel.querySelectorAll('div').forEach(d => {
+        if(d.textContent?.startsWith('🎯 지표별 누적 신뢰도') && !indicatorSection){
+          indicatorSection = d.parentElement;
+        }
+      });
+      if(indicatorSection) indicatorSection.parentElement.insertBefore(trendDiv, indicatorSection);
+      else panel.appendChild(trendDiv);
+
+      const canvas = trendDiv.querySelector('#vd-trend-canvas');
+      if(canvas && validated.length){
+        setTimeout(()=>drawTrendChart(canvas, validated), 100);
+      }
+    }, 50);
+  };
+
+  /* === 지표 신뢰도 누적 보강 === */
+  const _origValidate = window.validatePredictions;
+  if(typeof _origValidate === 'function'){
+    window.validatePredictions = async function(opts){
+      const result = await _origValidate(opts);
+      if(!result || !result.length) return result;
+
+      const weights = JSON.parse(localStorage.getItem('indicator_weights') || 'null');
+      if(!weights) return result;
+
+      result.forEach(rec => {
+        rec.stocks.forEach(s => {
+          if(s.hit === null) return;
+          if(s.breakdown) return;
+
+          if(s.obvLabel && s.obvLabel.includes('가속')){
+            weights.obv.samples++;
+            if(s.hit) weights.obv.hits++;
+          }
+          if(s.foreignChange20 != null && s.foreignChange20 >= 0.3){
+            weights.foreign.samples++;
+            if(s.hit) weights.foreign.hits++;
+          }
+        });
+      });
+
+      Object.keys(weights).forEach(k=>{
+        weights[k].hitRate = weights[k].samples
+          ? (weights[k].hits / weights[k].samples * 100)
+          : null;
+        if(weights[k].samples >= 20 && weights[k].hitRate != null){
+          weights[k].weight = Math.max(0.5, Math.min(1.5, 0.5 + weights[k].hitRate / 100));
+        }
+      });
+      localStorage.setItem('indicator_weights', JSON.stringify(weights));
+      console.log('   지표 신뢰도 누적:', Object.entries(weights).map(([k,v])=>`${k}:${v.samples}샘플`).join(' | '));
+      return result;
+    };
+  }
+
+  window._patch24Part4Installed = true;
+  window._patch24Part4Permanent = true;
+  console.log('✅ Patch #24 Part 4 영구 설치 (추이 그래프 + 지표 신뢰도 보강)');
+})();
+</script>
 </body>
 </html>
