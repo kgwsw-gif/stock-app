@@ -16387,5 +16387,295 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   }
 })();
 </script>
+  <script>
+/* === Patch #24 Part 3 - 검증 대시보드 모달 === */
+(function(){
+  function todayKR(){
+    const now = new Date();
+    const kst = new Date(now.getTime() + 9*3600000);
+    return kst.toISOString().slice(0,10);
+  }
+
+  /* === 대시보드 모달 === */
+  window.showValidationDashboard = function(){
+    const existing = document.getElementById('validation-dashboard');
+    if(existing) existing.remove();
+
+    const history = JSON.parse(localStorage.getItem('prediction_history') || '[]');
+    const weights = JSON.parse(localStorage.getItem('indicator_weights') || 'null') || {};
+
+    const modal = document.createElement('div');
+    modal.id = 'validation-dashboard';
+    modal.style.cssText = `
+      position:fixed; top:0; left:0; width:100%; height:100%;
+      background:rgba(0,0,0,0.75); z-index:99998;
+      display:flex; align-items:center; justify-content:center;
+      font-family:-apple-system,sans-serif;
+    `;
+
+    const panel = document.createElement('div');
+    panel.style.cssText = `
+      background:linear-gradient(135deg,#1e293b,#0f172a);
+      color:#e2e8f0; width:920px; max-width:95vw; max-height:90vh; overflow-y:auto;
+      border-radius:14px; padding:24px;
+      box-shadow:0 20px 60px rgba(0,0,0,0.6);
+    `;
+
+    // 헤더
+    const validated = history.filter(h => h.validated && h.summary);
+    const pending = history.filter(h => !h.validated);
+    const totalSamples = validated.reduce((s,h) => s + h.summary.total, 0);
+    const totalHits = validated.reduce((s,h) => s + h.summary.hits, 0);
+    const overallHit = totalSamples ? (totalHits / totalSamples * 100) : 0;
+    const avgRet = validated.length
+      ? validated.reduce((s,h) => s + h.summary.avgReturn, 0) / validated.length
+      : 0;
+
+    panel.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; border-bottom:1px solid #334155; padding-bottom:12px;">
+        <div>
+          <div style="font-size:20px; font-weight:700;">📊 적중률 검증 대시보드</div>
+          <div style="font-size:11px; color:#94a3b8; margin-top:2px;">영구 누적 검증 시스템 v1.0 · ${todayKR()}</div>
+        </div>
+        <div>
+          <button id="vd-refresh" style="background:#10b981; color:#fff; border:none; padding:7px 14px; border-radius:6px; font-size:11px; cursor:pointer; margin-right:6px;">🔄 새로고침</button>
+          <button id="vd-validate" style="background:#3b82f6; color:#fff; border:none; padding:7px 14px; border-radius:6px; font-size:11px; cursor:pointer; margin-right:6px;">⚡ 지금 검증</button>
+          <button id="vd-close" style="background:#64748b; color:#fff; border:none; padding:7px 14px; border-radius:6px; font-size:11px; cursor:pointer;">닫기</button>
+        </div>
+      </div>
+
+      <!-- 상단 요약 카드 -->
+      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:18px;">
+        <div style="background:rgba(16,185,129,0.15); padding:14px; border-radius:8px; border-left:3px solid #10b981;">
+          <div style="font-size:11px; color:#94a3b8;">전체 적중률</div>
+          <div style="font-size:24px; font-weight:700; color:${overallHit >= 50 ? '#10b981' : overallHit >= 30 ? '#f59e0b' : '#ef4444'};">${overallHit.toFixed(1)}%</div>
+          <div style="font-size:10px; color:#94a3b8;">${totalHits}/${totalSamples} 적중</div>
+        </div>
+        <div style="background:rgba(59,130,246,0.15); padding:14px; border-radius:8px; border-left:3px solid #3b82f6;">
+          <div style="font-size:11px; color:#94a3b8;">검증 일수</div>
+          <div style="font-size:24px; font-weight:700;">${validated.length}일</div>
+          <div style="font-size:10px; color:#94a3b8;">대기 ${pending.length}건</div>
+        </div>
+        <div style="background:rgba(168,85,247,0.15); padding:14px; border-radius:8px; border-left:3px solid #a855f7;">
+          <div style="font-size:11px; color:#94a3b8;">일평균 수익률</div>
+          <div style="font-size:24px; font-weight:700; color:${avgRet >= 0 ? '#10b981' : '#ef4444'};">${avgRet >= 0 ? '+' : ''}${avgRet.toFixed(2)}%</div>
+          <div style="font-size:10px; color:#94a3b8;">검증된 ${validated.length}일 평균</div>
+        </div>
+        <div style="background:rgba(245,158,11,0.15); padding:14px; border-radius:8px; border-left:3px solid #f59e0b;">
+          <div style="font-size:11px; color:#94a3b8;">🟢 등급 적중률</div>
+          <div style="font-size:24px; font-weight:700;">${(()=>{
+            const greens = validated.flatMap(h => h.stocks.filter(s => s.grade?.includes('🟢') && s.hit !== null));
+            const ghits = greens.filter(s => s.hit).length;
+            return greens.length ? (ghits/greens.length*100).toFixed(1) + '%' : '-';
+          })()}</div>
+          <div style="font-size:10px; color:#94a3b8;">+1% 이상 상승</div>
+        </div>
+      </div>
+
+      <!-- 일별 기록 테이블 -->
+      <div style="margin-bottom:18px;">
+        <div style="font-size:14px; font-weight:700; margin-bottom:10px;">📅 일별 검증 기록</div>
+        <div style="background:rgba(255,255,255,0.04); border-radius:8px; overflow:hidden;">
+          <table style="width:100%; border-collapse:collapse; font-size:12px;">
+            <thead>
+              <tr style="background:rgba(255,255,255,0.06);">
+                <th style="padding:8px; text-align:left;">기록일</th>
+                <th style="padding:8px; text-align:center;">검증대상</th>
+                <th style="padding:8px; text-align:center;">상태</th>
+                <th style="padding:8px; text-align:center;">종목</th>
+                <th style="padding:8px; text-align:center;">적중률</th>
+                <th style="padding:8px; text-align:center;">🟢 적중</th>
+                <th style="padding:8px; text-align:center;">🔴 적중</th>
+                <th style="padding:8px; text-align:center;">평균수익</th>
+                <th style="padding:8px; text-align:center;">상세</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${[...history].reverse().map((h, idx) => {
+                const sum = h.summary;
+                const stColor = h.validated ? '#10b981' : '#f59e0b';
+                const stText = h.validated ? '✅ 검증완료' : '⏳ 대기중';
+                const hitColor = sum ? (sum.hitRate >= 50 ? '#10b981' : sum.hitRate >= 30 ? '#f59e0b' : '#ef4444') : '#64748b';
+                return `
+                  <tr style="border-top:1px solid rgba(255,255,255,0.05);" data-date="${h.date}">
+                    <td style="padding:8px;">${h.date}</td>
+                    <td style="padding:8px; text-align:center; font-size:11px; color:#94a3b8;">${h.targetDate}</td>
+                    <td style="padding:8px; text-align:center; color:${stColor}; font-size:11px;">${stText}</td>
+                    <td style="padding:8px; text-align:center;">${h.stocks.length}</td>
+                    <td style="padding:8px; text-align:center; color:${hitColor}; font-weight:700;">${sum ? sum.hitRate.toFixed(1)+'%' : '-'}</td>
+                    <td style="padding:8px; text-align:center;">${sum?.greenHitRate != null ? sum.greenHitRate.toFixed(0)+'%' : '-'}</td>
+                    <td style="padding:8px; text-align:center;">${sum?.redHitRate != null ? sum.redHitRate.toFixed(0)+'%' : '-'}</td>
+                    <td style="padding:8px; text-align:center; color:${sum?.avgReturn >= 0 ? '#10b981' : '#ef4444'};">${sum ? (sum.avgReturn>=0?'+':'')+sum.avgReturn.toFixed(2)+'%' : '-'}</td>
+                    <td style="padding:8px; text-align:center;">
+                      <button class="vd-detail-btn" data-date="${h.date}" style="background:#475569; color:#fff; border:none; padding:3px 10px; border-radius:4px; font-size:10px; cursor:pointer;">보기</button>
+                    </td>
+                  </tr>
+                `;
+              }).join('') || '<tr><td colspan="9" style="padding:30px; text-align:center; color:#94a3b8;">아직 기록 없음</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 지표별 신뢰도 -->
+      <div style="margin-bottom:18px;">
+        <div style="font-size:14px; font-weight:700; margin-bottom:10px;">🎯 지표별 누적 신뢰도</div>
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:10px;">
+          ${Object.entries(weights).map(([k, v])=>{
+            const labels = { obv:'OBV 발산', market_rel:'시장상대강도', volume:'거래량 활성', position:'가격 위치', volatility:'변동성 안정', foreign:'외인 흐름' };
+            const hr = v.hitRate;
+            const hrColor = hr == null ? '#64748b' : hr >= 60 ? '#10b981' : hr >= 40 ? '#f59e0b' : '#ef4444';
+            return `
+              <div style="background:rgba(255,255,255,0.04); padding:10px; border-radius:6px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <span style="font-size:12px; font-weight:600;">${labels[k] || k}</span>
+                  <span style="font-size:11px; color:#94a3b8;">가중치 ${v.weight.toFixed(2)}×</span>
+                </div>
+                <div style="margin-top:6px; display:flex; justify-content:space-between; align-items:baseline;">
+                  <span style="font-size:18px; font-weight:700; color:${hrColor};">${hr != null ? hr.toFixed(1)+'%' : '데이터 수집중'}</span>
+                  <span style="font-size:10px; color:#94a3b8;">${v.hits}/${v.samples}</span>
+                </div>
+                <div style="margin-top:4px; height:4px; background:rgba(255,255,255,0.08); border-radius:2px; overflow:hidden;">
+                  <div style="height:100%; width:${hr != null ? hr : 0}%; background:${hrColor}; transition:width 0.3s;"></div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <div style="font-size:10px; color:#94a3b8; margin-top:6px;">샘플 20개 이상 누적 시 가중치 자동 보정 · 적중률 50%를 기준으로 ±0.5 범위 조정</div>
+      </div>
+
+      <!-- 종목별 상세 (선택 시 표시) -->
+      <div id="vd-detail-pane" style="display:none;"></div>
+    `;
+
+    modal.appendChild(panel);
+    document.body.appendChild(modal);
+
+    /* 이벤트 핸들러 */
+    panel.querySelector('#vd-close').addEventListener('click', ()=>modal.remove());
+    modal.addEventListener('click', e=>{ if(e.target === modal) modal.remove(); });
+    panel.querySelector('#vd-refresh').addEventListener('click', ()=>{
+      modal.remove();
+      window.showValidationDashboard();
+    });
+    panel.querySelector('#vd-validate').addEventListener('click', async ()=>{
+      const btn = panel.querySelector('#vd-validate');
+      btn.textContent = '⏳ 검증중...';
+      btn.disabled = true;
+      try {
+        await window.validatePredictions({ force: true });
+        modal.remove();
+        window.showValidationDashboard();
+      } catch(e){
+        btn.textContent = '⚠️ 실패';
+        console.error(e);
+      }
+    });
+    panel.querySelectorAll('.vd-detail-btn').forEach(btn=>{
+      btn.addEventListener('click', e=>{
+        e.stopPropagation();
+        showDetailPane(btn.dataset.date, panel);
+      });
+    });
+  };
+
+  /* === 상세 패널 (특정 날짜 종목별) === */
+  function showDetailPane(date, panel){
+    const history = JSON.parse(localStorage.getItem('prediction_history') || '[]');
+    const rec = history.find(h => h.date === date);
+    if(!rec) return;
+
+    const pane = panel.querySelector('#vd-detail-pane');
+    pane.style.display = 'block';
+
+    // 점수 내림차순 정렬
+    const sorted = [...rec.stocks].sort((a,b) => (b.score||0) - (a.score||0));
+
+    pane.innerHTML = `
+      <div style="font-size:14px; font-weight:700; margin-bottom:10px; padding-top:14px; border-top:1px solid #334155;">
+        🔍 ${date} 상세 (검증대상: ${rec.targetDate}) ${rec.validated ? '✅' : '⏳ 미검증'}
+      </div>
+      <div style="background:rgba(255,255,255,0.04); border-radius:8px; max-height:400px; overflow-y:auto;">
+        <table style="width:100%; border-collapse:collapse; font-size:11px;">
+          <thead style="position:sticky; top:0; background:#1e293b;">
+            <tr>
+              <th style="padding:6px; text-align:left;">#</th>
+              <th style="padding:6px; text-align:left;">종목</th>
+              <th style="padding:6px; text-align:center;">섹터</th>
+              <th style="padding:6px; text-align:center;">점수</th>
+              <th style="padding:6px; text-align:center;">등급</th>
+              <th style="padding:6px; text-align:center;">실제수익</th>
+              <th style="padding:6px; text-align:center;">적중</th>
+              <th style="padding:6px; text-align:center;">OBV</th>
+              <th style="padding:6px; text-align:center;">외인</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${sorted.map((s, i)=>{
+              const retColor = s.actualReturn == null ? '#64748b' : s.actualReturn >= 0 ? '#10b981' : '#ef4444';
+              const hitIcon = s.hit === true ? '✅' : s.hit === false ? '❌' : '⏳';
+              const star = s.isWatchlist ? '★ ' : '';
+              return `
+                <tr style="border-top:1px solid rgba(255,255,255,0.05);">
+                  <td style="padding:6px;">${i+1}</td>
+                  <td style="padding:6px;">${star}${s.name} <span style="color:#64748b; font-size:10px;">(${s.code})</span></td>
+                  <td style="padding:6px; text-align:center; color:#94a3b8;">${s.sector || '-'}</td>
+                  <td style="padding:6px; text-align:center; font-weight:700;">${s.score || '-'}</td>
+                  <td style="padding:6px; text-align:center;">${s.grade || '-'}</td>
+                  <td style="padding:6px; text-align:center; color:${retColor}; font-weight:600;">${s.actualReturn != null ? (s.actualReturn>=0?'+':'')+s.actualReturn.toFixed(2)+'%' : '-'}</td>
+                  <td style="padding:6px; text-align:center;">${hitIcon}</td>
+                  <td style="padding:6px; text-align:center; font-size:10px;">${s.obvLabel || '-'}</td>
+                  <td style="padding:6px; text-align:center; color:${s.foreignChange20 >= 0 ? '#10b981' : '#ef4444'};">${s.foreignChange20 != null ? (s.foreignChange20>=0?'+':'')+s.foreignChange20.toFixed(2)+'%p' : '-'}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+    pane.scrollIntoView({ behavior:'smooth', block:'nearest' });
+  }
+
+  /* === 매집 박스에 "📊 적중률" 버튼 추가 === */
+  function installDashboardButton(){
+    const box = document.getElementById('maejip-box');
+    if(!box) return;
+    if(box.querySelector('[data-validation-btn]')) return;
+
+    const btn = document.createElement('button');
+    btn.dataset.validationBtn = '1';
+    btn.textContent = '📊 적중률';
+    btn.style.cssText = `
+      display:block; width:100%; margin-top:8px; padding:8px;
+      background:linear-gradient(135deg,#7c3aed,#a855f7);
+      color:#fff; border:none; border-radius:6px;
+      font-size:12px; font-weight:600; cursor:pointer;
+    `;
+    btn.addEventListener('click', e=>{
+      e.stopPropagation();
+      window.showValidationDashboard();
+    });
+    box.appendChild(btn);
+  }
+
+  /* === 초기화 === */
+  function init(){
+    installDashboardButton();
+    // 박스가 재생성될 때마다 버튼 재설치
+    new MutationObserver(()=>installDashboardButton())
+      .observe(document.body, { childList:true, subtree:true });
+    window._patch24Part3Installed = true;
+    console.log('✅ Patch #24 Part 3 설치 완료 (검증 대시보드)');
+    console.log('   showValidationDashboard() - 대시보드 열기');
+  }
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', ()=>setTimeout(init, 13000));
+  } else {
+    setTimeout(init, 13000);
+  }
+})();
+</script>
 </body>
 </html>
