@@ -18171,5 +18171,66 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('  또는 인사이트 모달에서 종목명 클릭');
 })();
 </script>
+  <script>
+/* === Patch #29 - 일일 외인 자동 보강 === */
+(function(){
+  if(window._patch29Installed) return;
+  
+  // recordPrediction 후킹 — 기록 후 자동 외인 보강
+  const _origRecord = window.recordPrediction;
+  if(typeof _origRecord !== 'function'){
+    console.warn('⚠️ Patch #29: recordPrediction 없음');
+    return;
+  }
+  
+  window.recordPrediction = async function(opts){
+    const result = await _origRecord(opts);
+    
+    // 외인 보강 함수 있을 때만 자동 실행
+    if(typeof window.enrichForeignData === 'function'){
+      console.log('🔄 Patch #29: 자동 외인 보강 시작...');
+      try{
+        const stats = await window.enrichForeignData({ onlyMissing: true });
+        if(stats){
+          console.log(`✅ Patch #29: 외인 자동 보강 완료 (${stats.totalFilled}/${stats.totalProcessed}, ${(stats.totalFilled/stats.totalProcessed*100).toFixed(0)}%)`);
+        }
+      }catch(e){
+        console.warn('⚠️ Patch #29: 외인 보강 실패:', e.message);
+      }
+    }
+    
+    return result;
+  };
+  
+  // 수동 트리거: 기록되었으나 외인 누락된 모든 날짜 일괄 보강
+  window.enrichAllMissingForeign = async function(){
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    let totalNeed = 0;
+    hist.forEach(h => {
+      const missing = h.stocks.filter(s => s.foreignChange20 == null).length;
+      if(missing > 0){
+        totalNeed += missing;
+        console.log(`  ${h.date}: ${missing}/${h.stocks.length} 누락`);
+      }
+    });
+    
+    if(totalNeed === 0){ console.log('✅ 모든 날짜 외인 데이터 완성'); return; }
+    
+    console.log(`\n🔄 총 ${totalNeed}건 보강 시작...`);
+    for(const h of hist){
+      if(h.stocks.some(s => s.foreignChange20 == null)){
+        console.log(`\n📅 ${h.date} 처리:`);
+        await window.enrichForeignData({ date: h.date, onlyMissing: true });
+      }
+    }
+    console.log('\n✅ 전체 외인 보강 완료');
+  };
+  
+  window._patch29Installed = true;
+  window._patch29Version = 'v1';
+  console.log('✅ Patch #29 설치 완료 - 일일 외인 자동 보강');
+  console.log('💡 수동 보강: await window.enrichAllMissingForeign()');
+})();
+</script>
 </body>
 </html>
