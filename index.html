@@ -18232,5 +18232,115 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('💡 수동 보강: await window.enrichAllMissingForeign()');
 })();
 </script>
+  <script>
+/* === Patch #30 - 스케줄러 복구 알림 (오늘 기록 누락 감지) === */
+(function(){
+  if(window._patch30Installed) return;
+  
+  // KST 기준 오늘 날짜
+  function todayKR(){
+    const d = new Date(Date.now() + 9*3600000);
+    return d.toISOString().slice(0,10);
+  }
+  
+  function isWeekend(){
+    const d = new Date(Date.now() + 9*3600000);
+    const day = d.getUTCDay(); // 0=일, 6=토
+    return day === 0 || day === 6;
+  }
+  
+  function nowHourMin(){
+    const d = new Date(Date.now() + 9*3600000);
+    return d.getUTCHours() * 100 + d.getUTCMinutes(); // 예: 1725 (17:25)
+  }
+  
+  // 토스트 알림 (Patch #23의 토스트가 있으면 활용, 없으면 자체 생성)
+  function showRecoveryToast(){
+    document.getElementById('p30-toast')?.remove();
+    
+    const toast = document.createElement('div');
+    toast.id = 'p30-toast';
+    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:white;padding:14px 18px;border-radius:12px;box-shadow:0 10px 25px rgba(0,0,0,0.2);z-index:99998;max-width:320px;animation:slideInRight 0.4s ease-out;cursor:pointer';
+    toast.innerHTML = `
+      <div style="font-weight:800;font-size:14px;margin-bottom:6px">⚠️ 오늘 기록 누락</div>
+      <div style="font-size:12px;line-height:1.5;margin-bottom:10px">${todayKR()} 예측 기록이 없습니다.<br>지금 기록할까요?</div>
+      <div style="display:flex;gap:6px">
+        <button id="p30-record-btn" style="flex:1;background:white;color:#3b82f6;border:none;border-radius:8px;padding:7px;font-weight:700;font-size:11px;cursor:pointer">📝 지금 기록</button>
+        <button id="p30-dismiss-btn" style="background:rgba(255,255,255,0.2);color:white;border:none;border-radius:8px;padding:7px 10px;font-size:11px;cursor:pointer">나중에</button>
+      </div>
+    `;
+    document.body.appendChild(toast);
+    
+    document.getElementById('p30-record-btn').onclick = async (e) => {
+      e.stopPropagation();
+      toast.querySelector('div:nth-child(2)').textContent = '⏳ 스크리닝 실행 중... (5~10분)';
+      toast.querySelector('div:last-child').style.display = 'none';
+      
+      try{
+        await window.runFullScreening();
+        await window.recordPrediction({ force: true });
+        toast.innerHTML = '<div style="font-weight:800">✅ 기록 완료!</div>';
+        setTimeout(() => toast.remove(), 3000);
+      }catch(err){
+        toast.innerHTML = `<div style="font-weight:800">❌ 실패</div><div style="font-size:11px;margin-top:4px">${err.message}</div>`;
+        setTimeout(() => toast.remove(), 5000);
+      }
+    };
+    
+    document.getElementById('p30-dismiss-btn').onclick = (e) => {
+      e.stopPropagation();
+      localStorage.setItem('p30_dismissed_date', todayKR());
+      toast.remove();
+    };
+  }
+  
+  // 누락 감지
+  function checkMissingRecord(){
+    // 주말 스킵
+    if(isWeekend()){ console.log('🛌 Patch #30: 주말 - 스킵'); return; }
+    
+    // 09:30 이전엔 정상 스케줄러가 처리 → 스킵
+    // 16:30 이후엔 검증 시간 → 기록 의미 약함
+    const now = nowHourMin();
+    if(now < 930){ console.log('⏰ Patch #30: 정상 기록창 이전 - 스킵'); return; }
+    if(now >= 1630){ console.log('⏰ Patch #30: 장 마감 후 - 스킵 (검증 우선)'); return; }
+    
+    // 오늘 기록 있는지
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    const today = todayKR();
+    const hasRecord = hist.some(h => h.date === today);
+    if(hasRecord){ console.log(`✅ Patch #30: ${today} 기록 존재`); return; }
+    
+    // 사용자가 오늘 이미 dismiss 했나
+    const dismissed = localStorage.getItem('p30_dismissed_date');
+    if(dismissed === today){ console.log('🔕 Patch #30: 오늘 dismiss됨'); return; }
+    
+    console.log(`⚠️ Patch #30: ${today} 기록 누락 감지`);
+    showRecoveryToast();
+  }
+  
+  // 페이지 로드 5초 후 체크
+  setTimeout(checkMissingRecord, 5000);
+  
+  // 1시간마다 재체크 (페이지 켜두는 경우)
+  setInterval(checkMissingRecord, 3600000);
+  
+  // CSS 애니메이션 (Patch #23이 이미 추가했을 가능성)
+  if(!document.getElementById('p23-anim-css') && !document.getElementById('p30-anim-css')){
+    const style = document.createElement('style');
+    style.id = 'p30-anim-css';
+    style.textContent = `@keyframes slideInRight{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}`;
+    document.head.appendChild(style);
+  }
+  
+  // 수동 트리거
+  window._patch30CheckNow = checkMissingRecord;
+  window._patch30Installed = true;
+  window._patch30Version = 'v1';
+  
+  console.log('✅ Patch #30 설치 완료 - 스케줄러 복구 알림');
+  console.log('💡 수동 체크: window._patch30CheckNow()');
+})();
+</script>
 </body>
 </html>
