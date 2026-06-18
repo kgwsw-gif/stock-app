@@ -19506,17 +19506,17 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     const validated = [];
     recent7.forEach(h=>{
       (h.stocks||[]).forEach(st=>{
-        if(typeof st.hit !== 'undefined') validated.push({...st, date:h.date||h.recordDate});
+        if(st.hit === true || st.hit === false) validated.push({...st, date:h.date||h.recordDate});
       });
     });
-    const hits = validated.filter(s=>s.hit).length;
+    const hits = validated.filter(s=>s.hit===true).length;
     const hitRate = validated.length ? (hits/validated.length*100).toFixed(1) : 0;
     const avgReturn = validated.length ? (validated.reduce((s,v)=>s+(v.actualReturn||0),0)/validated.length).toFixed(2) : 0;
 
     // 일별 적중률 추이
     const dailyStats = recent7.map(h=>{
       const stocks = h.stocks || [];
-      const v = stocks.filter(s=>typeof s.hit!=='undefined');
+      const v = stocks.filter(s=>s.hit===true || s.hit===false);
       const hr = v.length ? (v.filter(s=>s.hit).length/v.length*100).toFixed(1) : null;
       const ar = v.length ? (v.reduce((s,x)=>s+(x.actualReturn||0),0)/v.length).toFixed(2) : null;
       return { date: h.date || h.recordDate, count: stocks.length, validated: v.length, hitRate: hr, avgReturn: ar };
