@@ -17863,5 +17863,313 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('💡 테스트: window._patch27Test("changes") / "watch" / "watchlist" / "screening"');
 })();
 </script>
+  <script>
+/* === Patch #28 - 종목별 상세 인사이트 모달 === */
+(function(){
+  if(window._patch28Installed) return;
+
+  // ===== 1. 점수 분해 계산 (만점 기준) =====
+  const SCORE_MAX = { OBV: 40, 시장: 15, 거래량: 20, 위치: 15, 변동성: 10, 외인: 15 };
+  const SCORE_COLOR = { OBV: '#10b981', 시장: '#3b82f6', 거래량: '#f59e0b', 위치: '#8b5cf6', 변동성: '#06b6d4', 외인: '#ef4444' };
+
+  function buildScoreBars(breakdown){
+    if(!breakdown) return '<div style="color:#94a3b8">점수 분해 데이터 없음</div>';
+    
+    return Object.entries(SCORE_MAX).map(([key, max]) => {
+      const val = breakdown[key] || 0;
+      const pct = Math.min(100, (val / max) * 100);
+      const color = SCORE_COLOR[key];
+      return `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px">
+          <div style="width:50px;color:#475569;font-weight:600">${key}</div>
+          <div style="flex:1;background:#f1f5f9;border-radius:4px;height:14px;overflow:hidden;position:relative">
+            <div style="background:${color};width:${pct}%;height:100%;transition:width 0.3s"></div>
+          </div>
+          <div style="width:55px;text-align:right;color:${color};font-weight:700;font-variant-numeric:tabular-nums">${val}/${max}</div>
+        </div>`;
+    }).join('');
+  }
+
+  // ===== 2. 자연어 분석 생성 =====
+  function buildAnalysis(stock){
+    const b = stock.breakdown || {};
+    const points = [];
+    
+    // OBV 분석
+    if(b.OBV >= 30){
+      points.push({ type:'good', text:`<b>OBV ${b.OBV}점</b>: 거래량 누적 → 명확한 매집 패턴` });
+    } else if(b.OBV >= 20){
+      points.push({ type:'neu', text:`<b>OBV ${b.OBV}점</b>: 약한 매집 신호` });
+    } else {
+      points.push({ type:'bad', text:`<b>OBV ${b.OBV}점</b>: 매집 신호 부족` });
+    }
+    
+    // 외인
+    if(stock.foreignChange20 != null){
+      const f = stock.foreignChange20;
+      if(f >= 1.0) points.push({ type:'good', text:`<b>외인 +${f.toFixed(2)}%p</b>: 강력한 매수 지속 ⭐` });
+      else if(f >= 0.3) points.push({ type:'good', text:`<b>외인 +${f.toFixed(2)}%p</b>: 매수 우위` });
+      else if(f >= -0.3) points.push({ type:'neu', text:`<b>외인 ${f >= 0 ? '+' : ''}${f.toFixed(2)}%p</b>: 중립` });
+      else if(f >= -1.0) points.push({ type:'bad', text:`<b>외인 ${f.toFixed(2)}%p</b>: 매도 우위 ⚠️` });
+      else points.push({ type:'bad', text:`<b>외인 ${f.toFixed(2)}%p</b>: 강한 매도 압력 🚨` });
+    }
+    
+    // 거래량
+    if(b.거래량 >= 15) points.push({ type:'good', text:`<b>거래량 ${b.거래량}점</b>: 활발한 매수세` });
+    else if(b.거래량 <= 5) points.push({ type:'bad', text:`<b>거래량 ${b.거래량}점</b>: 부족` });
+    
+    // 변동성
+    if(b.변동성 >= 8) points.push({ type:'good', text:`<b>변동성 ${b.변동성}점</b>: 안정적 흐름` });
+    else if(b.변동성 <= 3) points.push({ type:'neu', text:`<b>변동성 ${b.변동성}점</b>: 박스권` });
+    
+    // 가격 변화
+    if(stock.priceChange20 != null){
+      const p = stock.priceChange20;
+      if(p >= 20) points.push({ type:'warn', text:`<b>20일 +${p.toFixed(1)}%</b>: 단기 과열 주의` });
+      else if(p >= 5) points.push({ type:'good', text:`<b>20일 +${p.toFixed(1)}%</b>: 상승 추세` });
+      else if(p <= -10) points.push({ type:'bad', text:`<b>20일 ${p.toFixed(1)}%</b>: 약세` });
+    }
+    
+    return points.map(p => {
+      const color = p.type==='good'?'#22c55e' : p.type==='bad'?'#ef4444' : p.type==='warn'?'#f59e0b' : '#64748b';
+      const dot = p.type==='good'?'✅' : p.type==='bad'?'❌' : p.type==='warn'?'⚠️' : '•';
+      return `<div style="display:flex;gap:6px;margin-bottom:5px;font-size:12px;line-height:1.5">
+        <span style="color:${color}">${dot}</span>
+        <span style="color:#334155">${p.text}</span>
+      </div>`;
+    }).join('');
+  }
+
+  // ===== 3. 어제 vs 오늘 비교 =====
+  function buildComparison(stock){
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    if(hist.length < 2) return '<div style="color:#94a3b8;font-size:12px">비교할 어제 데이터 없음</div>';
+    
+    const yesterday = hist[hist.length-2];
+    const y = yesterday.stocks.find(s => s.code === stock.code);
+    if(!y) return '<div style="color:#94a3b8;font-size:12px">어제 데이터에 종목 없음</div>';
+    
+    const rows = [
+      { label:'점수', y:y.score, t:stock.score, fmt:v=>v },
+      { label:'외인', y:y.foreignChange20, t:stock.foreignChange20, fmt:v=>v==null?'-':`${v>=0?'+':''}${v.toFixed(2)}%p` },
+      { label:'20일 가격', y:y.priceChange20, t:stock.priceChange20, fmt:v=>v==null?'-':`${v>=0?'+':''}${v.toFixed(1)}%` }
+    ];
+    
+    return rows.map(r => {
+      const diff = (r.y != null && r.t != null) ? r.t - r.y : null;
+      const diffStr = diff == null ? '' : (diff > 0 ? `<span style="color:#22c55e">▲ ${diff.toFixed(2)}</span>` : diff < 0 ? `<span style="color:#ef4444">▼ ${Math.abs(diff).toFixed(2)}</span>` : '<span style="color:#64748b">─</span>');
+      return `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:12px">
+        <span style="color:#64748b;width:80px">${r.label}</span>
+        <span style="color:#334155">${r.fmt(r.y)}</span>
+        <span style="color:#94a3b8">→</span>
+        <span style="color:#1e293b;font-weight:600">${r.fmt(r.t)}</span>
+        <span style="width:70px;text-align:right">${diffStr}</span>
+      </div>`;
+    }).join('');
+  }
+
+  // ===== 4. 동일 섹터 비교 =====
+  function buildSectorComparison(stock){
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    if(hist.length === 0) return '';
+    const today = hist[hist.length-1];
+    const sectorStocks = today.stocks
+      .filter(s => s.sector === stock.sector)
+      .sort((a,b) => b.score - a.score)
+      .slice(0, 5);
+    
+    if(sectorStocks.length <= 1) return '<div style="color:#94a3b8;font-size:12px">섹터 내 비교 종목 없음</div>';
+    
+    return sectorStocks.map((s, i) => {
+      const isMe = s.code === stock.code;
+      const rank = i+1;
+      return `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:12px;${isMe?'background:#fef3c7;border-radius:4px;padding:5px 8px':''}">
+        <span style="width:30px;color:#64748b">${rank}위</span>
+        <span style="flex:1;color:${isMe?'#92400e':'#334155'};font-weight:${isMe?'700':'400'}">${s.name}${isMe?' ⭐':''}</span>
+        <span style="width:60px;text-align:right;color:#3b82f6;font-weight:700">${s.score}점</span>
+      </div>`;
+    }).join('');
+  }
+
+  // ===== 5. 추천 액션 생성 =====
+  function buildAction(stock){
+    const score = stock.score;
+    const f = stock.foreignChange20;
+    const obv = stock.breakdown?.OBV || 0;
+    const p = stock.priceChange20 || 0;
+    
+    let action, color, bg;
+    
+    if(score >= 70 && f >= 0.3){
+      action = '🎯 적극 관찰 추천';
+      color = '#22c55e'; bg = '#f0fdf4';
+      return { action, color, bg, detail:`강력한 매집 시그널 (점수 ${score}, 외인 +${f.toFixed(2)}%p). 분할 매수 검토 가능. 단 점수 70 이하로 떨어지면 재평가.` };
+    }
+    if(score >= 60 && obv >= 25){
+      action = '👀 관찰 추천';
+      color = '#3b82f6'; bg = '#eff6ff';
+      return { action, color, bg, detail:`OBV 매집 패턴 명확. 외인 매수 전환 시 진입 검토. 70점 회복 시 강세 재확인.` };
+    }
+    if(p >= 20 && f <= -0.5){
+      action = '⚠️ 단기 차익실현 주의';
+      color = '#f59e0b'; bg = '#fffbeb';
+      return { action, color, bg, detail:`20일 +${p.toFixed(1)}% 급등 후 외인 매도(${f.toFixed(2)}%p). 보유 시 분할 매도 고려.` };
+    }
+    if(f <= -1.0 && score < 40){
+      action = '🚫 회피 권장';
+      color = '#ef4444'; bg = '#fef2f2';
+      return { action, color, bg, detail:`외인 강한 매도(${f.toFixed(2)}%p) + 점수 ${score}. 추가 하락 위험.` };
+    }
+    if(f >= 1.0 && score < 50){
+      action = '🔍 잠재 관찰';
+      color = '#06b6d4'; bg = '#ecfeff';
+      return { action, color, bg, detail:`외인 매수 강세(+${f.toFixed(2)}%p)지만 점수 ${score}점. 다른 지표 확인 필요.` };
+    }
+    
+    action = '⏸️ 관망';
+    color = '#64748b'; bg = '#f8fafc';
+    return { action, color, bg, detail:`현재 명확한 신호 없음. 추가 데이터 누적 후 재판단.` };
+  }
+
+  // ===== 6. 메인 모달 표시 함수 =====
+  function showStockInsightModal(code){
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    if(hist.length === 0){ alert('예측 기록이 없습니다.'); return; }
+    
+    const today = hist[hist.length-1];
+    const stock = today.stocks.find(s => s.code === code);
+    if(!stock){ alert(`종목 ${code}을(를) 찾을 수 없습니다.`); return; }
+    
+    document.getElementById('stock-insight-modal')?.remove();
+    
+    const action = buildAction(stock);
+    const gradeColor = stock.score >= 70 ? '#22c55e' : stock.score >= 50 ? '#f59e0b' : '#94a3b8';
+    
+    const modal = document.createElement('div');
+    modal.id = 'stock-insight-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px';
+    
+    modal.innerHTML = `
+      <div style="background:white;border-radius:16px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 25px 50px rgba(0,0,0,0.25)">
+        <div style="padding:16px 18px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:flex-start;position:sticky;top:0;background:white;z-index:1">
+          <div>
+            <div style="font-size:17px;font-weight:800;color:#1e293b">${stock.name} <span style="color:#94a3b8;font-size:12px;font-weight:400">(${stock.code})</span></div>
+            <div style="font-size:12px;color:#64748b;margin-top:3px">
+              ${stock.sector} · <b style="color:${gradeColor}">${stock.score}점</b> · ${stock.grade||''} · ${stock.obvLabel||''}
+            </div>
+          </div>
+          <button id="sim-close" style="background:#f1f5f9;border:none;border-radius:8px;padding:6px 10px;cursor:pointer;font-size:13px">✕</button>
+        </div>
+        
+        <div style="padding:14px 18px">
+          <div style="background:${action.bg};border-left:4px solid ${action.color};border-radius:8px;padding:11px 13px;margin-bottom:14px">
+            <div style="font-weight:800;color:${action.color};font-size:14px;margin-bottom:4px">${action.action}</div>
+            <div style="font-size:11.5px;color:#475569;line-height:1.5">${action.detail}</div>
+          </div>
+          
+          <div style="margin-bottom:14px">
+            <div style="font-weight:700;color:#1e293b;margin-bottom:9px;font-size:13px">📊 점수 분해</div>
+            ${buildScoreBars(stock.breakdown)}
+          </div>
+          
+          <div style="margin-bottom:14px">
+            <div style="font-weight:700;color:#1e293b;margin-bottom:9px;font-size:13px">💡 자연어 분석</div>
+            ${buildAnalysis(stock)}
+          </div>
+          
+          <div style="margin-bottom:14px">
+            <div style="font-weight:700;color:#1e293b;margin-bottom:9px;font-size:13px">📈 어제 vs 오늘</div>
+            ${buildComparison(stock)}
+          </div>
+          
+          <div style="margin-bottom:14px">
+            <div style="font-weight:700;color:#1e293b;margin-bottom:9px;font-size:13px">🎯 동일 섹터 비교 (${stock.sector})</div>
+            ${buildSectorComparison(stock)}
+          </div>
+          
+          ${typeof window.showStockDetailModal === 'function' ? `
+          <button id="sim-chart" style="width:100%;padding:9px;background:#3b82f6;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;margin-top:4px">📉 차트 보기</button>
+          ` : ''}
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    document.getElementById('sim-close').onclick = () => modal.remove();
+    modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+    const chartBtn = document.getElementById('sim-chart');
+    if(chartBtn) chartBtn.onclick = () => { modal.remove(); window.showStockDetailModal(code); };
+  }
+
+  // ===== 7. 인사이트 모달의 종목명 클릭 가능하게 =====
+  function makeStockNamesClickable(){
+    const insightModal = document.getElementById('insight-modal');
+    if(!insightModal) return;
+    
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    if(hist.length === 0) return;
+    const stocks = hist[hist.length-1].stocks;
+    const nameMap = {};
+    stocks.forEach(s => { nameMap[s.name] = s.code; });
+    
+    insightModal.querySelectorAll('div').forEach(div => {
+      if(div.dataset.p28Processed) return;
+      const text = div.textContent || '';
+      let html = div.innerHTML;
+      let changed = false;
+      
+      Object.entries(nameMap).forEach(([name, code]) => {
+        // <b>종목명</b> 패턴만 변환 (점수 텍스트와 충돌 방지)
+        const re = new RegExp(`<b>(${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')})</b>`, 'g');
+        if(re.test(html)){
+          html = html.replace(re, `<b style="cursor:pointer;color:#3b82f6;text-decoration:underline" onclick="event.stopPropagation();window.showStockInsightModal('${code}')">$1</b>`);
+          changed = true;
+        }
+      });
+      
+      if(changed){ div.innerHTML = html; div.dataset.p28Processed = '1'; }
+    });
+  }
+
+  // ===== 8. 인사이트 모달 열릴 때 자동 처리 =====
+  const _origShowInsights = window.showInsights;
+  window.showInsights = function(){
+    _origShowInsights?.();
+    setTimeout(makeStockNamesClickable, 100);
+  };
+
+  // ===== 9. Patch #27 인사이트 박스 종목명도 클릭 가능 =====
+  setInterval(() => {
+    document.querySelectorAll('[data-patch27-box]').forEach(box => {
+      if(box.dataset.p28Processed) return;
+      const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+      if(hist.length === 0) return;
+      const stocks = hist[hist.length-1].stocks;
+      let html = box.innerHTML;
+      let changed = false;
+      
+      stocks.forEach(s => {
+        const re = new RegExp(`<b>(${s.name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')})</b>`, 'g');
+        if(re.test(html)){
+          html = html.replace(re, `<b style="cursor:pointer;color:#3b82f6;text-decoration:underline" onclick="event.stopPropagation();window.showStockInsightModal('${s.code}')">$1</b>`);
+          changed = true;
+        }
+      });
+      
+      if(changed){ box.innerHTML = html; box.dataset.p28Processed = '1'; }
+    });
+  }, 1500);
+
+  // ===== 10. 전역 API =====
+  window.showStockInsightModal = showStockInsightModal;
+  window._patch28Installed = true;
+  window._patch28Version = 'v1';
+  
+  console.log('✅ Patch #28 설치 완료 - 종목별 상세 인사이트 모달');
+  console.log('💡 사용법:');
+  console.log('  window.showStockInsightModal("323410")  // 카카오뱅크');
+  console.log('  또는 인사이트 모달에서 종목명 클릭');
+})();
+</script>
 </body>
 </html>
