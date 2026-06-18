@@ -18098,7 +18098,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     document.getElementById('sim-close').onclick = () => modal.remove();
     modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
     const chartBtn = document.getElementById('sim-chart');
-    if(chartBtn) chartBtn.onclick = () => { modal.remove(); window.showStockDetailModal(code); };
+    if(chartBtn) chartBtn.onclick = () => { modal.remove(); window.showStockDetailModal(stock); };
   }
 
   // ===== 7. 인사이트 모달의 종목명 클릭 가능하게 =====
