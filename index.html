@@ -14503,36 +14503,64 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   
   // OBV 발산 분석 (방향+강도+발산비)
   function calcOBV2(closes, volumes){
-    if(!closes || closes.length < 25) return null;
-    const obv = [0];
-    for(let i=1;i<closes.length;i++){
-      if(closes[i]>closes[i-1]) obv.push(obv[i-1]+volumes[i]);
-      else if(closes[i]<closes[i-1]) obv.push(obv[i-1]-volumes[i]);
-      else obv.push(obv[i-1]);
-    }
-    const priceNow = closes[closes.length-1];
-    const price20 = closes[closes.length-20];
-    const obvNow = obv[obv.length-1];
-    const obv20 = obv[obv.length-20];
-    const priceChange = (priceNow - price20) / price20 * 100;
-    const obvBase = Math.abs(obv20) > 1 ? Math.abs(obv20) : Math.abs(obvNow);
-    const obvChange = obvBase > 0 ? (obvNow - obv20) / obvBase * 100 : 0;
-    const divergenceRatio = Math.abs(priceChange) < 0.5 ? 
-      (obvChange > 0 ? 999 : -999) : obvChange / priceChange;
-    
-    let trend, score, label;
-    if(Math.abs(priceChange) < 3 && obvChange > 10){ trend='accumulation'; score=35; label='🔥 매집 (횡보+OBV급등)'; }
-    else if(priceChange < -2 && obvChange > 0){ trend='div_bullish'; score=30; label='🟢 강세 발산'; }
-    else if(priceChange > 0 && obvChange > priceChange * 3){ trend='acc_uptrend'; score=25; label='🚀 가속 매집'; }
-    else if(priceChange > 0 && obvChange > 0 && divergenceRatio > 1){ trend='confirmed_up'; score=15; label='🟢 동반 상승'; }
-    else if(priceChange > 5 && obvChange < priceChange){ trend='distribution'; score=0; label='⚠️ 분산'; }
-    else if(priceChange > 0 && obvChange < 0){ trend='div_bearish'; score=0; label='🔴 약세 발산'; }
-    else if(priceChange < 0 && obvChange < 0){ trend='confirmed_down'; score=5; label='🔴 동반 하락'; }
-    else { trend='neutral'; score=10; label='➖ 중립'; }
-    
-    return {trend, score, label, priceChange:+priceChange.toFixed(2), obvChange:+obvChange.toFixed(2)};
+  if(!closes || closes.length < 25) return null;
+  const obv = [0];
+  for(let i=1;i<closes.length;i++){
+    if(closes[i]>closes[i-1]) obv.push(obv[i-1]+volumes[i]);
+    else if(closes[i]<closes[i-1]) obv.push(obv[i-1]-volumes[i]);
+    else obv.push(obv[i-1]);
+  }
+  const priceNow = closes[closes.length-1];
+  const price20 = closes[closes.length-20];
+  const obvNow = obv[obv.length-1];
+  const obv20 = obv[obv.length-20];
+  const priceChange = (priceNow - price20) / price20 * 100;
+  const obvBase = Math.abs(obv20) > 1 ? Math.abs(obv20) : Math.abs(obvNow);
+  const obvChange = obvBase > 0 ? (obvNow - obv20) / obvBase * 100 : 0;
+  const divergenceRatio = Math.abs(priceChange) < 0.5 ? 
+    (obvChange > 0 ? 999 : -999) : obvChange / priceChange;
+  
+  let trend, score, label, signal;
+  
+  if(priceChange > 1.5 && obvChange > priceChange * 1.5){ 
+    trend='acc_uptrend'; score=40; label='🚀 가속 매집'; signal='strong_buy';
+  }
+  else if(priceChange < -2 && obvChange > 5){ 
+    trend='div_bullish'; score=30; label='💎 강세 다이버전스'; signal='buy';
+  }
+  else if(Math.abs(priceChange) < 3 && obvChange > 10){ 
+    trend='accumulation'; score=30; label='🔥 매집 (횡보+OBV급등)'; signal='buy';
+  }
+  else if(priceChange > 2 && obvChange < priceChange * 0.5){ 
+    trend='distribution'; score=38; label='⚠️ 분산'; signal='caution';
+  }
+  else if(priceChange > 2 && obvChange < -2){ 
+    trend='div_bearish'; score=25; label='📉 약세 다이버전스'; signal='caution';
+  }
+  else if(priceChange > 0 && obvChange > 0){ 
+    trend='confirmed_up'; score=18; label='🟢 동반 상승'; signal='hold';
+  }
+  else if(priceChange < -5 && obvChange < -5){ 
+    trend='strong_down'; score=2; label='🔴 강한 하락'; signal='avoid';
+  }
+  else if(priceChange < -2 && obvChange < 0){ 
+    trend='confirmed_down'; score=5; label='🔴 동반 하락'; signal='avoid';
+  }
+  else if(priceChange < 0 && Math.abs(obvChange) < 3){ 
+    trend='weak_down'; score=8; label='🟡 약한 하락'; signal='wait';
+  }
+  else { 
+    trend='neutral'; score=10; label='➖ 중립'; signal='hold';
   }
   
+  return {
+    trend, score, label, signal,
+    priceChange:+priceChange.toFixed(2), 
+    obvChange:+obvChange.toFixed(2),
+    divergenceRatio:+divergenceRatio.toFixed(2)
+  };
+}
+
   // 외국인 비율 포함 데이터 (네이버 직접)
   async function fetchDailyWithForeign(code, days){
     const today = new Date();
