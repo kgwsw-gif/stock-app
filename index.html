@@ -17589,5 +17589,127 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('  await window.enrichScreeningResults()  // 메모리 스크리닝 결과');
 })();
 </script>
+  <script>
+/* === Patch #26B - 인사이트 외인 분석 5종 추가 === */
+(function(){
+  if(window._patch26BInstalled) return;
+  
+  const _baseGenerate = window.generateInsights;
+  if(typeof _baseGenerate !== 'function'){
+    console.warn('⚠️ Patch #26B 설치 실패: generateInsights 없음 (Patch #25 Part C 필요)');
+    return;
+  }
+
+  window.generateInsights = function(){
+    const result = _baseGenerate();
+    if(result.error) return result;
+    
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    const today = hist[hist.length-1];
+    const yesterday = hist.length >= 2 ? hist[hist.length-2] : null;
+    
+    const withForeign = today.stocks.filter(s => s.foreignChange20 != null);
+    if(withForeign.length === 0) return result;
+
+    // (1) 외인 매수 강세
+    const fBuys = [...withForeign]
+      .filter(s => s.foreignChange20 >= 0.5)
+      .sort((a,b) => b.foreignChange20 - a.foreignChange20)
+      .slice(0, 5);
+    if(fBuys.length > 0){
+      result.insights.push({
+        icon:'💰', title:`외인 매수 강세 (${fBuys.length}종목)`,
+        text: fBuys.map(s => `<b>${s.name}</b>(+${s.foreignChange20.toFixed(2)}%p/${s.score}점)`).join(' · '),
+        color:'#f59e0b'
+      });
+    }
+
+    // (2) 외인 매도 강세
+    const fSells = [...withForeign]
+      .filter(s => s.foreignChange20 <= -0.5)
+      .sort((a,b) => a.foreignChange20 - b.foreignChange20)
+      .slice(0, 5);
+    if(fSells.length > 0){
+      result.insights.push({
+        icon:'🏃', title:`외인 매도 강세 (${fSells.length}종목)`,
+        text: fSells.map(s => `<b>${s.name}</b>(${s.foreignChange20.toFixed(2)}%p/${s.score}점)`).join(' · '),
+        color:'#ef4444'
+      });
+    }
+
+    // (3) 황금 시그널: 외인 매수 + 고점수
+    const golden = [...withForeign]
+      .filter(s => s.foreignChange20 >= 0.3 && s.score >= 50)
+      .sort((a,b) => (b.foreignChange20 + b.score/20) - (a.foreignChange20 + a.score/20))
+      .slice(0, 5);
+    if(golden.length > 0){
+      result.insights.push({
+        icon:'🌟', title:`황금 시그널 (외인↑ + 점수↑)`,
+        text: golden.map(s => `<b>${s.name}</b>(외인+${s.foreignChange20.toFixed(2)}%p, ${s.score}점${s.obvLabel?' '+s.obvLabel:''})`).join(' · '),
+        color:'#22c55e'
+      });
+    }
+
+    // (4) 숨은 매수: 외인은 적극 매수하나 점수는 아직 낮음
+    const hidden = [...withForeign]
+      .filter(s => s.foreignChange20 >= 1.0 && s.score < 50)
+      .sort((a,b) => b.foreignChange20 - a.foreignChange20)
+      .slice(0, 3);
+    if(hidden.length > 0){
+      result.insights.push({
+        icon:'🔍', title:`숨은 매수 (외인↑ but 점수↓)`,
+        text: hidden.map(s => `<b>${s.name}</b>(외인+${s.foreignChange20.toFixed(2)}%p, ${s.score}점, ${s.sector})`).join(' · '),
+        color:'#06b6d4'
+      });
+    }
+
+    // (5) 위험 신호: 외인 매도 + 저점수
+    const danger = [...withForeign]
+      .filter(s => s.foreignChange20 <= -1.0 && s.score < 40)
+      .sort((a,b) => a.foreignChange20 - b.foreignChange20)
+      .slice(0, 3);
+    if(danger.length > 0){
+      result.insights.push({
+        icon:'☠️', title:`위험 신호 (외인↓ + 점수↓)`,
+        text: danger.map(s => `<b>${s.name}</b>(외인${s.foreignChange20.toFixed(2)}%p, ${s.score}점)`).join(' · '),
+        color:'#dc2626'
+      });
+    }
+
+    // (6) 외인 동향 전환 (어제 vs 오늘)
+    if(yesterday){
+      const yMap = {}; yesterday.stocks.forEach(s => yMap[s.code] = s);
+      const turn = withForeign
+        .filter(s => yMap[s.code]?.foreignChange20 != null)
+        .map(s => ({
+          name: s.name,
+          yesterday: yMap[s.code].foreignChange20,
+          today: s.foreignChange20,
+          diff: s.foreignChange20 - yMap[s.code].foreignChange20
+        }))
+        .filter(c => (c.yesterday < 0 && c.today > 0.3) || (c.yesterday > 0 && c.today < -0.3));
+      
+      if(turn.length > 0){
+        const buys = turn.filter(c => c.today > 0).slice(0, 3);
+        const sells = turn.filter(c => c.today < 0).slice(0, 3);
+        let txt = '';
+        if(buys.length) txt += `매수전환: ${buys.map(c => c.name).join(', ')}`;
+        if(sells.length) txt += (txt?' / ':'') + `매도전환: ${sells.map(c => c.name).join(', ')}`;
+        result.insights.push({
+          icon:'🔄', title:`외인 동향 전환`,
+          text: txt,
+          color:'#8b5cf6'
+        });
+      }
+    }
+
+    return result;
+  };
+
+  window._patch26BInstalled = true;
+  window._patch26BVersion = 'v1';
+  console.log('✅ Patch #26B 설치 완료 - 외인 분석 인사이트 5종 추가');
+})();
+</script>
 </body>
 </html>
