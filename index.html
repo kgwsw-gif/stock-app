@@ -17711,5 +17711,157 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('✅ Patch #26B 설치 완료 - 외인 분석 인사이트 5종 추가');
 })();
 </script>
+  <script>
+/* === Patch #27 - 메뉴별 인사이트 자동 부착 === */
+(function(){
+  if(window._patch27Installed) return;
+
+  // ===== 1. 메뉴별 맞춤 인사이트 생성 =====
+  function getQuickInsights(menu){
+    const full = window.generateInsights?.();
+    if(!full || full.error) return null;
+
+    const all = full.insights;
+    let picks = [];
+
+    if(menu === 'changes'){
+      // 일별 변화: 점수 급등/급락, 강세 종목 추적, 섹터 흐름
+      picks = all.filter(i => /점수 급|어제 강세|섹터 흐름|외인 동향 전환/.test(i.title)).slice(0, 4);
+    } else if(menu === 'watch' || menu === 'watchlist'){
+      // 주목/관심: 황금 시그널, TOP, 외인 매수, 위험
+      picks = all.filter(i => /황금|TOP|외인 매수|위험 신호/.test(i.title)).slice(0, 4);
+    } else if(menu === 'screening'){
+      // 스크리닝: 모든 핵심 인사이트
+      picks = all.filter(i => /황금|숨은|위험|TOP|섹터/.test(i.title)).slice(0, 5);
+    } else if(menu === 'scan'){
+      // 즉시 스캔: 외인 매수 + 황금
+      picks = all.filter(i => /외인 매수|황금|TOP/.test(i.title)).slice(0, 3);
+    } else {
+      picks = all.slice(0, 3);
+    }
+
+    return { date: full.date, picks, totalCount: all.length };
+  }
+
+  // ===== 2. 인사이트 박스 HTML 생성 =====
+  function buildInsightBox(menu, opts){
+    opts = opts || {};
+    const data = getQuickInsights(menu);
+    if(!data || data.picks.length === 0) return '';
+
+    const items = data.picks.map(ins => `
+      <div style="background:white;border-left:3px solid ${ins.color};border-radius:6px;padding:8px 10px;margin-bottom:6px;font-size:12px">
+        <div style="font-weight:700;color:${ins.color};margin-bottom:3px;font-size:12px">${ins.icon} ${ins.title}</div>
+        <div style="color:#475569;line-height:1.4;font-size:11px">${ins.text}</div>
+      </div>
+    `).join('');
+
+    return `
+      <div data-patch27-box style="background:linear-gradient(135deg,#eff6ff,#f0fdf4);border:1px solid #bfdbfe;border-radius:12px;padding:12px;margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div style="font-weight:800;color:#1e40af;font-size:13px">💡 빠른 인사이트 (${data.picks.length}/${data.totalCount})</div>
+          <button onclick="window.showInsights();" style="background:#3b82f6;color:white;border:none;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer">📊 전체보기</button>
+        </div>
+        ${items}
+      </div>
+    `;
+  }
+
+  // ===== 3. 모달에 인사이트 박스 삽입 =====
+  function injectInsightBox(modal, menu){
+    if(!modal) return false;
+    if(modal.querySelector('[data-patch27-box]')) return true; // 이미 삽입됨
+    
+    const html = buildInsightBox(menu);
+    if(!html) return false;
+
+    // 모달 내부 첫 번째 자식 (콘텐츠 영역) 찾기
+    const content = modal.querySelector('div > div') || modal.firstElementChild;
+    if(!content) return false;
+
+    // 헤더(제목) 다음에 삽입할 위치 찾기
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = html;
+    const box = wrapper.firstElementChild;
+
+    // 모달 내 첫 번째 h1/h2/h3 다음에 삽입, 없으면 맨 위
+    const heading = content.querySelector('h1, h2, h3, [class*="title"], [class*="font-bold"]');
+    if(heading?.parentElement){
+      heading.parentElement.insertBefore(box, heading.nextSibling);
+    } else {
+      content.insertBefore(box, content.firstChild);
+    }
+    return true;
+  }
+
+  // ===== 4. 모달 자동 감지 후킹 =====
+  function hookFunction(fnName, menu, modalDetector){
+    const orig = window[fnName];
+    if(typeof orig !== 'function'){
+      console.warn(`⚠️ Patch #27: ${fnName} 없음`);
+      return;
+    }
+
+    window[fnName] = function(...args){
+      const ret = orig.apply(this, args);
+      
+      // 모달이 생성되기를 기다림 (최대 1.5초, 100ms 간격)
+      let tries = 0;
+      const timer = setInterval(() => {
+        tries++;
+        const modal = modalDetector();
+        if(modal){
+          if(injectInsightBox(modal, menu)){
+            console.log(`💡 Patch #27: ${menu} 인사이트 부착됨`);
+            clearInterval(timer);
+          }
+        }
+        if(tries >= 15) clearInterval(timer);
+      }, 100);
+      
+      return ret;
+    };
+    console.log(`✅ Patch #27: ${fnName} 후킹 완료`);
+  }
+
+  // ===== 5. 모달 감지 함수들 =====
+  const detectors = {
+    changes: () => document.getElementById('changes-modal') 
+      || document.querySelector('[id*="change"][id*="modal"]')
+      || [...document.querySelectorAll('div')].find(d => {
+          const s = d.getAttribute('style')||'';
+          return s.includes('position:fixed') && d.textContent?.includes('일별') && d.offsetWidth > 200;
+        }),
+    watch: () => [...document.querySelectorAll('div')].find(d => {
+        const s = d.getAttribute('style')||'';
+        return s.includes('position:fixed') && /주목|watch/i.test(d.textContent||'') && d.offsetWidth > 200 && !d.querySelector('[data-patch27-box]');
+      }),
+    watchlist: () => document.getElementById('watchlist-modal'),
+    screening: () => document.getElementById('screening-results-modal'),
+  };
+
+  // ===== 6. 후킹 적용 =====
+  hookFunction('showTodayChangesModal', 'changes', detectors.changes);
+  hookFunction('showWatchList', 'watch', detectors.watch);
+  hookFunction('showWatchlist', 'watchlist', detectors.watchlist);
+  hookFunction('showScreeningResults', 'screening', detectors.screening);
+
+  // scanStrongCandidates는 알람만 띄우므로 후킹 안함 (대신 즉시스캔 버튼 클릭 시 자동 보강)
+  
+  // ===== 7. 전역 API =====
+  window._patch27Installed = true;
+  window._patch27Version = 'v1';
+  window._patch27Test = function(menu){
+    console.log('=== 빠른 인사이트 미리보기 ===');
+    const d = getQuickInsights(menu);
+    if(!d){ console.log('데이터 없음'); return; }
+    console.log(`${d.picks.length}/${d.totalCount} 표시`);
+    d.picks.forEach((i, idx) => console.log(`  ${idx+1}. ${i.icon} ${i.title}`));
+  };
+
+  console.log('✅ Patch #27 설치 완료 - 메뉴별 인사이트 자동 부착');
+  console.log('💡 테스트: window._patch27Test("changes") / "watch" / "watchlist" / "screening"');
+})();
+</script>
 </body>
 </html>
