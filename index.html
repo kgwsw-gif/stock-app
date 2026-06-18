@@ -18819,23 +18819,37 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   }
   window.showSearchModal = showSearchModal;
 
-  // 4. 매집 박스에 🔍 검색 버튼 추가
-  function attachSearchButton(){
-    const box = document.getElementById('maejip-box');
-    if(!box || box.querySelector('[data-search-btn]')) return;
-    // 기존 버튼들의 부모 찾기 (인사이트/패턴 버튼이 있는 곳)
-    const insBtn = [...box.querySelectorAll('button')].find(b => b.textContent?.includes('인사이트'));
-    if(!insBtn?.parentElement) return;
+    // 4. 매집 박스 헤더 정리 CSS (검색 숨김 + 패턴 여백 + 알림 배지 크기 통일)
+  const p33css = document.createElement('style');
+  p33css.textContent = `
+    #maejip-box [data-search-btn]{display:none !important;}
+    #maejip-box [data-pattern-btn]{margin-right:36px !important;}
+    #maejip-box span[style*="rgb(239, 68, 68)"],
+    #maejip-box span[style*="background"][style*="239"] {
+      padding:3px 6px !important;
+      font-size:13px !important;
+      line-height:1.2 !important;
+      height:auto !important;
+      display:inline-flex !important;
+      align-items:center !important;
+    }
+  `;
+  document.head.appendChild(p33css);
+  
+  // 5. 플로팅 검색 버튼 (우하단 고정)
+  function attachFloatingSearchButton(){
+    if(document.getElementById('search-float-btn')) return;
     const btn = document.createElement('button');
-    btn.setAttribute('data-search-btn', '1');
-    btn.textContent = '🔍 검색';
-    btn.style.cssText = 'background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:white;border:none;border-radius:6px;padding:3px 8px;font-size:10px;font-weight:600;cursor:pointer;margin-left:4px;';
+    btn.id = 'search-float-btn';
+    btn.innerHTML = '🔍';
     btn.title = '종목 검색 (Ctrl+K)';
-    btn.onclick = e => { e.stopPropagation(); showSearchModal(); };
-    insBtn.parentElement.appendChild(btn);
+    btn.style.cssText = 'position:fixed;bottom:20px;right:20px;width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:white;border:3px solid white;font-size:26px;cursor:pointer;box-shadow:0 6px 20px rgba(59,130,246,0.6);z-index:999999;display:flex;align-items:center;justify-content:center;transition:transform 0.15s;';
+    btn.onmouseover = () => { btn.style.transform='scale(1.1)'; };
+    btn.onmouseout = () => { btn.style.transform='scale(1)'; };
+    btn.onclick = () => showSearchModal();
+    document.body.appendChild(btn);
   }
-  setTimeout(attachSearchButton, 2000);
-  setInterval(attachSearchButton, 5000);
+  setTimeout(attachFloatingSearchButton, 1500);
 
   // 5. 단축키 Ctrl+K / Cmd+K
   document.addEventListener('keydown', e => {
