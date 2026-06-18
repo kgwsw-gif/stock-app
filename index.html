@@ -17472,5 +17472,122 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('💡 사용법: window.showInsights() 또는 매집 박스의 💡 버튼');
 })();
 </script>
+  <script>
+/* === Patch #26 - 외인 데이터 보강 (foreignChange20) === */
+(function(){
+  if(window._patch26Installed) return;
+
+  // ===== 1. fetchDailyWithForeign 안전 래퍼 =====
+  const _origFetch = window.fetchDailyWithForeign;
+  window.fetchDailyWithForeign = async function(code, days){
+    if(days == null || isNaN(Number(days))) days = 60;
+    return _origFetch(code, days);
+  };
+  console.log('✅ fetchDailyWithForeign 안전 래퍼 적용 (default days=60)');
+
+  // ===== 2. 외인 변화율 계산 =====
+  async function computeForeignChange(code, periodDays){
+    periodDays = periodDays || 20;
+    try{
+      const data = await window.fetchDailyWithForeign(code, 60);
+      if(!Array.isArray(data) || data.length < periodDays + 1) return null;
+      
+      const recent = data.slice(-1)[0];
+      const past = data.slice(-(periodDays + 1))[0];
+      
+      if(recent?.foreignRate == null || past?.foreignRate == null) return null;
+      
+      // 외인 지분율 변화 (%p)
+      return +(recent.foreignRate - past.foreignRate).toFixed(3);
+    }catch(e){ 
+      console.warn(`외인 계산 실패 ${code}:`, e.message);
+      return null;
+    }
+  }
+  window.computeForeignChange = computeForeignChange;
+
+  // ===== 3. 예측 기록 외인 보강 =====
+  async function enrichForeignData(opts){
+    opts = opts || {};
+    const targetDate = opts.date; // 특정 날짜 or 최신
+    const onlyMissing = opts.onlyMissing !== false; // 기본: 빠진 것만
+    
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    if(hist.length === 0){ console.log('❌ 예측 기록 없음'); return; }
+    
+    const records = targetDate 
+      ? hist.filter(h => h.date === targetDate)
+      : [hist[hist.length - 1]];
+    
+    if(records.length === 0){ console.log('❌ 해당 날짜 기록 없음'); return; }
+    
+    let totalProcessed = 0, totalFilled = 0, totalFailed = 0;
+    
+    for(const rec of records){
+      const targets = onlyMissing 
+        ? rec.stocks.filter(s => s.foreignChange20 == null)
+        : rec.stocks;
+      
+      console.log(`🔍 ${rec.date} 외인 보강 시작: ${targets.length}/${rec.stocks.length} 종목`);
+      
+      for(let i = 0; i < targets.length; i++){
+        const s = targets[i];
+        const val = await computeForeignChange(s.code, 20);
+        
+        if(val != null){
+          s.foreignChange20 = val;
+          totalFilled++;
+        } else {
+          totalFailed++;
+        }
+        totalProcessed++;
+        
+        if((i+1) % 10 === 0) console.log(`  진행: ${i+1}/${targets.length} (성공 ${totalFilled})`);
+        
+        // API 부담 줄이기
+        await new Promise(r => setTimeout(r, 50));
+      }
+    }
+    
+    // 저장
+    localStorage.setItem('prediction_history', JSON.stringify(hist));
+    
+    console.log(`\n✅ 외인 보강 완료`);
+    console.log(`  처리: ${totalProcessed}, 성공: ${totalFilled}, 실패: ${totalFailed}`);
+    console.log(`  성공률: ${(totalFilled/totalProcessed*100).toFixed(1)}%`);
+    
+    return { totalProcessed, totalFilled, totalFailed };
+  }
+  window.enrichForeignData = enrichForeignData;
+
+  // ===== 4. _screeningResults 도 보강 =====
+  async function enrichScreeningResults(){
+    const sr = window._screeningResults;
+    if(!sr || sr.length === 0){ console.log('❌ _screeningResults 없음'); return; }
+    
+    const targets = sr.filter(s => s.foreignChange20 == null);
+    console.log(`🔍 _screeningResults 외인 보강: ${targets.length}/${sr.length}`);
+    
+    let filled = 0;
+    for(let i = 0; i < targets.length; i++){
+      const v = await computeForeignChange(targets[i].code, 20);
+      if(v != null){ targets[i].foreignChange20 = v; filled++; }
+      if((i+1) % 10 === 0) console.log(`  ${i+1}/${targets.length}`);
+      await new Promise(r => setTimeout(r, 50));
+    }
+    console.log(`✅ 완료: ${filled}/${targets.length} 채움`);
+    return filled;
+  }
+  window.enrichScreeningResults = enrichScreeningResults;
+
+  window._patch26Installed = true;
+  window._patch26Version = 'v1';
+  console.log('✅ Patch #26 설치 완료 - 외인 데이터 보강');
+  console.log('💡 사용법:');
+  console.log('  await window.enrichForeignData()  // 최신 예측 기록 외인 채우기');
+  console.log('  await window.enrichForeignData({date:"2026-06-15"})  // 특정 날짜');
+  console.log('  await window.enrichScreeningResults()  // 메모리 스크리닝 결과');
+})();
+</script>
 </body>
 </html>
