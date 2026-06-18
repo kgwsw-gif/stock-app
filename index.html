@@ -18381,5 +18381,258 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('✅ Patch #31 설치 완료 - 자동 캐시 정리 (7일)');
 })();
 </script>
+  <script>
+/* === Patch #32 - 패턴 인식 + 신뢰도 통계 === */
+(function(){
+  if(window._patch32Installed) return;
+
+  // ===== 1. 누적 패턴 통계 계산 =====
+  function calcPatternStats(){
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    const validated = hist.filter(h => h.validated);
+    
+    const stats = { byObvLabel:{}, byGrade:{}, totalDays:validated.length, totalSamples:0, totalHits:0 };
+    
+    validated.forEach(h => {
+      h.stocks.forEach(s => {
+        if(s.hit == null) return;
+        stats.totalSamples++;
+        if(s.hit === true) stats.totalHits++;
+        
+        // OBV 라벨
+        const ol = s.obvLabel || '(없음)';
+        if(!stats.byObvLabel[ol]) stats.byObvLabel[ol] = { count:0, hit:0, returns:[] };
+        stats.byObvLabel[ol].count++;
+        if(s.hit === true) stats.byObvLabel[ol].hit++;
+        if(s.actualReturn != null) stats.byObvLabel[ol].returns.push(s.actualReturn);
+        
+        // 등급
+        const g = s.grade || '(없음)';
+        if(!stats.byGrade[g]) stats.byGrade[g] = { count:0, hit:0, returns:[] };
+        stats.byGrade[g].count++;
+        if(s.hit === true) stats.byGrade[g].hit++;
+        if(s.actualReturn != null) stats.byGrade[g].returns.push(s.actualReturn);
+      });
+    });
+    
+    // 정렬 및 계산
+    function finalize(map){
+      return Object.entries(map)
+        .map(([k, v]) => {
+          const hitRate = v.count > 0 ? (v.hit / v.count * 100) : 0;
+          const avgReturn = v.returns.length > 0 ? (v.returns.reduce((a,b)=>a+b,0) / v.returns.length) : 0;
+          const confidence = v.count >= 20 ? 3 : v.count >= 10 ? 2 : 1;
+          return { label:k, count:v.count, hit:v.hit, hitRate:+hitRate.toFixed(1), avgReturn:+avgReturn.toFixed(2), confidence };
+        })
+        .sort((a,b) => b.hitRate - a.hitRate);
+    }
+    
+    stats.byObvLabel = finalize(stats.byObvLabel);
+    stats.byGrade = finalize(stats.byGrade);
+    stats.overallHitRate = stats.totalSamples > 0 ? +(stats.totalHits/stats.totalSamples*100).toFixed(1) : 0;
+    
+    return stats;
+  }
+
+  // ===== 2. 패턴 통계 모달 표시 =====
+  function showPatternStats(){
+    const s = calcPatternStats();
+    document.getElementById('pattern-stats-modal')?.remove();
+    
+    const stars = (c) => '⭐'.repeat(c);
+    const hitColor = (r) => r >= 50 ? '#22c55e' : r >= 30 ? '#f59e0b' : '#94a3b8';
+    const retColor = (v) => v > 1.5 ? '#22c55e' : v > 0 ? '#3b82f6' : '#ef4444';
+    
+    const modal = document.createElement('div');
+    modal.id = 'pattern-stats-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100001;display:flex;align-items:center;justify-content:center;padding:16px';
+    
+    const obvRows = s.byObvLabel.map(p => `
+      <tr style="border-bottom:1px solid #f1f5f9">
+        <td style="padding:8px 6px;font-size:12px">${p.label}</td>
+        <td style="padding:8px 6px;text-align:center;font-size:11px;color:#64748b">${p.count}</td>
+        <td style="padding:8px 6px;text-align:right;font-weight:700;color:${hitColor(p.hitRate)}">${p.hitRate}%</td>
+        <td style="padding:8px 6px;text-align:right;color:${retColor(p.avgReturn)};font-variant-numeric:tabular-nums">${p.avgReturn>=0?'+':''}${p.avgReturn}%</td>
+        <td style="padding:8px 6px;text-align:center;font-size:11px">${stars(p.confidence)}</td>
+      </tr>
+    `).join('');
+    
+    const gradeRows = s.byGrade.map(p => `
+      <tr style="border-bottom:1px solid #f1f5f9">
+        <td style="padding:8px 6px;font-size:13px">${p.label}</td>
+        <td style="padding:8px 6px;text-align:center;font-size:11px;color:#64748b">${p.count}</td>
+        <td style="padding:8px 6px;text-align:right;font-weight:700;color:${hitColor(p.hitRate)}">${p.hitRate}%</td>
+        <td style="padding:8px 6px;text-align:right;color:${retColor(p.avgReturn)};font-variant-numeric:tabular-nums">${p.avgReturn>=0?'+':''}${p.avgReturn}%</td>
+      </tr>
+    `).join('');
+    
+    // 최고 시그널 강조
+    const best = s.byObvLabel.filter(p => p.confidence >= 2 && p.hitRate >= 40).slice(0,2);
+    const bestText = best.length ? best.map(p => `<b style="color:#22c55e">${p.label}</b> ${p.hitRate}%`).join(' · ') : '데이터 부족';
+    
+    modal.innerHTML = `
+      <div style="background:white;border-radius:16px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 25px 50px rgba(0,0,0,0.25)">
+        <div style="padding:16px 18px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:white;z-index:1">
+          <div>
+            <div style="font-size:16px;font-weight:800;color:#1e293b">📊 패턴 신뢰도 통계</div>
+            <div style="font-size:11px;color:#64748b;margin-top:2px">${s.totalDays}일치 · ${s.totalSamples}샘플 · 전체 적중률 ${s.overallHitRate}%</div>
+          </div>
+          <button id="ps-close" style="background:#f1f5f9;border:none;border-radius:8px;padding:6px 10px;cursor:pointer;font-size:13px">✕</button>
+        </div>
+        
+        <div style="padding:14px 18px">
+          <div style="background:#f0fdf4;border-left:4px solid #22c55e;border-radius:8px;padding:11px 13px;margin-bottom:14px">
+            <div style="font-weight:800;color:#166534;font-size:13px;margin-bottom:4px">🎯 검증된 알파 시그널</div>
+            <div style="font-size:12px;color:#15803d">${bestText}</div>
+          </div>
+          
+          <div style="margin-bottom:18px">
+            <div style="font-weight:700;color:#1e293b;margin-bottom:8px;font-size:13px">🌊 OBV 패턴별 적중률</div>
+            <table style="width:100%;border-collapse:collapse">
+              <thead>
+                <tr style="background:#f8fafc">
+                  <th style="padding:7px;text-align:left;font-size:11px;color:#64748b;font-weight:600">패턴</th>
+                  <th style="padding:7px;text-align:center;font-size:11px;color:#64748b;font-weight:600;width:40px">샘플</th>
+                  <th style="padding:7px;text-align:right;font-size:11px;color:#64748b;font-weight:600;width:60px">적중률</th>
+                  <th style="padding:7px;text-align:right;font-size:11px;color:#64748b;font-weight:600;width:60px">평균수익</th>
+                  <th style="padding:7px;text-align:center;font-size:11px;color:#64748b;font-weight:600;width:60px">신뢰도</th>
+                </tr>
+              </thead>
+              <tbody>${obvRows}</tbody>
+            </table>
+          </div>
+          
+          <div style="margin-bottom:14px">
+            <div style="font-weight:700;color:#1e293b;margin-bottom:8px;font-size:13px">🏆 등급별 적중률</div>
+            <table style="width:100%;border-collapse:collapse">
+              <thead>
+                <tr style="background:#f8fafc">
+                  <th style="padding:7px;text-align:left;font-size:11px;color:#64748b;font-weight:600">등급</th>
+                  <th style="padding:7px;text-align:center;font-size:11px;color:#64748b;font-weight:600;width:40px">샘플</th>
+                  <th style="padding:7px;text-align:right;font-size:11px;color:#64748b;font-weight:600;width:60px">적중률</th>
+                  <th style="padding:7px;text-align:right;font-size:11px;color:#64748b;font-weight:600;width:60px">평균수익</th>
+                </tr>
+              </thead>
+              <tbody>${gradeRows}</tbody>
+            </table>
+          </div>
+          
+          <div style="background:#eff6ff;border-radius:8px;padding:10px 12px;font-size:11px;color:#1e40af;line-height:1.5">
+            💡 <b>신뢰도</b>: ⭐(샘플&lt;10) ⭐⭐(샘플10-19) ⭐⭐⭐(샘플≥20)<br>
+            💡 데이터가 5일 이상 누적되면 더 정확한 통계가 됩니다.
+          </div>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    document.getElementById('ps-close').onclick = () => modal.remove();
+    modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  }
+
+  // ===== 3. 인사이트에 신뢰 시그널 추가 =====
+  const _baseGen = window.generateInsights;
+  if(typeof _baseGen === 'function'){
+    window.generateInsights = function(){
+      const result = _baseGen();
+      if(result.error) return result;
+      
+      const stats = calcPatternStats();
+      const today = JSON.parse(localStorage.getItem('prediction_history')||'[]').slice(-1)[0];
+      if(!today) return result;
+      
+      // 신뢰도 ≥10 & 적중률 ≥40%인 패턴 라벨 추출
+      const trusted = stats.byObvLabel.filter(p => p.count >= 10 && p.hitRate >= 40);
+      
+      if(trusted.length > 0){
+        const trustedLabels = trusted.map(t => t.label);
+        const todaysTrusted = today.stocks
+          .filter(s => trustedLabels.includes(s.obvLabel))
+          .sort((a,b) => b.score - a.score)
+          .slice(0, 6);
+        
+        if(todaysTrusted.length > 0){
+          const bestPattern = trusted[0];
+          result.insights.push({
+            icon:'🎯', title:`고신뢰 시그널 (적중률 ${bestPattern.hitRate}%+)`,
+            text: todaysTrusted.map(s => `<b>${s.name}</b>(${s.score}점, ${s.obvLabel})`).join(' · '),
+            color:'#15803d'
+          });
+        }
+      }
+      
+      return result;
+    };
+    console.log('✅ Patch #32: generateInsights에 고신뢰 시그널 추가');
+  }
+
+  // ===== 4. 매집 박스에 📊 패턴 버튼 추가 =====
+  function attachPatternButton(){
+    const box = document.getElementById('maejip-box');
+    if(!box || box.querySelector('[data-pattern-btn]')) return;
+    const header = box.querySelector('div');
+    if(!header) return;
+    
+    const btn = document.createElement('button');
+    btn.setAttribute('data-pattern-btn','1');
+    btn.textContent = '📊 패턴';
+    btn.style.cssText = 'background:linear-gradient(135deg,#22c55e,#15803d);color:white;border:none;border-radius:6px;padding:3px 8px;font-size:10px;font-weight:600;cursor:pointer;margin-left:4px';
+    btn.onclick = (e) => { e.stopPropagation(); showPatternStats(); };
+    header.appendChild(btn);
+  }
+  setTimeout(attachPatternButton, 2000);
+  setInterval(attachPatternButton, 5000);
+
+  // ===== 5. 종목 상세 모달에 패턴 적중률 표시 =====
+  const _origStockInsight = window.showStockInsightModal;
+  if(typeof _origStockInsight === 'function'){
+    window.showStockInsightModal = function(code){
+      _origStockInsight(code);
+      setTimeout(() => {
+        const modal = document.getElementById('stock-insight-modal');
+        if(!modal || modal.querySelector('[data-pattern-info]')) return;
+        
+        const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+        const today = hist[hist.length-1];
+        const stock = today?.stocks.find(s => s.code === code);
+        if(!stock) return;
+        
+        const stats = calcPatternStats();
+        const patternInfo = stats.byObvLabel.find(p => p.label === stock.obvLabel);
+        if(!patternInfo || patternInfo.count < 5) return;
+        
+        const color = patternInfo.hitRate >= 50 ? '#22c55e' : patternInfo.hitRate >= 30 ? '#f59e0b' : '#94a3b8';
+        const bg = patternInfo.hitRate >= 50 ? '#f0fdf4' : patternInfo.hitRate >= 30 ? '#fffbeb' : '#f8fafc';
+        
+        const infoBox = document.createElement('div');
+        infoBox.setAttribute('data-pattern-info','1');
+        infoBox.style.cssText = `background:${bg};border-left:4px solid ${color};border-radius:8px;padding:11px 13px;margin-bottom:14px`;
+        infoBox.innerHTML = `
+          <div style="font-weight:800;color:${color};font-size:13px;margin-bottom:4px">📊 이 패턴의 누적 통계</div>
+          <div style="font-size:12px;color:#475569;line-height:1.5">
+            <b>${stock.obvLabel}</b> 패턴은 누적 ${patternInfo.count}건 중 <b style="color:${color}">${patternInfo.hitRate}%</b> 적중, 평균 수익 <b>${patternInfo.avgReturn>=0?'+':''}${patternInfo.avgReturn}%</b>
+          </div>
+        `;
+        
+        const actionBox = modal.querySelector('div[style*="border-left"]');
+        if(actionBox?.parentElement){
+          actionBox.parentElement.insertBefore(infoBox, actionBox.nextSibling);
+        }
+      }, 50);
+    };
+  }
+
+  // ===== 6. 전역 API =====
+  window.showPatternStats = showPatternStats;
+  window.calcPatternStats = calcPatternStats;
+  window._patch32Installed = true;
+  window._patch32Version = 'v1';
+  
+  console.log('✅ Patch #32 설치 완료 - 패턴 인식 + 신뢰도 통계');
+  console.log('💡 사용법:');
+  console.log('  window.showPatternStats() - 패턴 통계 모달');
+  console.log('  window.calcPatternStats() - 통계 데이터');
+})();
+</script>
 </body>
 </html>
