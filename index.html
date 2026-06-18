@@ -19243,5 +19243,234 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('✅ Patch #35 설치 완료 - 백업/복구 (Ctrl+Shift+B)');
 })();
 </script>
+  <script>
+/* === Patch #36 - 시간대별 토스트 알림 === */
+(function(){
+  if(window._patch36Installed) return;
+
+  const SETTINGS_KEY = 'alert_settings';
+  const FIRED_KEY = 'alert_fired_today';
+
+  const DEFAULT_SETTINGS = {
+    enabled: true,
+    sound: true,
+    browserNotif: true,
+    schedules: {
+      '09:00': { label: '🔔 장 시작', desc: '오늘도 신중하게', enabled: true },
+      '09:30': { label: '📈 초반 강세 체크', desc: '강세 종목 점검', enabled: true },
+      '15:20': { label: '⏰ 마감 임박', desc: '포지션 정리 시간', enabled: true },
+      '15:35': { label: '🏁 장 마감', desc: '오늘 결과 확인', enabled: true },
+      '16:30': { label: '🌏 외인 확정 데이터', desc: '외인 데이터 도착', enabled: true }
+    },
+    conditional: {
+      favHighScore: true,
+      favForeignSell: true,
+      newAccumPattern: true
+    }
+  };
+
+  function getSettings(){
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY)||'null');
+    if(!s) { localStorage.setItem(SETTINGS_KEY, JSON.stringify(DEFAULT_SETTINGS)); return DEFAULT_SETTINGS; }
+    return s;
+  }
+  function saveSettings(s){ localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); }
+
+  function ensureToastContainer(){
+    let c = document.getElementById('toast-container');
+    if(c) return c;
+    c = document.createElement('div');
+    c.id = 'toast-container';
+    c.style.cssText = 'position:fixed;top:20px;right:20px;z-index:1000001;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
+    document.body.appendChild(c);
+    return c;
+  }
+
+  window.showToast = function(opts){
+    const { title='알림', message='', type='info', duration=5000, onClick=null } = opts;
+    const container = ensureToastContainer();
+    const colors = {
+      info:    { bg: 'linear-gradient(135deg,#3b82f6,#1d4ed8)', icon: '🔔' },
+      success: { bg: 'linear-gradient(135deg,#10b981,#059669)', icon: '✅' },
+      warning: { bg: 'linear-gradient(135deg,#f59e0b,#d97706)', icon: '⚠️' },
+      danger:  { bg: 'linear-gradient(135deg,#ef4444,#dc2626)', icon: '🚨' },
+      gold:    { bg: 'linear-gradient(135deg,#eab308,#ca8a04)', icon: '⭐' }
+    };
+    const c = colors[type] || colors.info;
+    const toast = document.createElement('div');
+    toast.style.cssText = `background:${c.bg};color:white;padding:14px 18px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.25);min-width:280px;max-width:360px;pointer-events:auto;cursor:${onClick?'pointer':'default'};transform:translateX(400px);opacity:0;transition:transform 0.3s ease, opacity 0.3s ease;`;
+    toast.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
+        <div style="flex:1;">
+          <div style="font-weight:700;font-size:14px;margin-bottom:4px;">${c.icon} ${title}</div>
+          <div style="font-size:13px;opacity:0.95;line-height:1.4;">${message}</div>
+        </div>
+        <button style="background:rgba(255,255,255,0.2);border:none;color:white;width:24px;height:24px;border-radius:50%;cursor:pointer;font-size:14px;line-height:1;flex-shrink:0;">×</button>
+      </div>
+    `;
+    const closeBtn = toast.querySelector('button');
+    const close = ()=>{
+      toast.style.transform='translateX(400px)';
+      toast.style.opacity='0';
+      setTimeout(()=>toast.remove(), 300);
+    };
+    closeBtn.onclick = (e)=>{ e.stopPropagation(); close(); };
+    if(onClick) toast.onclick = ()=>{ onClick(); close(); };
+    container.appendChild(toast);
+    setTimeout(()=>{ toast.style.transform='translateX(0)'; toast.style.opacity='1'; }, 50);
+    if(duration > 0) setTimeout(close, duration);
+    return toast;
+  };
+
+  function sendBrowserNotif(title, message){
+    const s = getSettings();
+    if(!s.browserNotif) return;
+    if(typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    try { new Notification(title, { body: message }); } catch(e) {}
+  }
+
+  window.fireAlert = function(opts){
+    const s = getSettings();
+    if(!s.enabled) return;
+    showToast(opts);
+    if(s.browserNotif) sendBrowserNotif(opts.title, opts.message);
+    const history = JSON.parse(localStorage.getItem('alert_history')||'[]');
+    history.push({
+      time: new Date().toISOString(),
+      title: opts.title,
+      message: opts.message,
+      type: opts.type || 'info'
+    });
+    if(history.length > 100) history.splice(0, history.length - 100);
+    localStorage.setItem('alert_history', JSON.stringify(history));
+  };
+
+  function checkScheduledAlerts(){
+    const s = getSettings();
+    if(!s.enabled) return;
+    const now = new Date();
+    const hhmm = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    const today = now.toISOString().slice(0,10);
+    const firedToday = JSON.parse(localStorage.getItem(FIRED_KEY)||'{}');
+    if(firedToday._date !== today){ firedToday._date = today; firedToday.times = {}; }
+    if(firedToday.times[hhmm]) return;
+    const sched = s.schedules[hhmm];
+    if(sched && sched.enabled){
+      window.fireAlert({
+        title: sched.label,
+        message: sched.desc,
+        type: 'info',
+        duration: 8000
+      });
+      firedToday.times[hhmm] = true;
+      localStorage.setItem(FIRED_KEY, JSON.stringify(firedToday));
+    }
+  }
+
+  function checkConditionalAlerts(){
+    const s = getSettings();
+    if(!s.enabled) return;
+    const favs = JSON.parse(localStorage.getItem('favorites')||'[]');
+    if(favs.length === 0) return;
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    if(hist.length === 0) return;
+    const today = hist[hist.length-1];
+    if(!today.stocks) return;
+    const today_date = new Date().toISOString().slice(0,10);
+    const fired = JSON.parse(localStorage.getItem('cond_alert_fired_'+today_date)||'{}');
+    favs.forEach(fav => {
+      const code = typeof fav === 'string' ? fav : fav.code;
+      const stock = today.stocks.find(s => s.code === code);
+      if(!stock) return;
+      if(s.conditional.favHighScore && stock.score >= 70 && !fired['high_'+code]){
+        window.fireAlert({
+          title: '⭐ 즐겨찾기 고득점',
+          message: `${stock.name}(${code}) 점수 ${stock.score}점 진입`,
+          type: 'gold',
+          onClick: () => window.showStockInsightModal?.(code)
+        });
+        fired['high_'+code] = true;
+      }
+      if(s.conditional.favForeignSell && stock.foreignChange20 < -5 && !fired['fsell_'+code]){
+        window.fireAlert({
+          title: '⚠️ 외인 매도 강세',
+          message: `${stock.name}(${code}) 외인 ${stock.foreignChange20.toFixed(1)}%`,
+          type: 'danger',
+          onClick: () => window.showStockInsightModal?.(code)
+        });
+        fired['fsell_'+code] = true;
+      }
+    });
+    localStorage.setItem('cond_alert_fired_'+today_date, JSON.stringify(fired));
+  }
+
+  window.showAlertSettings = function(){
+    document.getElementById('alert-settings-modal')?.remove();
+    const s = getSettings();
+    const overlay = document.createElement('div');
+    overlay.id = 'alert-settings-modal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000000;display:flex;align-items:center;justify-content:center;padding:20px;';
+    const modal = document.createElement('div');
+    modal.style.cssText = 'background:white;border-radius:12px;padding:24px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;';
+    modal.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h2 style="margin:0;font-size:18px;">🔔 알림 설정</h2>
+        <button id="as-close" style="background:none;border:none;font-size:24px;cursor:pointer;color:#666;">×</button>
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="display:flex;align-items:center;gap:8px;padding:10px;background:#f1f5f9;border-radius:8px;cursor:pointer;">
+          <input type="checkbox" id="as-enabled" ${s.enabled?'checked':''} style="width:18px;height:18px;">
+          <span style="font-weight:600;">전체 알림 ON/OFF</span>
+        </label>
+      </div>
+      <div style="margin-bottom:16px;">
+        <div style="font-weight:600;margin-bottom:8px;font-size:14px;">⏰ 시간대별 알림</div>
+        ${Object.entries(s.schedules).map(([time,info])=>`
+          <label style="display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid #f1f5f9;cursor:pointer;">
+            <input type="checkbox" data-time="${time}" ${info.enabled?'checked':''} style="width:16px;height:16px;">
+            <span style="font-weight:600;color:#3b82f6;min-width:50px;">${time}</span>
+            <span style="font-size:13px;">${info.label}</span>
+          </label>
+        `).join('')}
+      </div>
+      <div style="margin-bottom:16px;">
+        <div style="font-weight:600;margin-bottom:8px;font-size:14px;">🎯 조건부 알림</div>
+        <label style="display:flex;align-items:center;gap:8px;padding:8px;cursor:pointer;">
+          <input type="checkbox" data-cond="favHighScore" ${s.conditional.favHighScore?'checked':''} style="width:16px;height:16px;">
+          <span style="font-size:13px;">⭐ 즐겨찾기 점수 70+ 진입</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;padding:8px;cursor:pointer;">
+          <input type="checkbox" data-cond="favForeignSell" ${s.conditional.favForeignSell?'checked':''} style="width:16px;height:16px;">
+          <span style="font-size:13px;">⚠️ 즐겨찾기 외인 매도 강세</span>
+        </label>
+      </div>
+      <div style="border-top:1px solid #e2e8f0;padding-top:12px;">
+        <button id="as-test" style="width:100%;padding:10px;background:#3b82f6;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600;">🧪 토스트 테스트</button>
+      </div>
+    `;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    document.getElementById('as-close').onclick = ()=>overlay.remove();
+    overlay.onclick = e => { if(e.target===overlay) overlay.remove(); };
+    document.getElementById('as-enabled').onchange = e => { s.enabled = e.target.checked; saveSettings(s); };
+    modal.querySelectorAll('[data-time]').forEach(el=>{
+      el.onchange = e => { s.schedules[e.target.dataset.time].enabled = e.target.checked; saveSettings(s); };
+    });
+    modal.querySelectorAll('[data-cond]').forEach(el=>{
+      el.onchange = e => { s.conditional[e.target.dataset.cond] = e.target.checked; saveSettings(s); };
+    });
+    document.getElementById('as-test').onclick = ()=>{
+      window.fireAlert({ title:'🧪 테스트 알림', message:'토스트가 정상 작동합니다!', type:'success' });
+    };
+  };
+
+  setInterval(checkScheduledAlerts, 60000);
+  setInterval(checkConditionalAlerts, 300000);
+  setTimeout(checkConditionalAlerts, 5000);
+
+  window._patch36Installed = true;
+  console.log('✅ Patch #36 설치 완료 - 시간대별 토스트 알림');
+})();
+</script>
 </body>
 </html>
