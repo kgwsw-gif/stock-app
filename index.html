@@ -17278,5 +17278,196 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
 })();
 </script>
 <script defer src="https://static.cloudflareinsights.com/beacon.min.js/v833ccba57c9e4d2798f2e76cebdd09a11778172276447" integrity="sha512-57MDmcccJXYtNnH+ZiBwzC4jb2rvgVCEokYN+L/nLlmO8rfYT/gIpW2A569iJ/3b+0UEasghjuZH/ma3wIs/EQ==" data-cf-beacon='{"version":"2024.11.0","token":"4edd5f8ec12a48cfa682ab8261b80a79","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+  <script>
+/* === Patch #25 Part C - 오늘의 인사이트 자동 생성 === */
+(function(){
+  if(window._patch25CInstalled) return;
+
+  // ===== 1. 인사이트 생성 엔진 =====
+  function generateInsights(){
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    if(hist.length === 0) return { error: '예측 기록이 없습니다. 먼저 스크리닝을 실행하세요.' };
+
+    const today = hist[hist.length - 1];
+    const yesterday = hist.length >= 2 ? hist[hist.length - 2] : null;
+    const insights = [];
+
+    // --- (1) 섹터별 평균 점수 ---
+    const sectorMap = {};
+    today.stocks.forEach(s => {
+      const sec = s.sector || '기타';
+      if(!sectorMap[sec]) sectorMap[sec] = { count:0, sum:0, stocks:[] };
+      sectorMap[sec].count++;
+      sectorMap[sec].sum += s.score;
+      sectorMap[sec].stocks.push(s);
+    });
+    const sectorRanking = Object.entries(sectorMap)
+      .map(([sec, d]) => ({ sector:sec, avg:(d.sum/d.count).toFixed(1), count:d.count, top:d.stocks.sort((a,b)=>b.score-a.score)[0] }))
+      .filter(d => d.count >= 2)
+      .sort((a,b) => b.avg - a.avg);
+
+    if(sectorRanking.length >= 2){
+      const top = sectorRanking[0], bot = sectorRanking[sectorRanking.length-1];
+      insights.push({
+        icon:'🔥', title:'섹터 흐름',
+        text:`<b style="color:#10b981">${top.sector}</b> 평균 ${top.avg}점 강세 (${top.count}종목, 대장 ${top.top.name} ${top.top.score}점) ↔ <b style="color:#ef4444">${bot.sector}</b> 평균 ${bot.avg}점 약세`,
+        color:'#3b82f6'
+      });
+    }
+
+    // --- (2) 신규 진입 (어제 대비 점수 급등) ---
+    if(yesterday){
+      const yMap = {}; yesterday.stocks.forEach(s => yMap[s.code] = s);
+      const newEntries = today.stocks
+        .filter(s => s.score >= 70 && (!yMap[s.code] || yMap[s.code].score < 50))
+        .sort((a,b) => b.score - a.score)
+        .slice(0, 5);
+      if(newEntries.length > 0){
+        insights.push({
+          icon:'🆕', title:'신규 매집 진입',
+          text:`<b style="color:#10b981">${newEntries.length}종목</b> 신규 강세: ${newEntries.map(s => `${s.name}(${s.score})`).join(', ')}`,
+          color:'#22c55e'
+        });
+      }
+
+      // --- (3) 이탈 (어제 강세 → 오늘 약세) ---
+      const tMap = {}; today.stocks.forEach(s => tMap[s.code] = s);
+      const dropouts = yesterday.stocks
+        .filter(s => s.score >= 70 && tMap[s.code] && tMap[s.code].score < 50)
+        .map(s => ({ name:s.name, before:s.score, after:tMap[s.code].score, diff:tMap[s.code].score - s.score }))
+        .sort((a,b) => a.diff - b.diff)
+        .slice(0, 5);
+      if(dropouts.length > 0){
+        insights.push({
+          icon:'❌', title:'매집 이탈',
+          text:`${dropouts.length}종목 점수 급락: ${dropouts.map(d => `${d.name}(${d.before}→${d.after})`).join(', ')}`,
+          color:'#ef4444'
+        });
+      }
+    }
+
+    // --- (4) 외인 매수 강세 ---
+    const foreignBuys = today.stocks
+      .filter(s => s.foreignChange20 != null && s.foreignChange20 >= 0.5)
+      .sort((a,b) => b.foreignChange20 - a.foreignChange20)
+      .slice(0, 5);
+    if(foreignBuys.length > 0){
+      insights.push({
+        icon:'💰', title:'외인 매수 강세',
+        text:`${foreignBuys.length}종목: ${foreignBuys.map(s => `${s.name}(+${s.foreignChange20.toFixed(2)}%p)`).join(', ')}`,
+        color:'#f59e0b'
+      });
+    }
+
+    // --- (5) 주의 신호: 급등 + 외인 매도 ---
+    const warnings = today.stocks
+      .filter(s => s.priceChange20 >= 20 && s.foreignChange20 != null && s.foreignChange20 <= -0.5)
+      .sort((a,b) => a.foreignChange20 - b.foreignChange20)
+      .slice(0, 3);
+    if(warnings.length > 0){
+      insights.push({
+        icon:'⚠️', title:'급등 + 외인 매도 주의',
+        text:warnings.map(s => `${s.name}(+${s.priceChange20.toFixed(1)}% / 외인 ${s.foreignChange20.toFixed(2)}%p)`).join(', '),
+        color:'#dc2626'
+      });
+    }
+
+    // --- (6) TOP 매집 종목 ---
+    const topPicks = today.stocks
+      .filter(s => s.score >= 70)
+      .sort((a,b) => b.score - a.score)
+      .slice(0, 5);
+    if(topPicks.length > 0){
+      insights.push({
+        icon:'⭐', title:'TOP 매집 의심',
+        text:topPicks.map(s => `${s.name} ${s.score}점 ${s.obvLabel||''}`).join(' · '),
+        color:'#8b5cf6'
+      });
+    }
+
+    return { 
+      date: today.date, 
+      stockCount: today.stocks.length, 
+      insights,
+      compareDate: yesterday?.date
+    };
+  }
+
+  // ===== 2. 인사이트 모달 표시 =====
+  function showInsightsModal(){
+    const result = generateInsights();
+    
+    const old = document.getElementById('insight-modal');
+    if(old) old.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'insight-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px';
+    
+    let content = '';
+    if(result.error){
+      content = `<div style="text-align:center;padding:40px 20px;color:#64748b">${result.error}</div>`;
+    } else {
+      content = `
+        <div style="margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid #e2e8f0">
+          <div style="font-size:11px;color:#64748b">기준: ${result.date}${result.compareDate ? ` (vs ${result.compareDate})`:''} · 분석 ${result.stockCount}종목</div>
+        </div>
+        ${result.insights.map(ins => `
+          <div style="background:#f8fafc;border-left:3px solid ${ins.color};border-radius:8px;padding:12px;margin-bottom:10px">
+            <div style="font-size:13px;font-weight:700;color:${ins.color};margin-bottom:6px">${ins.icon} ${ins.title}</div>
+            <div style="font-size:12px;color:#334155;line-height:1.5">${ins.text}</div>
+          </div>
+        `).join('')}
+        ${result.insights.length === 0 ? '<div style="text-align:center;padding:30px;color:#64748b">표시할 인사이트가 없습니다.</div>' : ''}
+      `;
+    }
+
+    modal.innerHTML = `
+      <div style="background:white;border-radius:16px;padding:20px;max-width:480px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 25px 50px rgba(0,0,0,0.25)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <div style="font-size:16px;font-weight:800;color:#1e293b">💡 오늘의 인사이트</div>
+          <button id="ins-close" style="background:#f1f5f9;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px">✕ 닫기</button>
+        </div>
+        ${content}
+        <button id="ins-refresh" style="width:100%;margin-top:12px;padding:10px;background:#3b82f6;color:white;border:none;border-radius:10px;font-weight:600;cursor:pointer">🔄 새로고침</button>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+    document.getElementById('ins-close').onclick = () => modal.remove();
+    document.getElementById('ins-refresh').onclick = () => { modal.remove(); showInsightsModal(); };
+    modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  }
+
+  // ===== 3. 매집 박스에 💡 버튼 추가 =====
+  function attachInsightButton(){
+    const box = document.getElementById('maejip-box');
+    if(!box || box.querySelector('[data-insight-btn]')) return;
+    
+    const header = box.querySelector('div');
+    if(!header) return;
+
+    const btn = document.createElement('button');
+    btn.setAttribute('data-insight-btn','1');
+    btn.textContent = '💡 인사이트';
+    btn.style.cssText = 'background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:white;border:none;border-radius:6px;padding:3px 8px;font-size:10px;font-weight:600;cursor:pointer;margin-left:6px';
+    btn.onclick = (e) => { e.stopPropagation(); showInsightsModal(); };
+    header.appendChild(btn);
+  }
+
+  // ===== 4. 전역 API =====
+  window.showInsights = showInsightsModal;
+  window.generateInsights = generateInsights;
+  window._patch25CInstalled = true;
+  window._patch25CVersion = 'v1';
+
+  // ===== 5. 초기화 =====
+  setTimeout(attachInsightButton, 2000);
+  setInterval(attachInsightButton, 5000); // 박스 재렌더 대응
+
+  console.log('✅ Patch #25 Part C 설치 완료 - 오늘의 인사이트');
+  console.log('💡 사용법: window.showInsights() 또는 매집 박스의 💡 버튼');
+})();
+</script>
 </body>
 </html>
