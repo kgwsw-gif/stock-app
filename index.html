@@ -18881,5 +18881,179 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('  단축키: Ctrl+K (또는 Cmd+K)');
 })();
 </script>
+  <script>
+/* === Patch #34 v2 - 즐겨찾기 빠른 액세스 (⭐ Ctrl+B) === */
+(function(){
+  if(window._patch34Installed) return;
+  const STORAGE_KEY = 'favorites';
+  const MAX_FAVORITES = 20;
+
+  function getFavorites(){
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
+    catch(e){ return []; }
+  }
+  function saveFavorites(list){ localStorage.setItem(STORAGE_KEY, JSON.stringify(list.slice(0, MAX_FAVORITES))); }
+  function isFavorite(code){ return getFavorites().some(f => f.code === code); }
+  function toggleFavorite(code, name, sector){
+    const list = getFavorites();
+    const idx = list.findIndex(f => f.code === code);
+    if(idx >= 0){ list.splice(idx, 1); saveFavorites(list); return false; }
+    if(list.length >= MAX_FAVORITES){ alert(`즐겨찾기는 최대 ${MAX_FAVORITES}개까지 등록 가능합니다.`); return null; }
+    list.unshift({ code, name, sector, addedAt: Date.now() });
+    saveFavorites(list); return true;
+  }
+  window.getFavorites = getFavorites;
+  window.toggleFavorite = toggleFavorite;
+  window.isFavorite = isFavorite;
+
+  function enrichFavorite(fav){
+    const today = JSON.parse(localStorage.getItem('prediction_history')||'[]').slice(-1)[0];
+    const t = today?.stocks.find(s => s.code === fav.code);
+    return { ...fav, score: t?.score ?? null, grade: t?.grade ?? null, obvLabel: t?.obvLabel ?? null, foreignChange20: t?.foreignChange20 ?? null, hasToday: !!t };
+  }
+
+  function showFavoritesPanel(){
+    const existing = document.getElementById('favorites-panel');
+    if(existing){ existing.remove(); return; }
+    const list = getFavorites().map(enrichFavorite);
+    const modal = document.createElement('div');
+    modal.id = 'favorites-panel';
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100000;display:flex;justify-content:center;align-items:flex-start;padding-top:60px;';
+    modal.onclick = e => { if(e.target === modal) modal.remove(); };
+    const box = document.createElement('div');
+    box.style.cssText = 'background:white;border-radius:12px;width:90%;max-width:480px;max-height:75vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden;';
+    box.innerHTML = `<div style="padding:14px 16px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;"><div style="display:flex;align-items:center;gap:8px;"><span style="font-size:22px;">⭐</span><div><div style="font-weight:700;font-size:15px;color:#1e293b;">즐겨찾기 (${list.length}/${MAX_FAVORITES})</div><div style="font-size:11px;color:#94a3b8;">자주 보는 종목 빠른 액세스</div></div></div><button id="fav-close" style="background:none;border:none;font-size:22px;cursor:pointer;color:#94a3b8;">×</button></div><div id="fav-list" style="flex:1;overflow-y:auto;padding:6px 0;"></div>`;
+    modal.appendChild(box);
+    document.body.appendChild(modal);
+    document.getElementById('fav-close').onclick = () => modal.remove();
+    const listEl = document.getElementById('fav-list');
+    if(list.length === 0){ listEl.innerHTML = `<div style="padding:40px 20px;text-align:center;color:#94a3b8;font-size:13px;line-height:1.6;">⭐ 아직 즐겨찾기한 종목이 없습니다.<br><span style="font-size:11px;color:#cbd5e1;">종목 인사이트 모달에서 ⭐를 클릭하여 추가하세요.</span></div>`; return; }
+    list.sort((a,b) => { if(a.hasToday && !b.hasToday) return -1; if(!a.hasToday && b.hasToday) return 1; if(a.score != null && b.score != null) return b.score - a.score; return b.addedAt - a.addedAt; });
+    listEl.innerHTML = list.map(f => {
+      const scoreColor = f.score >= 70 ? '#22c55e' : f.score >= 50 ? '#f59e0b' : f.score != null ? '#94a3b8' : '#cbd5e1';
+      const scoreText = f.score != null ? `${f.score}점` : '-';
+      const foreign = f.foreignChange20 != null ? `<span style="color:${f.foreignChange20>=0?'#15803d':'#dc2626'};">외인 ${f.foreignChange20>=0?'+':''}${f.foreignChange20.toFixed(2)}%p</span>` : '';
+      const todayBadge = f.hasToday ? '<span style="background:#dcfce7;color:#15803d;font-size:10px;padding:2px 5px;border-radius:4px;font-weight:600;">오늘분석</span>' : '<span style="background:#f1f5f9;color:#94a3b8;font-size:10px;padding:2px 5px;border-radius:4px;">미분석</span>';
+      return `<div data-code="${f.code}" class="fav-item" style="padding:10px 16px;cursor:pointer;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:10px;"><div style="flex:1;min-width:0;"><div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;"><b style="font-size:14px;color:#1e293b;">${f.name}</b><span style="font-size:11px;color:#94a3b8;">${f.code}</span>${todayBadge}</div><div style="font-size:11px;color:#64748b;display:flex;gap:8px;flex-wrap:wrap;">${f.sector ? `<span>📁 ${f.sector}</span>` : ''}${f.grade ? `<span>${f.grade}</span>` : ''}${f.obvLabel ? `<span>${f.obvLabel}</span>` : ''}${foreign}</div></div><div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:4px;"><div style="font-size:16px;font-weight:700;color:${scoreColor};">${scoreText}</div><button data-remove="${f.code}" title="즐겨찾기 해제" style="background:none;border:none;color:#fbbf24;font-size:18px;cursor:pointer;padding:0;line-height:1;">⭐</button></div></div>`;
+    }).join('');
+    listEl.querySelectorAll('.fav-item').forEach(el => {
+      el.onmouseover = () => el.style.background = '#f8fafc';
+      el.onmouseout = () => el.style.background = '';
+      el.onclick = e => {
+        if(e.target.dataset.remove){
+          const code = e.target.dataset.remove;
+          const name = list.find(f => f.code === code)?.name || '';
+          if(confirm(`"${name}" 즐겨찾기에서 제거할까요?`)){ const newList = getFavorites().filter(f => f.code !== code); saveFavorites(newList); modal.remove(); showFavoritesPanel(); } return;
+        }
+        const code = el.dataset.code; modal.remove();
+        if(typeof window.showStockInsightModal === 'function') window.showStockInsightModal(code);
+      };
+    });
+  }
+  window.showFavoritesPanel = showFavoritesPanel;
+
+  // 인사이트 모달 ⭐ 토글
+  const _origInsight = window.showStockInsightModal;
+  if(typeof _origInsight === 'function'){
+    window.showStockInsightModal = function(code){
+      _origInsight(code);
+      setTimeout(() => {
+        const modal = document.getElementById('stock-insight-modal');
+        if(!modal || modal.querySelector('[data-fav-toggle]')) return;
+        const header = modal.querySelector('div'); if(!header) return;
+        const today = JSON.parse(localStorage.getItem('prediction_history')||'[]').slice(-1)[0];
+        const stock = today?.stocks.find(s => s.code === code);
+        const nameMap = window._stockNameMap || {};
+        const name = stock?.name || nameMap[code] || code;
+        const sector = stock?.sector || '';
+        const btn = document.createElement('button');
+        btn.setAttribute('data-fav-toggle', '1');
+        const updateBtn = () => { const isFav = isFavorite(code); btn.innerHTML = isFav ? '⭐' : '☆'; btn.title = isFav ? '즐겨찾기 해제' : '즐겨찾기 추가'; btn.style.color = isFav ? '#fbbf24' : '#94a3b8'; };
+        btn.style.cssText = 'background:none;border:none;font-size:24px;cursor:pointer;padding:0 8px;transition:transform 0.15s;';
+        btn.onmouseover = () => btn.style.transform = 'scale(1.2)';
+        btn.onmouseout = () => btn.style.transform = 'scale(1)';
+        btn.onclick = e => { e.stopPropagation(); toggleFavorite(code, name, sector); updateBtn(); };
+        updateBtn();
+        const closeBtn = [...header.querySelectorAll('button')].find(b => b.textContent === '×' || b.textContent === 'X');
+        if(closeBtn) closeBtn.parentElement.insertBefore(btn, closeBtn);
+        else header.appendChild(btn);
+      }, 80);
+    };
+  }
+
+  // 검색 모달 즐겨찾기 미리보기
+  const _origSearch = window.showSearchModal;
+  if(typeof _origSearch === 'function'){
+    window.showSearchModal = function(){
+      _origSearch();
+      setTimeout(() => {
+        const resultBox = document.getElementById('stock-search-results');
+        if(!resultBox) return;
+        const list = getFavorites().map(enrichFavorite).slice(0, 6);
+        if(list.length === 0) return;
+        resultBox.innerHTML = `<div style="padding:8px 16px;font-size:11px;color:#94a3b8;font-weight:600;background:#f8fafc;border-bottom:1px solid #e2e8f0;">⭐ 즐겨찾기 (${getFavorites().length}/${MAX_FAVORITES})</div>` + list.map(f => {
+          const sc = f.score != null ? `${f.score}점` : '-';
+          const scColor = f.score >= 70 ? '#22c55e' : f.score >= 50 ? '#f59e0b' : '#94a3b8';
+          return `<div data-code="${f.code}" class="fav-quick-item" style="padding:8px 16px;cursor:pointer;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;gap:8px;"><span style="color:#fbbf24;">⭐</span><div style="flex:1;"><b style="font-size:13px;">${f.name}</b><span style="font-size:11px;color:#94a3b8;margin-left:4px;">${f.code}</span></div><span style="font-weight:700;color:${scColor};font-size:13px;">${sc}</span></div>`;
+        }).join('');
+        resultBox.querySelectorAll('.fav-quick-item').forEach(el => {
+          el.onmouseover = () => el.style.background = '#fffbeb';
+          el.onmouseout = () => el.style.background = '';
+          el.onclick = () => { const code = el.dataset.code; document.getElementById('stock-search-modal')?.remove(); window.showStockInsightModal(code); };
+        });
+      }, 100);
+    };
+  }
+
+  // 인사이트에 즐겨찾기 현황 추가
+  const _origGen = window.generateInsights;
+  if(typeof _origGen === 'function'){
+    window.generateInsights = function(){
+      const r = _origGen(); if(r.error) return r;
+      const favs = getFavorites().map(enrichFavorite).filter(f => f.hasToday);
+      if(favs.length > 0){
+        const avg = +(favs.reduce((s,f) => s + (f.score||0), 0) / favs.length).toFixed(1);
+        const top = [...favs].sort((a,b) => b.score - a.score)[0];
+        const topText = top ? `<b>${top.name}</b>(${top.score}점)` : '';
+        r.insights.push({ icon: '⭐', title: `즐겨찾기 현황 (${favs.length}/${getFavorites().length})`, text: `오늘 분석된 즐겨찾기 종목 평균 ${avg}점. 최고: ${topText}`, color: '#fbbf24' });
+      }
+      return r;
+    };
+  }
+
+  // ⭐ 플로팅 버튼 (검색 버튼 옆에 붙이기)
+  function attachFavoriteButton(){
+    if(document.getElementById('favorite-float-btn')) return;
+    const searchBtn = document.getElementById('search-float-btn');
+    const menuBtn = document.getElementById('floating-menu-btn');
+    if(!searchBtn || !menuBtn){ setTimeout(attachFavoriteButton, 300); return; }
+    const sRect = searchBtn.getBoundingClientRect();
+    const sCs = getComputedStyle(searchBtn);
+    const bottom = sCs.bottom !== 'auto' ? sCs.bottom : (window.innerHeight - sRect.bottom) + 'px';
+    const size = Math.round(sRect.width) || 64;
+    const searchRight = parseInt(sCs.right) || 94;
+    const gap = 10;
+    const btn = document.createElement('button');
+    btn.id = 'favorite-float-btn';
+    btn.innerHTML = '⭐';
+    btn.title = '즐겨찾기 (Ctrl+B)';
+    btn.style.cssText = `position:fixed;bottom:${bottom};right:${searchRight + size + gap}px;width:${size}px;height:${size}px;border-radius:50%;background:linear-gradient(135deg,#fbbf24,#f59e0b);color:white;border:3px solid white;font-size:24px;cursor:pointer;box-shadow:0 6px 20px rgba(251,191,36,0.5);z-index:9998;display:flex;align-items:center;justify-content:center;transition:transform 0.15s;`;
+    btn.onmouseover = () => btn.style.transform = 'scale(1.1)';
+    btn.onmouseout = () => btn.style.transform = 'scale(1)';
+    btn.onclick = () => showFavoritesPanel();
+    document.body.appendChild(btn);
+  }
+  setTimeout(attachFavoriteButton, 2000);
+
+  // 단축키 Ctrl+B
+  document.addEventListener('keydown', e => {
+    if((e.ctrlKey || e.metaKey) && e.key === 'b'){ e.preventDefault(); showFavoritesPanel(); }
+  });
+
+  window._patch34Installed = true;
+  window._patch34Version = 'v2';
+  console.log('✅ Patch #34 v2 설치 완료 - 즐겨찾기 (⭐ Ctrl+B)');
+})();
+</script>
 </body>
 </html>
