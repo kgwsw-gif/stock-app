@@ -18342,5 +18342,44 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('💡 수동 체크: window._patch30CheckNow()');
 })();
 </script>
+  <script>
+/* === Patch #31 - 자동 캐시 정리 (7일 이상 sc5_kr_*) === */
+(function(){
+  if(window._patch31Installed) return;
+  
+  function cleanOldCache(maxAgeDays){
+    maxAgeDays = maxAgeDays || 7;
+    const cutoff = new Date(Date.now() - maxAgeDays*24*3600000)
+      .toISOString().slice(0,10).replace(/-/g,'');
+    
+    let deleted = 0, savedBytes = 0;
+    Object.keys(localStorage).forEach(k => {
+      const m = k.match(/^sc5_kr_\w+_day_(\d{8})$/);
+      if(m && m[1] < cutoff){
+        savedBytes += (localStorage.getItem(k)||'').length;
+        localStorage.removeItem(k);
+        deleted++;
+      }
+    });
+    
+    if(deleted > 0){
+      console.log(`🧹 자동 캐시 정리: ${deleted}개 삭제 (${(savedBytes/1024).toFixed(1)} KB 절약)`);
+    }
+    return { deleted, savedBytes };
+  }
+  
+  // 페이지 로드 10초 후 자동 실행
+  setTimeout(() => cleanOldCache(7), 10000);
+  
+  // 매시간 재실행
+  setInterval(() => cleanOldCache(7), 3600000);
+  
+  window.cleanOldCache = cleanOldCache;
+  window._patch31Installed = true;
+  window._patch31Version = 'v1';
+  
+  console.log('✅ Patch #31 설치 완료 - 자동 캐시 정리 (7일)');
+})();
+</script>
 </body>
 </html>
