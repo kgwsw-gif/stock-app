@@ -18836,20 +18836,33 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   `;
   document.head.appendChild(p33css);
   
-  // 5. 플로팅 검색 버튼 (우하단 고정)
+    // 5. 플로팅 검색 버튼 (메뉴 버튼 왼쪽에 배치)
   function attachFloatingSearchButton(){
     if(document.getElementById('search-float-btn')) return;
+    const menuBtn = document.getElementById('floating-menu-btn');
+    // 메뉴 버튼이 아직 없으면 200ms 후 재시도
+    if(!menuBtn){
+      setTimeout(attachFloatingSearchButton, 200);
+      return;
+    }
+    const menuRect = menuBtn.getBoundingClientRect();
+    const menuCs = getComputedStyle(menuBtn);
+    const menuBottom = menuCs.bottom !== 'auto' ? menuCs.bottom : 
+      (window.innerHeight - menuRect.bottom) + 'px';
+    const size = Math.round(menuRect.width) || 60;
+    
     const btn = document.createElement('button');
     btn.id = 'search-float-btn';
     btn.innerHTML = '🔍';
     btn.title = '종목 검색 (Ctrl+K)';
-    btn.style.cssText = 'position:fixed;bottom:20px;right:20px;width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:white;border:3px solid white;font-size:26px;cursor:pointer;box-shadow:0 6px 20px rgba(59,130,246,0.6);z-index:999999;display:flex;align-items:center;justify-content:center;transition:transform 0.15s;';
+    btn.style.cssText = `position:fixed;bottom:${menuBottom};right:${size + 30}px;width:${size}px;height:${size}px;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:white;border:3px solid white;font-size:24px;cursor:pointer;box-shadow:0 6px 20px rgba(59,130,246,0.6);z-index:9998;display:flex;align-items:center;justify-content:center;transition:transform 0.15s;`;
     btn.onmouseover = () => { btn.style.transform='scale(1.1)'; };
     btn.onmouseout = () => { btn.style.transform='scale(1)'; };
     btn.onclick = () => showSearchModal();
     document.body.appendChild(btn);
   }
   setTimeout(attachFloatingSearchButton, 1500);
+
 
   // 5. 단축키 Ctrl+K / Cmd+K
   document.addEventListener('keydown', e => {
