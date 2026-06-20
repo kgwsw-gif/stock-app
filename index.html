@@ -19866,5 +19866,200 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('✅ Patch #37 설치 완료 - 주간 누적 리포트 (Ctrl+Shift+W)');
 })();
 </script>
+  <script>
+/* ===== Patch #38 - calcOBV2 정밀화 (다이버전스 라벨 + 점수 재조정) ===== */
+(function(){
+  if(window._patch38Installed) return;
+  if(window.calcOBV2) window._calcOBV2_original = window.calcOBV2;
+  
+  window.calcOBV2 = function(closes, volumes){
+    if(!closes || closes.length < 25) return null;
+    const obv = [0];
+    for(let i=1;i<closes.length;i++){
+      if(closes[i]>closes[i-1]) obv.push(obv[i-1]+volumes[i]);
+      else if(closes[i]<closes[i-1]) obv.push(obv[i-1]-volumes[i]);
+      else obv.push(obv[i-1]);
+    }
+    const priceNow = closes[closes.length-1];
+    const price20 = closes[closes.length-20];
+    const obvNow = obv[obv.length-1];
+    const obv20 = obv[obv.length-20];
+    const priceChange = (priceNow - price20) / price20 * 100;
+    const obvBase = Math.abs(obv20) > 1 ? Math.abs(obv20) : Math.abs(obvNow);
+    const obvChange = obvBase > 0 ? (obvNow - obv20) / obvBase * 100 : 0;
+    const divergenceRatio = Math.abs(priceChange) < 0.5 ? (obvChange > 0 ? 999 : -999) : obvChange / priceChange;
+    
+    let trend, score, label, signal;
+    if(priceChange > 1.5 && obvChange > priceChange * 1.5){
+      trend='acc_uptrend'; score=40; label='🚀 가속 매집'; signal='strong_buy';
+    } else if(priceChange < -2 && obvChange > 5){
+      trend='div_bullish'; score=30; label='💎 강세 다이버전스'; signal='buy';
+    } else if(Math.abs(priceChange) < 3 && obvChange > 10){
+      trend='accumulation'; score=30; label='🔥 매집 (횡보+OBV급등)'; signal='buy';
+    } else if(priceChange > 2 && obvChange < -2){
+      trend='div_bearish'; score=25; label='📉 약세 다이버전스'; signal='sell';
+    } else if(priceChange > 2 && obvChange < priceChange * 0.5){
+      trend='distribution'; score=38; label='⚠️ 분산'; signal='caution';
+    } else if(priceChange > 0 && obvChange > 0){
+      trend='confirmed_up'; score=18; label='🟢 동반 상승'; signal='hold';
+    } else if(priceChange < -5 && obvChange < -5){
+      trend='strong_down'; score=2; label='🔴 강한 하락'; signal='avoid';
+    } else if(priceChange < -1 && obvChange < 0){
+      trend='confirmed_down'; score=5; label='🔴 동반 하락'; signal='avoid';
+    } else if(priceChange < 0){
+      trend='weak_down'; score=8; label='🟡 약한 하락'; signal='caution';
+    } else {
+      trend='neutral'; score=10; label='➖ 중립'; signal='hold';
+    }
+    
+    return {trend, score, label, signal, priceChange:+priceChange.toFixed(2), obvChange:+obvChange.toFixed(2), divergenceRatio:+divergenceRatio.toFixed(2)};
+  };
+  
+  window.revertPatch38 = function(){
+    if(window._calcOBV2_original){
+      window.calcOBV2 = window._calcOBV2_original;
+      console.log('↩️ Patch #38 롤백 완료');
+    }
+  };
+  
+  window._patch38Installed = true;
+  console.log('✅ Patch #38 설치 완료 - calcOBV2 정밀화');
+})();
+</script>
+
+<script>
+/* ===== Patch #39 - 듀얼 적중률 표시 (Ctrl+Shift+H) ===== */
+(function(){
+  if(window._patch39Installed) return;
+
+  window.calcDualHitRates = function(stocksOrHistory){
+    let stocks;
+    if(Array.isArray(stocksOrHistory) && stocksOrHistory[0]?.stocks){
+      stocks = stocksOrHistory.flatMap(h => h.stocks || []);
+    } else if(Array.isArray(stocksOrHistory)){
+      stocks = stocksOrHistory;
+    } else {
+      const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+      stocks = hist.flatMap(h => h.stocks || []);
+    }
+    const validated = stocks.filter(s => s.hit === true || s.hit === false);
+    const withReturn = stocks.filter(s => s.actualReturn != null && !isNaN(s.actualReturn));
+    const directionHits = validated.filter(s => s.hit === true).length;
+    const profitHits = withReturn.filter(s => s.actualReturn > 0).length;
+    const avgReturn = withReturn.length ? withReturn.reduce((a,s)=>a+s.actualReturn, 0) / withReturn.length : 0;
+    return {
+      total: stocks.length,
+      validated: validated.length,
+      withReturn: withReturn.length,
+      directionHits,
+      directionRate: validated.length ? (directionHits/validated.length*100) : 0,
+      profitHits,
+      profitRate: withReturn.length ? (profitHits/withReturn.length*100) : 0,
+      avgReturn
+    };
+  };
+
+  window.renderDualHitRateBox = function(targetId){
+    const stats = window.calcDualHitRates();
+    const dirColor = stats.directionRate >= 60 ? '#10b981' : stats.directionRate >= 40 ? '#f59e0b' : '#ef4444';
+    const profColor = stats.profitRate >= 60 ? '#10b981' : stats.profitRate >= 40 ? '#f59e0b' : '#ef4444';
+    const retColor = stats.avgReturn >= 0 ? '#10b981' : '#ef4444';
+    const html = `
+      <div style="background:#fff;border-radius:12px;padding:16px;box-shadow:0 2px 8px rgba(0,0,0,0.08);margin:12px 0;">
+        <div style="font-weight:700;font-size:14px;margin-bottom:12px;color:#1e293b;">📊 누적 적중률 (${stats.validated}건 검증)</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+          <div style="text-align:center;padding:10px;background:#f8fafc;border-radius:8px;border-left:3px solid ${dirColor};">
+            <div style="font-size:11px;color:#64748b;margin-bottom:4px;">🎯 방향 예측</div>
+            <div style="font-size:20px;font-weight:700;color:${dirColor};">${stats.directionRate.toFixed(1)}%</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:2px;">${stats.directionHits}/${stats.validated}</div>
+          </div>
+          <div style="text-align:center;padding:10px;background:#f8fafc;border-radius:8px;border-left:3px solid ${profColor};">
+            <div style="font-size:11px;color:#64748b;margin-bottom:4px;">💰 수익 종목</div>
+            <div style="font-size:20px;font-weight:700;color:${profColor};">${stats.profitRate.toFixed(1)}%</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:2px;">${stats.profitHits}/${stats.withReturn}</div>
+          </div>
+          <div style="text-align:center;padding:10px;background:#f8fafc;border-radius:8px;border-left:3px solid ${retColor};">
+            <div style="font-size:11px;color:#64748b;margin-bottom:4px;">📈 평균 수익</div>
+            <div style="font-size:20px;font-weight:700;color:${retColor};">${stats.avgReturn >= 0 ? '+' : ''}${stats.avgReturn.toFixed(2)}%</div>
+            <div style="font-size:10px;color:#94a3b8;margin-top:2px;">실현 기준</div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:#64748b;margin-top:10px;padding-top:10px;border-top:1px solid #e2e8f0;line-height:1.5;">
+          <b>방향 예측</b>: 등급(🟢/➖/🔴)이 실제 주가 방향과 일치한 비율<br>
+          <b>수익 종목</b>: 실제로 +수익을 낸 종목의 비율
+        </div>
+      </div>
+    `;
+    if(targetId){
+      const el = document.getElementById(targetId);
+      if(el) el.innerHTML = html;
+    }
+    return html;
+  };
+
+  window.showDualHitRate = function(){
+    document.getElementById('dual-hitrate-modal')?.remove();
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    const dailyRows = hist.map(h => {
+      const s = window.calcDualHitRates(h.stocks || []);
+      return { date: h.date || h.recordDate, ...s };
+    }).filter(d => d.validated > 0);
+    const overlay = document.createElement('div');
+    overlay.id = 'dual-hitrate-modal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000000;display:flex;align-items:center;justify-content:center;padding:20px;';
+    const modal = document.createElement('div');
+    modal.style.cssText = 'background:white;border-radius:12px;padding:20px;max-width:560px;width:100%;max-height:90vh;overflow-y:auto;';
+    const dailyTable = dailyRows.map(d => `
+      <tr>
+        <td style="padding:6px 8px;font-size:12px;">${d.date}</td>
+        <td style="padding:6px 8px;font-size:12px;text-align:center;color:${d.directionRate>=60?'#10b981':d.directionRate>=40?'#f59e0b':'#ef4444'};">${d.directionRate.toFixed(1)}%</td>
+        <td style="padding:6px 8px;font-size:12px;text-align:center;color:${d.profitRate>=60?'#10b981':d.profitRate>=40?'#f59e0b':'#ef4444'};">${d.profitRate.toFixed(1)}%</td>
+        <td style="padding:6px 8px;font-size:12px;text-align:center;color:${d.avgReturn>=0?'#10b981':'#ef4444'};">${d.avgReturn>=0?'+':''}${d.avgReturn.toFixed(2)}%</td>
+      </tr>
+    `).join('');
+    modal.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h2 style="margin:0;font-size:17px;">📊 적중률 상세 분석</h2>
+        <button id="dhr-close" style="background:none;border:none;font-size:24px;cursor:pointer;color:#666;">×</button>
+      </div>
+      ${window.renderDualHitRateBox()}
+      <div style="margin-top:16px;">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px;">📅 일별 추이</div>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead>
+            <tr style="background:#f1f5f9;">
+              <th style="padding:6px 8px;font-size:11px;text-align:left;">날짜</th>
+              <th style="padding:6px 8px;font-size:11px;text-align:center;">🎯 방향</th>
+              <th style="padding:6px 8px;font-size:11px;text-align:center;">💰 수익</th>
+              <th style="padding:6px 8px;font-size:11px;text-align:center;">📈 평균</th>
+            </tr>
+          </thead>
+          <tbody>${dailyTable}</tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px;padding:10px;background:#fef3c7;border-radius:8px;font-size:11px;color:#78350f;line-height:1.5;">
+        💡 <b>방향 예측 ≠ 수익</b>: 약세장에서 "🔴 약세 예측"이 맞아도 종목을 매수하면 손실. 진짜 수익을 보려면 <b>💰 수익 종목 비율</b>과 <b>📈 평균 수익</b>을 함께 보세요.
+      </div>
+    `;
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    document.getElementById('dhr-close').onclick = () => overlay.remove();
+    overlay.onclick = e => { if(e.target === overlay) overlay.remove(); };
+  };
+
+  document.addEventListener('keydown', e => {
+    if(e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'h'){
+      e.preventDefault();
+      window.showDualHitRate();
+    }
+  });
+
+  window._patch39Installed = true;
+  console.log('✅ Patch #39 설치 완료 - 듀얼 적중률 표시');
+  console.log('💡 모달 열기: window.showDualHitRate() 또는 Ctrl+Shift+H');
+})();
+</script>
 </body>
 </html>
+
+
