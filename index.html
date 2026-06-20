@@ -20059,6 +20059,164 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('💡 모달 열기: window.showDualHitRate() 또는 Ctrl+Shift+H');
 })();
 </script>
+  <script>
+/* ===== Patch #40 - OBV 라벨 인사이트 (Ctrl+Shift+L) ===== */
+(function(){
+  if(window._patch40Installed) return;
+
+  window.calcLabelStats = function(){
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    const all = hist.flatMap(h => h.stocks || []);
+    const validated = all.filter(s => s.actualReturn != null && !isNaN(s.actualReturn));
+    
+    const labels = {};
+    validated.forEach(s => {
+      const l = s.obvLabel || '(없음)';
+      if(!labels[l]) labels[l] = {count:0, returns:[], dirHits:0, hasHit:0};
+      labels[l].count++;
+      labels[l].returns.push(s.actualReturn);
+      if(s.hit === true){ labels[l].dirHits++; labels[l].hasHit++; }
+      else if(s.hit === false){ labels[l].hasHit++; }
+    });
+    
+    return Object.entries(labels).map(([label, v]) => {
+      const avgReturn = v.returns.reduce((a,b)=>a+b,0) / v.returns.length;
+      const profitCount = v.returns.filter(r=>r>0).length;
+      return {
+        label,
+        count: v.count,
+        avgReturn: +avgReturn.toFixed(2),
+        profitRate: +(profitCount/v.count*100).toFixed(1),
+        dirRate: v.hasHit ? +(v.dirHits/v.hasHit*100).toFixed(1) : 0,
+        rating: avgReturn >= 3 ? '⭐⭐⭐' : avgReturn >= 1 ? '⭐⭐' : avgReturn >= 0 ? '⭐' : avgReturn >= -1 ? '⚠️' : '🚫'
+      };
+    }).sort((a,b) => b.avgReturn - a.avgReturn);
+  };
+
+  window.getTodayStocksByLabel = function(){
+    const hist = JSON.parse(localStorage.getItem('prediction_history')||'[]');
+    const today = hist[hist.length-1];
+    if(!today?.stocks) return {};
+    
+    const stats = window.calcLabelStats();
+    const statsMap = {};
+    stats.forEach(s => statsMap[s.label] = s);
+    
+    const grouped = {};
+    today.stocks.forEach(s => {
+      const l = s.obvLabel || '(없음)';
+      if(!grouped[l]) grouped[l] = {stocks:[], stat: statsMap[l]};
+      grouped[l].stocks.push(s);
+    });
+    
+    return Object.entries(grouped)
+      .sort((a,b) => (b[1].stat?.avgReturn||0) - (a[1].stat?.avgReturn||0))
+      .reduce((acc, [k,v]) => { acc[k] = v; return acc; }, {});
+  };
+
+  window.showLabelInsight = function(){
+    document.getElementById('label-insight-modal')?.remove();
+    
+    const stats = window.calcLabelStats();
+    const grouped = window.getTodayStocksByLabel();
+    
+    const overlay = document.createElement('div');
+    overlay.id = 'label-insight-modal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1000000;display:flex;align-items:center;justify-content:center;padding:20px;';
+    
+    const modal = document.createElement('div');
+    modal.style.cssText = 'background:white;border-radius:12px;padding:20px;max-width:680px;width:100%;max-height:90vh;overflow-y:auto;';
+    
+    const labelTable = stats.map(s => {
+      const color = s.avgReturn >= 1 ? '#10b981' : s.avgReturn >= 0 ? '#f59e0b' : '#ef4444';
+      const profColor = s.profitRate >= 60 ? '#10b981' : s.profitRate >= 40 ? '#f59e0b' : '#ef4444';
+      return `
+        <tr style="border-bottom:1px solid #f1f5f9;">
+          <td style="padding:8px;font-size:13px;">${s.rating} ${s.label}</td>
+          <td style="padding:8px;font-size:12px;text-align:center;color:#64748b;">${s.count}건</td>
+          <td style="padding:8px;font-size:13px;text-align:right;color:${color};font-weight:600;">${s.avgReturn>=0?'+':''}${s.avgReturn}%</td>
+          <td style="padding:8px;font-size:13px;text-align:right;color:${profColor};font-weight:600;">${s.profitRate}%</td>
+        </tr>
+      `;
+    }).join('');
+    
+    const todayGrouped = Object.entries(grouped).map(([label, data]) => {
+      const stat = data.stat;
+      const ratingColor = stat?.avgReturn >= 1 ? '#10b981' : stat?.avgReturn >= 0 ? '#f59e0b' : '#ef4444';
+      const stocksList = data.stocks
+        .sort((a,b) => (b.score||0) - (a.score||0))
+        .slice(0, 8)
+        .map(s => `<span style="display:inline-block;background:#f1f5f9;padding:3px 8px;border-radius:6px;margin:2px;font-size:11px;">${s.name}(${s.score})</span>`)
+        .join('');
+      const moreCount = data.stocks.length - 8;
+      const more = moreCount > 0 ? `<span style="font-size:11px;color:#94a3b8;">+${moreCount}개</span>` : '';
+      return `
+        <div style="margin-bottom:10px;padding:10px;background:#fafbfc;border-radius:8px;border-left:3px solid ${ratingColor};">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <div style="font-weight:600;font-size:13px;">${stat?.rating||'?'} ${label}</div>
+            <div style="font-size:11px;color:#64748b;">
+              ${data.stocks.length}종목 · 평균 <span style="color:${ratingColor};font-weight:600;">${stat?.avgReturn>=0?'+':''}${stat?.avgReturn||'?'}%</span> · 수익 ${stat?.profitRate||0}%
+            </div>
+          </div>
+          <div>${stocksList} ${more}</div>
+        </div>
+      `;
+    }).join('');
+    
+    modal.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h2 style="margin:0;font-size:17px;">⭐ OBV 라벨 인사이트</h2>
+        <button id="li-close" style="background:none;border:none;font-size:24px;cursor:pointer;color:#666;">×</button>
+      </div>
+      
+      <div style="background:#eff6ff;border-radius:10px;padding:12px;margin-bottom:14px;font-size:12px;color:#1e3a8a;line-height:1.5;">
+        💡 <b>핵심 발견</b>: 종합 score보다 <b>OBV 라벨이 진짜 알파 신호</b>입니다.<br>
+        ⭐⭐⭐(평균 +3%↑) 라벨 종목을 우선 검토하세요.
+      </div>
+      
+      <div style="margin-bottom:18px;">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px;">📊 누적 라벨별 성과 (전체 ${stats.reduce((a,s)=>a+s.count,0)}건)</div>
+        <table style="width:100%;border-collapse:collapse;">
+          <thead>
+            <tr style="background:#f1f5f9;">
+              <th style="padding:8px;font-size:11px;text-align:left;">라벨</th>
+              <th style="padding:8px;font-size:11px;text-align:center;">표본</th>
+              <th style="padding:8px;font-size:11px;text-align:right;">평균 수익</th>
+              <th style="padding:8px;font-size:11px;text-align:right;">수익 종목</th>
+            </tr>
+          </thead>
+          <tbody>${labelTable}</tbody>
+        </table>
+      </div>
+      
+      <div>
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px;">📅 오늘 종목 (라벨별 그룹)</div>
+        ${todayGrouped}
+      </div>
+      
+      <div style="margin-top:14px;padding:10px;background:#fef3c7;border-radius:8px;font-size:11px;color:#78350f;line-height:1.5;">
+        ⚠️ <b>주의</b>: 표본이 적은 라벨(10건 미만)은 통계적 신뢰도가 낮습니다. 데이터 누적 후 재평가 필요.
+      </div>
+    `;
+    
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    document.getElementById('li-close').onclick = () => overlay.remove();
+    overlay.onclick = e => { if(e.target === overlay) overlay.remove(); };
+  };
+
+  document.addEventListener('keydown', e => {
+    if(e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'l'){
+      e.preventDefault();
+      window.showLabelInsight();
+    }
+  });
+
+  window._patch40Installed = true;
+  console.log('✅ Patch #40 설치 완료 - OBV 라벨 인사이트');
+  console.log('💡 모달 열기: window.showLabelInsight() 또는 Ctrl+Shift+L');
+})();
+</script>
 </body>
 </html>
 
