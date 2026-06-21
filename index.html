@@ -20557,6 +20557,168 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   else window.addEventListener('load', init);
 })();
 </script>
+  <script>
+/* ===== Patch #40 + #41 + #42 최종본 ===== */
+(function(){
+  if(window._patch40_42Installed) return;
+  window._patch40_42Installed = true;
+  
+  // ============ Patch #40: OBV 라벨 인사이트 ============
+  window.calcLabelStats = function(){
+    const hist = JSON.parse(localStorage.getItem('prediction_history') || '[]');
+    const labelMap = {};
+    hist.forEach(day => {
+      (day.stocks || []).forEach(s => {
+        if(!s.obvLabel || s.actualReturn == null) return;
+        if(!labelMap[s.obvLabel]) labelMap[s.obvLabel] = { label: s.obvLabel, count: 0, returns: [], profits: 0, hits: 0 };
+        const L = labelMap[s.obvLabel];
+        L.count++;
+        L.returns.push(s.actualReturn);
+        if(s.actualReturn > 0) L.profits++;
+        if(s.hit) L.hits++;
+      });
+    });
+    return Object.values(labelMap).map(L => {
+      const avgReturn = L.returns.reduce((a,b) => a+b, 0) / (L.count || 1);
+      const profitRate = (L.profits / L.count) * 100;
+      const hitRate = (L.hits / L.count) * 100;
+      let rating = '➖';
+      if(avgReturn >= 3) rating = '★★★';
+      else if(avgReturn >= 1) rating = '★★';
+      else if(avgReturn >= 0) rating = '★';
+      else if(avgReturn < -1) rating = '🚫';
+      return { ...L, avgReturn: +avgReturn.toFixed(2), profitRate: +profitRate.toFixed(1), hitRate: +hitRate.toFixed(1), rating };
+    }).sort((a,b) => b.avgReturn - a.avgReturn);
+  };
+  
+  window.showLabelInsight = function(){
+    document.getElementById('label-insight-modal')?.remove();
+    const stats = window.calcLabelStats();
+    const overlay = document.createElement('div');
+    overlay.id = 'label-insight-modal';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:white;border-radius:16px;padding:20px;width:90%;max-width:520px;max-height:85vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,0.3);';
+    const rows = stats.map(s => `<tr style="border-bottom:1px solid #e5e7eb;"><td style="padding:8px;">${s.rating} ${s.label}</td><td style="padding:8px;text-align:center;">${s.count}</td><td style="padding:8px;text-align:right;color:${s.avgReturn>=0?'#16a34a':'#dc2626'};font-weight:600;">${s.avgReturn>=0?'+':''}${s.avgReturn}%</td><td style="padding:8px;text-align:right;">${s.profitRate}%</td></tr>`).join('');
+    box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><div style="font-weight:700;font-size:16px;">📊 OBV 라벨 인사이트</div><button id="li-close" style="background:none;border:none;font-size:24px;cursor:pointer;">×</button></div><table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr style="background:#f3f4f6;"><th style="padding:8px;text-align:left;">라벨</th><th style="padding:8px;">건수</th><th style="padding:8px;text-align:right;">평균 수익</th><th style="padding:8px;text-align:right;">수익률</th></tr></thead><tbody>${rows}</tbody></table>`;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    document.getElementById('li-close').onclick = () => overlay.remove();
+    overlay.onclick = e => { if(e.target === overlay) overlay.remove(); };
+  };
+  
+  // ============ Patch #41: ⚡ 알파 버튼 ============
+  window.showAlphaBanner = function(){
+    document.getElementById('alpha-modal')?.remove();
+    if(!window.calcLabelStats){ alert('Patch #40 필요'); return; }
+    const stats = window.calcLabelStats();
+    const statsMap = {};
+    stats.forEach(s => statsMap[s.label] = s);
+    const hist = JSON.parse(localStorage.getItem('prediction_history') || '[]');
+    const today = hist[hist.length - 1];
+    if(!today?.stocks){ alert('오늘 데이터 없음'); return; }
+    const alphaStocks = today.stocks.map(s => ({...s, stat: statsMap[s.obvLabel]}))
+      .filter(s => s.stat && s.stat.avgReturn >= 1)
+      .sort((a,b) => (b.stat.avgReturn||0) - (a.stat.avgReturn||0));
+    const avoidStocks = today.stocks.map(s => ({...s, stat: statsMap[s.obvLabel]}))
+      .filter(s => s.stat && s.stat.avgReturn < -1);
+    const overlay = document.createElement('div');
+    overlay.id = 'alpha-modal';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:99999;display:flex;align-items:center;justify-content:center;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid #f59e0b;border-radius:16px;padding:20px;width:90%;max-width:440px;max-height:85vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,0.3);';
+    const top5Html = alphaStocks.slice(0,5).map(s => `<div style="background:white;padding:8px 10px;margin:4px 0;border-radius:8px;border:1px solid #f59e0b;"><div style="font-weight:700;color:#78350f;font-size:13px;">${s.stat.rating} ${s.name}</div><div style="font-size:11px;color:#94a3b8;margin-top:2px;">점수 ${s.score} · ${s.obvLabel} · 평균 ${s.stat.avgReturn>=0?'+':''}${s.stat.avgReturn}%</div></div>`).join('');
+    const avoidHtml = avoidStocks.slice(0,6).map(s => `<span style="display:inline-block;background:#fee2e2;padding:3px 8px;margin:2px;border-radius:6px;font-size:11px;color:#991b1b;">🚫 ${s.name}</span>`).join('');
+    box.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><div style="font-weight:700;color:#78350f;font-size:16px;">⚡ 오늘의 알파 신호</div><button id="am-close" style="background:none;border:none;font-size:24px;cursor:pointer;color:#78350f;">×</button></div><div style="font-size:12px;color:#92400e;margin-bottom:10px;">⭐⭐ 이상: <b>${alphaStocks.length}개</b></div><div style="margin-bottom:12px;">${top5Html || '<div style="text-align:center;padding:20px;color:#92400e;">⭐⭐ 이상 종목 없음</div>'}</div>${avoidStocks.length?`<div style="border-top:1px dashed #f59e0b;padding-top:10px;"><div style="font-size:11px;color:#991b1b;font-weight:600;margin-bottom:6px;">⚠️ 회피 권장 (${avoidStocks.length}개)</div><div>${avoidHtml}</div></div>`:''}<button id="am-full" style="width:100%;margin-top:12px;padding:10px;background:#f59e0b;color:white;border:none;border-radius:8px;font-weight:600;cursor:pointer;">📊 전체 라벨 인사이트</button>`;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    document.getElementById('am-close').onclick = () => overlay.remove();
+    overlay.onclick = e => { if(e.target === overlay) overlay.remove(); };
+    document.getElementById('am-full').onclick = () => { overlay.remove(); window.showLabelInsight(); };
+  };
+  
+  function installAlphaFab(){
+    document.getElementById('alpha-fab')?.remove();
+    const fab = document.createElement('button');
+    fab.id = 'alpha-fab';
+    fab.title = '오늘의 알파 신호 (Ctrl+Shift+A)';
+    fab.innerHTML = '⚡';
+    fab.style.cssText = 'position:fixed;bottom:90px;right:172px;width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#d97706);color:white;font-size:24px;cursor:pointer;box-shadow:0 4px 12px rgba(245,158,11,0.5);z-index:50;transition:transform 0.2s;display:flex;align-items:center;justify-content:center;border:none;';
+    fab.onmouseenter = () => fab.style.transform = 'scale(1.1)';
+    fab.onmouseleave = () => fab.style.transform = 'scale(1)';
+    fab.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); window.showAlphaBanner(); });
+    document.body.appendChild(fab);
+    setTimeout(() => {
+      const star = document.getElementById('favorite-float-btn');
+      if(star){ const r = star.getBoundingClientRect(); fab.style.right = (window.innerWidth - r.right) + 'px'; }
+    }, 1000);
+    function updateBadge(){
+      if(!window.calcLabelStats) return;
+      const stats = window.calcLabelStats();
+      const map = {}; stats.forEach(s => map[s.label] = s);
+      const hist = JSON.parse(localStorage.getItem('prediction_history') || '[]');
+      const today = hist[hist.length - 1];
+      if(!today?.stocks) return;
+      const count = today.stocks.filter(s => { const st = map[s.obvLabel]; return st && st.avgReturn >= 1; }).length;
+      fab.querySelector('.alpha-badge')?.remove();
+      if(count > 0){
+        const badge = document.createElement('span');
+        badge.className = 'alpha-badge';
+        badge.textContent = count;
+        badge.style.cssText = 'position:absolute;top:-4px;right:-4px;background:#ef4444;color:white;border-radius:50%;min-width:20px;height:20px;padding:0 4px;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;border:2px solid white;pointer-events:none;';
+        fab.appendChild(badge);
+      }
+    }
+    updateBadge();
+    setInterval(updateBadge, 30000);
+  }
+  
+  // ============ Patch #42: 메뉴 UI 강력 정리 ============
+  function cleanAll(){
+    const menuBtn = document.getElementById('floating-menu-btn');
+    if(menuBtn){
+      menuBtn.querySelectorAll('[data-backup-item], [data-report-item]').forEach(el => el.remove());
+    }
+    const panel = document.getElementById('menu-panel');
+    if(panel){
+      const panelRect = panel.getBoundingClientRect();
+      panel.querySelectorAll('[data-backup-item], [data-report-item]').forEach(el => {
+        const r = el.getBoundingClientRect();
+        if(r.width === 0) return;
+        const outsidePanel = r.top < panelRect.top - 5 || r.bottom > panelRect.bottom + 5 || r.right > panelRect.right + 5 || r.left < panelRect.left - 5;
+        const tooNarrow = r.width < 100;
+        if(outsidePanel || tooNarrow) el.remove();
+      });
+    }
+  }
+  
+  function installMenuGuard(){
+    cleanAll();
+    const menuBtn = document.getElementById('floating-menu-btn');
+    if(menuBtn){
+      menuBtn.style.cssText = 'position:fixed !important;bottom:20px !important;right:20px !important;width:64px !important;height:64px !important;border-radius:50%;background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:white;border:none;cursor:pointer;z-index:9998 !important;box-shadow:0 4px 16px rgba(0,0,0,0.3);font-size:20px;display:flex !important;flex-direction:column;align-items:center;justify-content:center;visibility:visible !important;opacity:1 !important;overflow:hidden;';
+    }
+    setInterval(cleanAll, 500);
+    const observer = new MutationObserver(() => { cleanAll(); setTimeout(cleanAll, 100); setTimeout(cleanAll, 300); });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+  
+  // 단축키
+  document.addEventListener('keydown', e => {
+    if(e.ctrlKey && e.shiftKey && e.key === 'L'){ e.preventDefault(); window.showLabelInsight(); }
+    if(e.ctrlKey && e.shiftKey && e.key === 'A'){ e.preventDefault(); window.showAlphaBanner(); }
+  });
+  
+  function init(){
+    installAlphaFab();
+    installMenuGuard();
+    console.log('✅ Patch #40+41+42 최종본 적용 완료');
+  }
+  
+  if(document.readyState === 'complete') init();
+  else window.addEventListener('load', init);
+})();
+</script>
 </body>
 </html>
 
