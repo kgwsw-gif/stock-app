@@ -20217,6 +20217,32 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   console.log('💡 모달 열기: window.showLabelInsight() 또는 Ctrl+Shift+L');
 })();
 </script>
+
+<style>
+/* ===== Patch #43 - 메뉴 UI CSS 강제 차단 ===== */
+#floating-menu-btn [data-backup-item],
+#floating-menu-btn [data-report-item] {
+  display: none !important;
+  visibility: hidden !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+}
+#menu-panel > [data-backup-item],
+#menu-panel > [data-report-item] {
+  display: none !important;
+}
+#menu-panel {
+  overflow-x: hidden !important;
+}
+#floating-menu-btn {
+  width: 64px !important;
+  height: 64px !important;
+  border-radius: 50% !important;
+  overflow: hidden !important;
+}
+</style>
+
   <script>
 /* ===== Patch #40 + #41 + #42 통합 - OBV 라벨 인사이트 / 알파 버튼 / 메뉴 버튼 보호 ===== */
 (function(){
