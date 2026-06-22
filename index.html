@@ -9448,18 +9448,18 @@ if(hitCount>=2)score+=20;
                 <div className="bg-gray-50 rounded-lg p-2">
                   <p className="text-gray-500">미국 10년물</p>
                   <p className="font-bold text-base">{marketEnv?.macro?.ust10y?.value!=null?marketEnv.macro.ust10y.value.toFixed(2)+'%':'-'}</p>
-                  <p className={'text-xs font-bold '+(marketEnv.macro.ust10y.change1m>0?'text-red-500':'text-blue-500')}>{marketEnv.macro.ust10y.change1m!=null?(marketEnv.macro.ust10y.change1m>0?'+':'')+marketEnv.macro.ust10y.change1m+'%':'-'}</p>
+                  <p className={'text-xs font-bold '+((marketEnv?.macro?.ust10y?.change1m>0?'text-red-500':'text-blue-500'):'text-blue-500')}>{marketEnv.macro.ust10y.change1m!=null?(marketEnv.macro.ust10y.change1m>0?'+':'')+marketEnv.macro.ust10y.change1m+'%':'-'}</p>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-2">
                   <p className="text-gray-500">원/달러</p>
                   <p className="font-bold text-base">{marketEnv?.macro?.usdkrw?.value!=null?Math.round(marketEnv.macro.usdkrw.value).toLocaleString():'-'}</p>
-                                   <p className={'text-xs font-bold '+(marketEnv.macro.usdkrw.change1m>0?'text-red-500':'text-blue-500')}>{marketEnv.macro.usdkrw.change1m!=null?(marketEnv.macro.usdkrw.change1m>0?'+':'')+marketEnv.macro.usdkrw.change1m+'%':'-'}</p>
+                                   <p className={'text-xs font-bold '+(marketEnv?.macro?.usdkrw?.change1m>0?'text-red-500':'text-blue-500')}>{marketEnv.macro.usdkrw.change1m!=null?(marketEnv.macro.usdkrw.change1m>0?'+':'')+marketEnv.macro.usdkrw.change1m+'%':'-'}</p>
 
                 </div>
                 <div className="bg-gray-50 rounded-lg p-2">
                   <p className="text-gray-500">달러인덱스(DXY)</p>
                   <p className="font-bold text-base">{marketEnv?.macro?.dxy?.value!=null?marketEnv.macro.dxy.value.toFixed(1):'-'}</p>
-                                    <p className={'text-xs font-bold '+(marketEnv.macro.dxy.change1m>0?'text-red-500':'text-blue-500')}>{marketEnv.macro.dxy.change1m!=null?(marketEnv.macro.dxy.change1m>0?'+':'')+marketEnv.macro.dxy.change1m+'%':'-'}</p>
+                                    <p className={'text-xs font-bold '+(marketEnv?.macro?.dxy?.change1m>0?'text-red-500':'text-blue-500')}>{marketEnv.macro.dxy.change1m!=null?(marketEnv.macro.dxy.change1m>0?'+':'')+marketEnv.macro.dxy.change1m+'%':'-'}</p>
 
                 </div>
               </div>
