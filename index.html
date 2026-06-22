@@ -9442,13 +9442,13 @@ if(hitCount>=2)score+=20;
               <div className="text-center"><p className="text-xs text-gray-500">온도</p><p className="text-3xl font-black" style={{color:marketEnv.tempColor}}>{marketEnv.temperature}</p><p className="text-sm font-bold" style={{color:marketEnv.tempColor}}>{marketEnv.tempLabel}</p></div>
               <div className="flex-1"><div className="gauge-bar" style={{height:12}}><div className="gauge-fill" style={{width:marketEnv.temperature+'%',background:'linear-gradient(90deg,#6366f1,#eab308,#ef4444)'}}/></div>
                             {marketEnv.vix!=null&&<p className="text-xs text-gray-500 mt-1">VIX: <b className={marketEnv.vix>=30?'text-red-500':'text-green-500'}>{marketEnv.vix.toFixed(1)}</b></p>}</div></div>
-            {marketEnv.macro&&<div className="bg-white rounded-xl p-3 border mb-2">
+            {marketEnv.macro&&marketEnv.macro.ust10y&&marketEnv.macro.usdkrw&&marketEnv.macro.dxy&&<div className="bg-white rounded-xl p-3 border mb-2">
               <p className="text-xs font-bold text-gray-600 mb-2">🌍 매크로 환경 (1개월 변화)</p>
               <div className="grid grid-cols-3 gap-2 text-xs text-center">
                 <div className="bg-gray-50 rounded-lg p-2">
                   <p className="text-gray-500">미국 10년물</p>
                   <p className="font-bold text-base">{marketEnv?.macro?.ust10y?.value!=null?marketEnv.macro.ust10y.value.toFixed(2)+'%':'-'}</p>
-                  <p className={'text-xs font-bold '+((marketEnv?.macro?.ust10y?.change1m>0?'text-red-500':'text-blue-500'):'text-blue-500')}>{marketEnv.macro.ust10y.change1m!=null?(marketEnv.macro.ust10y.change1m>0?'+':'')+marketEnv.macro.ust10y.change1m+'%':'-'}</p>
+                  <p className={'text-xs font-bold '+(marketEnv?.macro?.ust10y?.change1m>0?'text-red-500':'text-blue-500')}>{marketEnv.macro.ust10y.change1m!=null?(marketEnv.macro.ust10y.change1m>0?'+':'')+marketEnv.macro.ust10y.change1m+'%':'-'}</p>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-2">
                   <p className="text-gray-500">원/달러</p>
