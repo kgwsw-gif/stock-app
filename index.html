@@ -24941,6 +24941,48 @@ window.showAddHoldingModal = showAddHoldingModal;
   }
 })();
 </script>
+  <!-- "💼 보유" 상단 탭 숨김 (메뉴의 "보유 종목 관리" 사용) -->
+<script>
+(function() {
+  // CSS 스타일 주입 (data-hidden-tab 속성이 붙은 요소 숨김)
+  const style = document.createElement('style');
+  style.id = 'hide-hold-tab-style';
+  style.textContent = `
+    button[data-hidden-tab="hold"] {
+      display: none !important;
+    }
+  `;
+  document.head.appendChild(style);
+  
+  // "💼 보유" 버튼에 data 속성 부착 (React DOM은 건드리지 않고 속성만 추가)
+  function markHoldTab() {
+    const buttons = document.querySelectorAll('button');
+    let marked = 0;
+    buttons.forEach(btn => {
+      if (btn.textContent.trim() === '💼 보유' && 
+          btn.className.includes('rounded-full') &&
+          !btn.hasAttribute('data-hidden-tab')) {
+        btn.setAttribute('data-hidden-tab', 'hold');
+        marked++;
+      }
+    });
+    return marked;
+  }
+  
+  // 초기 1회 + React 렌더 이후 재시도
+  setTimeout(markHoldTab, 500);
+  setTimeout(markHoldTab, 2000);
+  setTimeout(markHoldTab, 5000);
+  
+  // 메뉴 등으로 인해 재렌더링되어도 대응
+  const observer = new MutationObserver(() => {
+    markHoldTab();
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  
+  console.log('✅ "💼 보유" 상단 탭 숨김 활성화');
+})();
+</script>
 </body>
 </html>
 
