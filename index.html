@@ -12438,6 +12438,19 @@ console.log('✅ 글로벌 거시 지표 시스템 로드 완료');
     }
   }, 10000);
 
+    setTimeout(function(){
+    document.querySelectorAll('button').forEach(function(btn){
+      if(btn.textContent && btn.textContent.indexOf('시장분석') !== -1){
+        btn.onclick = function(e){
+          e.preventDefault();
+          alert('⚠️ 시장분석 기능은 일시 비활성화 상태입니다.');
+          return false;
+        };
+        console.log('🚫 시장분석 버튼 무력화');
+      }
+    });
+  }, 3000);
+
   console.log('✅ 부팅 안전 장치 활성화');
 })();
 </script>
