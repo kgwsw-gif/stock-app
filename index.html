@@ -20548,7 +20548,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
         if(!confirm(`"${btn.dataset.name}" 종목을 삭제하시겠습니까?`)) return;
         await HoldingsManager.remove(btn.dataset.id);
         modal.remove();
-        showHoldingsModal();
+        (window.showHoldingsModal || showHoldingsModal)();
       };
     });
   }
@@ -20632,8 +20632,8 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     `;
     document.body.appendChild(modal);
 
-    modal.querySelector('#cancel-add').onclick = ()=>{ modal.remove(); showHoldingsModal(); };
-    modal.onclick = (e)=>{ if(e.target === modal){ modal.remove(); showHoldingsModal(); } };
+    modal.querySelector('#cancel-add').onclick = ()=>{ modal.remove(); (window.showHoldingsModal || showHoldingsModal)(); };
+modal.onclick = (e)=>{ if(e.target === modal){ modal.remove(); (window.showHoldingsModal || showHoldingsModal)(); } };
 
     modal.querySelector('#save-holding').onclick = async ()=>{
       const ticker = modal.querySelector('#input-ticker').value.trim();
@@ -20652,7 +20652,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
           await HoldingsManager.create({ ticker, name, currency, market, sector, notes });
         }
         modal.remove();
-        showHoldingsModal();
+        (window.showHoldingsModal || showHoldingsModal)();
       } catch(err){
         alert('❌ 저장 실패: ' + err.message);
       }
@@ -20683,7 +20683,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     section.querySelector('#open-holdings-btn').addEventListener('click', (e)=>{
       e.preventDefault();
       e.stopPropagation();
-      showHoldingsModal();
+      (window.showHoldingsModal || showHoldingsModal)();
     });
   }
 
@@ -20709,7 +20709,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     if(e.ctrlKey && e.shiftKey && (e.key === 'J' || e.key === 'j')){
       e.preventDefault();
       e.stopPropagation();
-      showHoldingsModal();
+      (window.showHoldingsModal || showHoldingsModal)();
     }
   });
 
