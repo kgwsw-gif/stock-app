@@ -20734,6 +20734,805 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
 </script>
 
   <script>
+/* ============================================================
+   📔 Stock Journal System - Phase 2
+   매매 기록 + 자동 평균가/손익 계산
+   ============================================================ */
+(function(){
+  if(window._journalPhase2Installed) return;
+  if(!window.JournalDB || !window.HoldingsManager){
+    console.warn('⚠️ Phase 2: Phase 1이 먼저 로드되어야 합니다.');
+    return;
+  }
+  window._journalPhase2Installed = true;
+
+  // ====== 1. 수수료/세금 기본값 ======
+  const FEES = {
+    KRW: {
+      buyFeeRate: 0.00015,      // 0.015%
+      sellFeeRate: 0.00015,     // 0.015%
+      sellTaxRate: 0.0018       // 0.18% (거래세, KOSPI/KOSDAQ 동일)
+    },
+    USD: {
+      buyFeeRate: 0.0025,       // 0.25%
+      sellFeeRate: 0.0025,      // 0.25%
+      sellTaxRate: 0.0000229    // SEC fee 0.00229%
+    }
+  };
+  window.JOURNAL_FEES = FEES;
+
+  // ====== 2. 유틸 ======
+  function genId(prefix){
+    return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+  }
+  function today(){
+    return new Date().toISOString().slice(0,10);
+  }
+  function nowTime(){
+    return new Date().toTimeString().slice(0,8);
+  }
+  function fmt(n, decimals=0){
+    if(n === null || n === undefined || isNaN(n)) return '-';
+    return Number(n).toLocaleString('ko-KR', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    });
+  }
+  function fmtMoney(n, currency='KRW'){
+    if(n === null || n === undefined || isNaN(n)) return '-';
+    const decimals = currency === 'USD' ? 2 : 0;
+    const symbol = currency === 'USD' ? '$' : '₩';
+    return `${symbol}${fmt(n, decimals)}`;
+  }
+  function fmtPct(n){
+    if(n === null || n === undefined || isNaN(n)) return '-';
+    const sign = n > 0 ? '+' : '';
+    return `${sign}${n.toFixed(2)}%`;
+  }
+  function colorByValue(n){
+    if(n > 0) return '#dc2626';   // 빨강 (수익, 한국식)
+    if(n < 0) return '#2563eb';   // 파랑 (손실, 한국식)
+    return '#64748b';
+  }
+
+  // ====== 3. TransactionManager ======
+  const TransactionManager = {
+    /**
+     * 거래 추가 (매수/매도)
+     * @param {Object} data { holdingId, date, time, type:'buy'|'sell', price, quantity, exchangeRate, customFee, reason }
+     */
+    async addTransaction(data){
+      const holding = await JournalDB.get('holdings', data.holdingId);
+      if(!holding) throw new Error('종목을 찾을 수 없습니다.');
+
+      const currency = holding.currency;
+      const feeConfig = FEES[currency];
+
+      const price = parseFloat(data.price);
+      const quantity = parseInt(data.quantity);
+      const exchangeRate = currency === 'USD' ? parseFloat(data.exchangeRate || 1380) : 1;
+
+      if(price <= 0) throw new Error('가격은 0보다 커야 합니다.');
+      if(quantity <= 0) throw new Error('수량은 0보다 커야 합니다.');
+
+      const grossAmount = price * quantity;
+
+      // 수수료/세금 계산
+      let fee, tax;
+      if(data.customFee !== undefined && data.customFee !== null && data.customFee !== ''){
+        fee = parseFloat(data.customFee);
+        tax = 0;
+      } else {
+        if(data.type === 'buy'){
+          fee = grossAmount * feeConfig.buyFeeRate;
+          tax = 0;
+        } else {
+          fee = grossAmount * feeConfig.sellFeeRate;
+          tax = grossAmount * feeConfig.sellTaxRate;
+        }
+      }
+
+      const netAmount = data.type === 'buy'
+        ? grossAmount + fee + tax     // 매수: 더 많이 지불
+        : grossAmount - fee - tax;    // 매도: 덜 받음
+
+      // 매도 시 보유 수량 체크
+      if(data.type === 'sell' && quantity > holding.currentQuantity){
+        throw new Error(`매도 수량(${quantity})이 보유 수량(${holding.currentQuantity})보다 많습니다.`);
+      }
+
+      // 실현 손익 계산 (매도 시)
+      let realizedProfit = null;
+      let realizedProfitKRW = null;
+      if(data.type === 'sell'){
+        const avgBuyAmount = holding.avgBuyPriceOriginal * quantity;
+        realizedProfit = netAmount - avgBuyAmount;
+        realizedProfitKRW = realizedProfit * exchangeRate;
+      }
+
+      // 거래 기록 생성
+      const tx = {
+        id: genId('t'),
+        date: data.date || today(),
+        time: data.time || nowTime(),
+        ticker: holding.ticker,
+        name: holding.name,
+        holdingId: holding.id,
+        currency: currency,
+        type: data.type,
+        price: price,
+        quantity: quantity,
+        grossAmount: grossAmount,
+        fee: fee,
+        tax: tax,
+        netAmount: netAmount,
+        exchangeRate: exchangeRate,
+        grossAmountKRW: grossAmount * exchangeRate,
+        feeKRW: fee * exchangeRate,
+        netAmountKRW: netAmount * exchangeRate,
+        realizedProfit: realizedProfit,
+        realizedProfitKRW: realizedProfitKRW,
+        reason: data.reason || '',
+        createdAt: new Date().toISOString()
+      };
+      await JournalDB.add('transactions', tx);
+
+      // 보유 종목 정보 업데이트
+      await this._updateHoldingAfterTx(holding, tx);
+
+      console.log(`✅ ${data.type === 'buy' ? '매수' : '매도'} 기록:`, holding.name, `${quantity}주 @ ${fmtMoney(price, currency)}`);
+      return tx;
+    },
+
+    /**
+     * 거래 후 보유 종목 상태 갱신 (이동평균법)
+     */
+    async _updateHoldingAfterTx(holding, tx){
+      if(tx.type === 'buy'){
+        // 이동평균법: 새 평균가 = (기존총액 + 신규총액) / 총수량
+        const newTotalAmount = holding.totalBuyAmountOriginal + tx.netAmount;
+        const newTotalAmountKRW = holding.totalBuyAmountKRW + tx.netAmountKRW;
+        const newQuantity = holding.currentQuantity + tx.quantity;
+
+        holding.totalBuyAmountOriginal = newTotalAmount;
+        holding.totalBuyAmountKRW = newTotalAmountKRW;
+        holding.currentQuantity = newQuantity;
+        holding.avgBuyPriceOriginal = newQuantity > 0 ? newTotalAmount / newQuantity : 0;
+        holding.avgBuyPriceKRW = newQuantity > 0 ? newTotalAmountKRW / newQuantity : 0;
+
+        // 환율 이력 추가
+        if(holding.currency === 'USD'){
+          holding.exchangeRateHistory = holding.exchangeRateHistory || [];
+          holding.exchangeRateHistory.push({
+            date: tx.date, rate: tx.exchangeRate, quantity: tx.quantity, type: 'buy'
+          });
+        }
+      } else {
+        // 매도: 평균가는 그대로, 수량만 감소
+        holding.currentQuantity -= tx.quantity;
+        holding.totalSellAmountOriginal = (holding.totalSellAmountOriginal || 0) + tx.netAmount;
+        holding.totalSellAmountKRW = (holding.totalSellAmountKRW || 0) + tx.netAmountKRW;
+        holding.realizedProfitKRW = (holding.realizedProfitKRW || 0) + tx.realizedProfitKRW;
+
+        // 매수 총액에서 매도분 차감 (평균가는 유지)
+        const reduceAmount = holding.avgBuyPriceOriginal * tx.quantity;
+        const reduceAmountKRW = holding.avgBuyPriceKRW * tx.quantity;
+        holding.totalBuyAmountOriginal = Math.max(0, holding.totalBuyAmountOriginal - reduceAmount);
+        holding.totalBuyAmountKRW = Math.max(0, holding.totalBuyAmountKRW - reduceAmountKRW);
+
+        // 전량 매도 시 청산 처리
+        if(holding.currentQuantity === 0){
+          holding.status = 'closed';
+          holding.closedAt = tx.date;
+          holding.avgBuyPriceOriginal = 0;
+          holding.avgBuyPriceKRW = 0;
+          console.log(`📦 청산 완료: ${holding.name} (총 실현손익: ${fmtMoney(holding.realizedProfitKRW, 'KRW')})`);
+        }
+      }
+      await JournalDB.put('holdings', holding);
+    },
+
+    /**
+     * 거래 삭제 (보유 종목 상태도 되돌림)
+     */
+    async deleteTransaction(txId){
+      const tx = await JournalDB.get('transactions', txId);
+      if(!tx) throw new Error('거래를 찾을 수 없습니다.');
+
+      const holding = await JournalDB.get('holdings', tx.holdingId);
+      if(holding){
+        // 거래 영향 되돌리기
+        if(tx.type === 'buy'){
+          holding.totalBuyAmountOriginal -= tx.netAmount;
+          holding.totalBuyAmountKRW -= tx.netAmountKRW;
+          holding.currentQuantity -= tx.quantity;
+        } else {
+          holding.currentQuantity += tx.quantity;
+          holding.totalSellAmountOriginal -= tx.netAmount;
+          holding.totalSellAmountKRW -= tx.netAmountKRW;
+          holding.realizedProfitKRW -= tx.realizedProfitKRW || 0;
+          holding.totalBuyAmountOriginal += holding.avgBuyPriceOriginal * tx.quantity;
+          holding.totalBuyAmountKRW += holding.avgBuyPriceKRW * tx.quantity;
+          if(holding.status === 'closed'){
+            holding.status = 'active';
+            holding.closedAt = null;
+          }
+        }
+        // 평균가 재계산
+        if(holding.currentQuantity > 0){
+          holding.avgBuyPriceOriginal = holding.totalBuyAmountOriginal / holding.currentQuantity;
+          holding.avgBuyPriceKRW = holding.totalBuyAmountKRW / holding.currentQuantity;
+        }
+        await JournalDB.put('holdings', holding);
+      }
+
+      await JournalDB.delete('transactions', txId);
+      console.log('🗑️ 거래 삭제:', txId);
+    },
+
+    async listByHolding(holdingId){
+      const all = await JournalDB.getByIndex('transactions', 'holdingId', holdingId);
+      return all.sort((a,b)=> (a.date+a.time).localeCompare(b.date+b.time));
+    },
+
+    async listAll(){
+      const all = await JournalDB.getAll('transactions');
+      return all.sort((a,b)=> (b.date+b.time).localeCompare(a.date+a.time));
+    },
+
+    async listByDate(date){
+      return await JournalDB.getByIndex('transactions', 'date', date);
+    }
+  };
+  window.TransactionManager = TransactionManager;
+
+  // ====== 4. 거래 입력 모달 ======
+  async function showAddTransactionModal(holdingId, txType='buy'){
+    const holding = await JournalDB.get('holdings', holdingId);
+    if(!holding){ alert('종목 정보를 불러올 수 없습니다.'); return; }
+
+    document.getElementById('add-tx-modal')?.remove();
+
+    const isBuy = txType === 'buy';
+    const isUSD = holding.currency === 'USD';
+
+    const modal = document.createElement('div');
+    modal.id = 'add-tx-modal';
+    modal.style.cssText = `
+      position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10002;
+      display:flex; align-items:center; justify-content:center; padding:20px;
+    `;
+
+    modal.innerHTML = `
+      <div style="background:white; border-radius:12px; max-width:500px; width:100%;
+                  max-height:90vh; overflow-y:auto; padding:20px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;
+                    border-bottom:2px solid ${isBuy ? '#dc2626' : '#2563eb'}; padding-bottom:12px; margin-bottom:16px;">
+          <h2 style="margin:0; font-size:18px;">
+            ${isBuy ? '🔴 매수 기록' : '🔵 매도 기록'}
+          </h2>
+          <button id="cancel-tx" style="background:#ef4444; color:white; border:none;
+                  width:28px; height:28px; border-radius:50%; cursor:pointer;">✕</button>
+        </div>
+
+        <div style="padding:12px; background:#f8fafc; border-radius:8px; margin-bottom:16px;">
+          <div style="font-weight:600; font-size:15px;">${holding.name} <span style="color:#94a3b8; font-size:12px;">${holding.ticker}</span></div>
+          <div style="font-size:12px; color:#64748b; margin-top:4px;">
+            ${holding.market} · ${holding.currency} ·
+            ${holding.currentQuantity > 0 ?
+              `보유 ${fmt(holding.currentQuantity)}주 @ ${fmtMoney(holding.avgBuyPriceOriginal, holding.currency)}` :
+              '미보유'}
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          <div style="display:flex; gap:8px;">
+            <div style="flex:1;">
+              <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">거래일 *</label>
+              <input id="tx-date" type="date" value="${today()}"
+                     style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:6px;">
+            </div>
+            <div style="flex:1;">
+              <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">시간</label>
+              <input id="tx-time" type="time" value="${nowTime().slice(0,5)}"
+                     style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:6px;">
+            </div>
+          </div>
+
+          <div style="display:flex; gap:8px;">
+            <div style="flex:1;">
+              <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">
+                ${isBuy ? '매수가' : '매도가'} (${holding.currency}) *
+              </label>
+              <input id="tx-price" type="number" step="${isUSD ? '0.01' : '1'}" inputmode="decimal"
+                     placeholder="${isUSD ? '180.50' : '70000'}"
+                     style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:6px; font-size:14px;">
+            </div>
+            <div style="flex:1;">
+              <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">수량 *</label>
+              <input id="tx-quantity" type="number" min="1" inputmode="numeric"
+                     placeholder="100" ${!isBuy ? `max="${holding.currentQuantity}"` : ''}
+                     style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:6px; font-size:14px;">
+            </div>
+          </div>
+
+          ${isUSD ? `
+          <div>
+            <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">
+              환율 (1 USD = ? KRW) *
+            </label>
+            <input id="tx-exchange" type="number" step="0.01" inputmode="decimal"
+                   placeholder="1380.50" value="1380"
+                   style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:6px;">
+            <div style="font-size:11px; color:#94a3b8; margin-top:4px;">
+              💡 Phase 5에서 환율 자동 조회가 추가됩니다.
+            </div>
+          </div>
+          ` : ''}
+
+          <div>
+            <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">
+              수수료+세금 (선택)
+            </label>
+            <input id="tx-fee" type="number" step="0.01" inputmode="decimal"
+                   placeholder="자동 계산 (기본값 적용)"
+                   style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:6px;">
+            <div style="font-size:11px; color:#94a3b8; margin-top:4px;">
+              미입력 시 자동 계산:
+              ${isBuy ?
+                `매수 수수료 ${(FEES[holding.currency].buyFeeRate*100).toFixed(3)}%` :
+                `매도 수수료 ${(FEES[holding.currency].sellFeeRate*100).toFixed(3)}% + 세금 ${(FEES[holding.currency].sellTaxRate*100).toFixed(3)}%`}
+            </div>
+          </div>
+
+          <div>
+            <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">매매 이유 / 메모</label>
+            <textarea id="tx-reason" rows="2" placeholder="${isBuy ? 'OBV 강한 매집 신호' : '목표가 도달'}"
+                      style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:6px; resize:vertical;"></textarea>
+          </div>
+
+          <div id="tx-preview" style="padding:12px; background:#fef3c7; border:1px solid #fde68a; border-radius:8px; font-size:13px; display:none;">
+            <div style="font-weight:600; margin-bottom:4px;">💡 예상 ${isBuy ? '매수' : '매도'}금액</div>
+            <div id="tx-preview-content"></div>
+          </div>
+
+          <button id="save-tx" style="padding:12px; background:${isBuy ?
+            'linear-gradient(135deg,#dc2626,#991b1b)' :
+            'linear-gradient(135deg,#2563eb,#1e40af)'};
+                  color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600; font-size:15px;">
+            ${isBuy ? '✅ 매수 기록' : '✅ 매도 기록'}
+          </button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    // 실시간 미리보기
+    const updatePreview = ()=>{
+      const price = parseFloat(modal.querySelector('#tx-price').value);
+      const qty = parseInt(modal.querySelector('#tx-quantity').value);
+      const customFee = modal.querySelector('#tx-fee').value;
+      const preview = modal.querySelector('#tx-preview');
+      const content = modal.querySelector('#tx-preview-content');
+
+      if(!price || !qty){ preview.style.display = 'none'; return; }
+
+      const gross = price * qty;
+      let fee, tax;
+      if(customFee){
+        fee = parseFloat(customFee);
+        tax = 0;
+      } else {
+        const f = FEES[holding.currency];
+        fee = isBuy ? gross * f.buyFeeRate : gross * f.sellFeeRate;
+        tax = isBuy ? 0 : gross * f.sellTaxRate;
+      }
+      const net = isBuy ? gross + fee + tax : gross - fee - tax;
+
+      let html = `
+        체결금액: ${fmtMoney(gross, holding.currency)}<br>
+        수수료${isBuy ? '' : '+세금'}: ${fmtMoney(fee + tax, holding.currency)}<br>
+        <b>${isBuy ? '실 지불' : '실 수령'}금액: ${fmtMoney(net, holding.currency)}</b>
+      `;
+
+      if(!isBuy && holding.currentQuantity > 0){
+        const avgBuy = holding.avgBuyPriceOriginal;
+        const profit = net - (avgBuy * qty);
+        const profitRate = (profit / (avgBuy * qty)) * 100;
+        html += `<br><span style="color:${colorByValue(profit)}; font-weight:600;">
+          예상 실현손익: ${fmtMoney(profit, holding.currency)} (${fmtPct(profitRate)})
+        </span>`;
+      }
+
+      content.innerHTML = html;
+      preview.style.display = 'block';
+    };
+
+    modal.querySelector('#tx-price').addEventListener('input', updatePreview);
+    modal.querySelector('#tx-quantity').addEventListener('input', updatePreview);
+    modal.querySelector('#tx-fee').addEventListener('input', updatePreview);
+
+    modal.querySelector('#cancel-tx').onclick = ()=>{ modal.remove(); };
+    modal.onclick = (e)=>{ if(e.target === modal) modal.remove(); };
+
+    modal.querySelector('#save-tx').onclick = async ()=>{
+      try {
+        const data = {
+          holdingId: holding.id,
+          date: modal.querySelector('#tx-date').value,
+          time: modal.querySelector('#tx-time').value + ':00',
+          type: txType,
+          price: modal.querySelector('#tx-price').value,
+          quantity: modal.querySelector('#tx-quantity').value,
+          exchangeRate: isUSD ? modal.querySelector('#tx-exchange').value : 1,
+          customFee: modal.querySelector('#tx-fee').value,
+          reason: modal.querySelector('#tx-reason').value.trim()
+        };
+        await TransactionManager.addTransaction(data);
+        modal.remove();
+        if(window._refreshHoldingsModal) window._refreshHoldingsModal();
+      } catch(err){
+        alert('❌ ' + err.message);
+      }
+    };
+  }
+  window.showAddTransactionModal = showAddTransactionModal;
+
+  // ====== 5. 매매 이력 모달 ======
+  async function showTransactionHistoryModal(holdingId=null){
+    document.getElementById('tx-history-modal')?.remove();
+
+    const txs = holdingId
+      ? await TransactionManager.listByHolding(holdingId)
+      : await TransactionManager.listAll();
+
+    const holding = holdingId ? await JournalDB.get('holdings', holdingId) : null;
+
+    const modal = document.createElement('div');
+    modal.id = 'tx-history-modal';
+    modal.style.cssText = `
+      position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10002;
+      display:flex; align-items:center; justify-content:center; padding:20px;
+    `;
+
+    // 통계 계산
+    let totalBuyCount = 0, totalSellCount = 0, totalRealizedKRW = 0;
+    txs.forEach(t => {
+      if(t.type === 'buy') totalBuyCount++;
+      else { totalSellCount++; totalRealizedKRW += t.realizedProfitKRW || 0; }
+    });
+
+    modal.innerHTML = `
+      <div style="background:white; border-radius:12px; max-width:700px; width:100%;
+                  max-height:90vh; overflow-y:auto; padding:20px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;
+                    border-bottom:2px solid #8b5cf6; padding-bottom:12px; margin-bottom:16px;">
+          <h2 style="margin:0; font-size:18px;">
+            💱 매매 이력 ${holding ? `- ${holding.name}` : '(전체)'}
+          </h2>
+          <button id="close-tx-history" style="background:#ef4444; color:white; border:none;
+                  width:32px; height:32px; border-radius:50%; cursor:pointer;">✕</button>
+        </div>
+
+        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:16px;">
+          <div style="padding:12px; background:#fee2e2; border-radius:8px; text-align:center;">
+            <div style="font-size:11px; color:#991b1b;">매수</div>
+            <div style="font-weight:700; font-size:18px; color:#dc2626;">${totalBuyCount}건</div>
+          </div>
+          <div style="padding:12px; background:#dbeafe; border-radius:8px; text-align:center;">
+            <div style="font-size:11px; color:#1e40af;">매도</div>
+            <div style="font-weight:700; font-size:18px; color:#2563eb;">${totalSellCount}건</div>
+          </div>
+          <div style="padding:12px; background:#f3e8ff; border-radius:8px; text-align:center;">
+            <div style="font-size:11px; color:#6b21a8;">실현손익</div>
+            <div style="font-weight:700; font-size:16px; color:${colorByValue(totalRealizedKRW)};">
+              ${fmtMoney(totalRealizedKRW, 'KRW')}
+            </div>
+          </div>
+        </div>
+
+        <div id="tx-list">
+          ${txs.length === 0 ?
+            `<div style="text-align:center; padding:40px; color:#94a3b8; background:#f8fafc; border-radius:8px;">
+              아직 매매 기록이 없습니다.
+            </div>` :
+            txs.map(t => {
+              const isBuy = t.type === 'buy';
+              const profitText = !isBuy && t.realizedProfit !== null ?
+                `<div style="font-size:12px; color:${colorByValue(t.realizedProfit)}; font-weight:600; margin-top:4px;">
+                  실현손익: ${fmtMoney(t.realizedProfit, t.currency)}${t.currency === 'USD' ? ` (₩${fmt(t.realizedProfitKRW)})` : ''}
+                </div>` : '';
+              return `
+                <div style="padding:12px; margin-bottom:8px; background:#f8fafc; border-radius:8px;
+                            border-left:4px solid ${isBuy ? '#dc2626' : '#2563eb'};">
+                  <div style="display:flex; justify-content:space-between; align-items:start;">
+                    <div style="flex:1;">
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="background:${isBuy ? '#dc2626' : '#2563eb'}; color:white;
+                                     padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600;">
+                          ${isBuy ? '매수' : '매도'}
+                        </span>
+                        <span style="font-weight:600;">${t.name}</span>
+                        <span style="color:#94a3b8; font-size:12px;">${t.ticker}</span>
+                      </div>
+                      <div style="font-size:13px; color:#475569; margin-top:6px;">
+                        ${fmtMoney(t.price, t.currency)} × ${fmt(t.quantity)}주 = ${fmtMoney(t.grossAmount, t.currency)}
+                      </div>
+                      <div style="font-size:11px; color:#94a3b8; margin-top:2px;">
+                        ${t.date} ${t.time?.slice(0,5)} · 수수료 ${fmtMoney(t.fee + (t.tax||0), t.currency)}
+                      </div>
+                      ${profitText}
+                      ${t.reason ? `<div style="font-size:12px; color:#475569; margin-top:4px; font-style:italic;">💬 "${t.reason}"</div>` : ''}
+                    </div>
+                    <button class="del-tx" data-id="${t.id}" data-name="${t.name}"
+                            style="padding:4px 8px; background:#fee2e2; border:1px solid #fca5a5;
+                                   border-radius:4px; cursor:pointer; font-size:11px;">🗑️</button>
+                  </div>
+                </div>
+              `;
+            }).join('')
+          }
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    modal.querySelector('#close-tx-history').onclick = ()=> modal.remove();
+    modal.onclick = (e)=>{ if(e.target === modal) modal.remove(); };
+
+    modal.querySelectorAll('.del-tx').forEach(btn => {
+      btn.onclick = async ()=>{
+        if(!confirm(`이 거래를 삭제하시겠습니까?\n(보유 종목 평균가/수량이 자동으로 되돌려집니다)`)) return;
+        try {
+          await TransactionManager.deleteTransaction(btn.dataset.id);
+          modal.remove();
+          showTransactionHistoryModal(holdingId);
+          if(window._refreshHoldingsModal) window._refreshHoldingsModal();
+        } catch(err){
+          alert('❌ ' + err.message);
+        }
+      };
+    });
+  }
+  window.showTransactionHistoryModal = showTransactionHistoryModal;
+
+  // ====== 6. 보유 종목 모달 강화 (Phase 1 함수 오버라이드) ======
+  const originalShowHoldings = window.showHoldingsModal;
+
+  async function showHoldingsModalV2(){
+    const mp = document.getElementById('menu-panel');
+    if(mp) mp.style.display = 'none';
+    document.getElementById('holdings-modal')?.remove();
+
+    const showClosed = window._showClosedHoldings || false;
+    const holdings = await HoldingsManager.list(showClosed ? 'closed' : 'active');
+    const activeCount = (await HoldingsManager.list('active')).length;
+    const closedCount = (await HoldingsManager.list('closed')).length;
+
+    const modal = document.createElement('div');
+    modal.id = 'holdings-modal';
+    modal.style.cssText = `
+      position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10000;
+      display:flex; align-items:center; justify-content:center; padding:20px;
+    `;
+
+    modal.innerHTML = `
+      <div style="background:white; border-radius:12px; max-width:700px; width:100%;
+                  max-height:90vh; overflow-y:auto; padding:20px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;
+                    border-bottom:2px solid #3b82f6; padding-bottom:12px; margin-bottom:16px;">
+          <h2 style="margin:0; font-size:20px;">💼 보유 종목 관리</h2>
+          <button id="close-holdings" style="background:#ef4444; color:white; border:none;
+                  width:32px; height:32px; border-radius:50%; cursor:pointer;">✕</button>
+        </div>
+
+        <div style="display:flex; gap:8px; margin-bottom:16px;">
+          <button id="add-holding-btn" style="flex:1; padding:12px; background:linear-gradient(135deg,#3b82f6,#1d4ed8);
+                  color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600;">
+            ➕ 새 종목 추가
+          </button>
+          <button id="all-tx-btn" style="padding:12px 16px; background:#f3e8ff; color:#6b21a8;
+                  border:1px solid #d8b4fe; border-radius:8px; cursor:pointer; font-weight:600;">
+            💱 전체 매매
+          </button>
+          <button id="toggle-closed-btn" style="padding:12px 16px; background:${showClosed ? '#fef3c7' : '#f1f5f9'};
+                  color:#475569; border:1px solid #cbd5e1; border-radius:8px; cursor:pointer;">
+            ${showClosed ? `📂 보유 (${activeCount})` : `🗂️ 청산 (${closedCount})`}
+          </button>
+        </div>
+
+        <div style="font-size:13px; color:#64748b; margin-bottom:8px;">
+          ${showClosed ? '청산 완료' : '보유 중'} (${holdings.length})
+        </div>
+
+        <div id="holdings-list">
+          ${holdings.length === 0 ?
+            `<div style="text-align:center; padding:40px; color:#94a3b8; background:#f8fafc; border-radius:8px;">
+              ${showClosed ? '청산된 종목이 없습니다.' : '아직 등록된 종목이 없습니다.<br><span style="font-size:12px;">"새 종목 추가"를 눌러 시작하세요.</span>'}
+            </div>` :
+            holdings.map(h => {
+              const hasQty = h.currentQuantity > 0;
+              const isUSD = h.currency === 'USD';
+              const totalInvest = h.totalBuyAmountOriginal;
+              return `
+                <div style="padding:14px; margin-bottom:10px; background:#f8fafc; border-radius:8px;
+                            border-left:4px solid ${isUSD ? '#8b5cf6' : '#3b82f6'};">
+                  <div style="display:flex; justify-content:space-between; align-items:start; gap:8px;">
+                    <div style="flex:1; min-width:0;">
+                      <div style="font-weight:600; font-size:15px;">
+                        ${h.name} <span style="color:#94a3b8; font-size:12px;">${h.ticker}</span>
+                      </div>
+                      <div style="font-size:12px; color:#64748b; margin-top:4px;">
+                        ${h.market} · ${h.sector || '미분류'} · ${h.currency}
+                      </div>
+                      ${hasQty ? `
+                        <div style="margin-top:8px; padding:8px; background:white; border-radius:6px;">
+                          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:12px;">
+                            <div>
+                              <div style="color:#94a3b8;">보유 수량</div>
+                              <div style="font-weight:600;">${fmt(h.currentQuantity)}주</div>
+                            </div>
+                            <div>
+                              <div style="color:#94a3b8;">평균 매수가</div>
+                              <div style="font-weight:600;">${fmtMoney(h.avgBuyPriceOriginal, h.currency)}</div>
+                            </div>
+                            <div>
+                              <div style="color:#94a3b8;">총 투자금</div>
+                              <div style="font-weight:600;">${fmtMoney(totalInvest, h.currency)}</div>
+                            </div>
+                            ${isUSD ? `
+                              <div>
+                                <div style="color:#94a3b8;">원화 환산</div>
+                                <div style="font-weight:600;">${fmtMoney(h.totalBuyAmountKRW, 'KRW')}</div>
+                              </div>
+                            ` : ''}
+                          </div>
+                        </div>
+                      ` : ''}
+                      ${(h.realizedProfitKRW||0) !== 0 ? `
+                        <div style="margin-top:6px; font-size:12px;">
+                          실현손익: <span style="color:${colorByValue(h.realizedProfitKRW)}; font-weight:600;">
+                            ${fmtMoney(h.realizedProfitKRW, 'KRW')}
+                          </span>
+                        </div>
+                      ` : ''}
+                      ${h.closedAt ? `<div style="font-size:11px; color:#94a3b8; margin-top:4px;">청산일: ${h.closedAt}</div>` : ''}
+                      ${h.notes ? `<div style="font-size:12px; color:#475569; margin-top:4px; font-style:italic;">"${h.notes}"</div>` : ''}
+                    </div>
+                  </div>
+                  <div style="display:flex; gap:4px; margin-top:10px; flex-wrap:wrap;">
+                    ${!showClosed ? `
+                      <button class="buy-btn" data-id="${h.id}" style="padding:6px 10px; background:#dc2626; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px; font-weight:600;">🔴 매수</button>
+                      ${hasQty ? `<button class="sell-btn" data-id="${h.id}" style="padding:6px 10px; background:#2563eb; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px; font-weight:600;">🔵 매도</button>` : ''}
+                    ` : ''}
+                    <button class="tx-history-btn" data-id="${h.id}" style="padding:6px 10px; background:#8b5cf6; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px;">📜 이력</button>
+                    <button class="edit-holding" data-id="${h.id}" style="padding:6px 10px; background:#fef3c7; border:1px solid #fde68a; border-radius:4px; cursor:pointer; font-size:12px;">✏️ 수정</button>
+                    <button class="delete-holding" data-id="${h.id}" data-name="${h.name}" style="padding:6px 10px; background:#fee2e2; border:1px solid #fca5a5; border-radius:4px; cursor:pointer; font-size:12px;">🗑️</button>
+                  </div>
+                </div>
+              `;
+            }).join('')
+          }
+        </div>
+
+        <div style="margin-top:16px; padding:12px; background:#eff6ff; border-radius:8px; font-size:12px; color:#1e40af;">
+          💡 <b>Phase 2</b>: 매수/매도 기록과 자동 평균가/실현손익 계산이 가능합니다. 현재가/수익률 표시는 Phase 3에서 추가됩니다.
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    // 이벤트 바인딩
+    modal.querySelector('#close-holdings').onclick = ()=> { modal.remove(); window._showClosedHoldings = false; };
+    modal.onclick = (e)=>{ if(e.target === modal){ modal.remove(); window._showClosedHoldings = false; } };
+
+    modal.querySelector('#add-holding-btn').onclick = ()=>{
+      modal.remove();
+      if(window.showAddHoldingModal) window.showAddHoldingModal();
+      else if(typeof showAddHoldingModal === 'function') showAddHoldingModal();
+    };
+
+    modal.querySelector('#all-tx-btn').onclick = ()=>{
+      showTransactionHistoryModal();
+    };
+
+    modal.querySelector('#toggle-closed-btn').onclick = ()=>{
+      window._showClosedHoldings = !showClosed;
+      modal.remove();
+      showHoldingsModalV2();
+    };
+
+    modal.querySelectorAll('.buy-btn').forEach(btn=>{
+      btn.onclick = ()=> showAddTransactionModal(btn.dataset.id, 'buy');
+    });
+    modal.querySelectorAll('.sell-btn').forEach(btn=>{
+      btn.onclick = ()=> showAddTransactionModal(btn.dataset.id, 'sell');
+    });
+    modal.querySelectorAll('.tx-history-btn').forEach(btn=>{
+      btn.onclick = ()=> showTransactionHistoryModal(btn.dataset.id);
+    });
+
+    modal.querySelectorAll('.edit-holding').forEach(btn => {
+      btn.onclick = async ()=>{
+        const h = await JournalDB.get('holdings', btn.dataset.id);
+        modal.remove();
+        if(typeof showAddHoldingModal === 'function') showAddHoldingModal(h);
+      };
+    });
+
+    modal.querySelectorAll('.delete-holding').forEach(btn => {
+      btn.onclick = async ()=>{
+        if(!confirm(`"${btn.dataset.name}" 종목과 모든 매매 기록을 삭제하시겠습니까?`)) return;
+        // 관련 거래도 모두 삭제
+        const txs = await TransactionManager.listByHolding(btn.dataset.id);
+        for(const t of txs){
+          await JournalDB.delete('transactions', t.id);
+        }
+        await HoldingsManager.remove(btn.dataset.id);
+        modal.remove();
+        showHoldingsModalV2();
+      };
+    });
+  }
+
+  // Phase 1 함수를 V2로 교체
+  window.showHoldingsModal = showHoldingsModalV2;
+  window._refreshHoldingsModal = showHoldingsModalV2;
+
+  // ====== 7. 메뉴에 매매 이력 항목 추가 ======
+  function injectPhase2MenuItems(){
+    const tryInject = ()=>{
+      const section = document.getElementById('journal-menu-section');
+      if(!section || section.querySelector('#open-tx-history-btn')) return false;
+
+      const btn = document.createElement('button');
+      btn.id = 'open-tx-history-btn';
+      btn.style.cssText = `width:100%; padding:12px; margin:4px 0;
+              background:linear-gradient(135deg,#f3e8ff,#e9d5ff); border:1px solid #c4b5fd;
+              border-radius:8px; cursor:pointer; font-size:14px; text-align:left;`;
+      btn.textContent = '💱 매매 이력 (전체)';
+      btn.addEventListener('click', (e)=>{
+        e.preventDefault();
+        e.stopPropagation();
+        showTransactionHistoryModal();
+      });
+      section.appendChild(btn);
+      return true;
+    };
+
+    const observer = new MutationObserver(()=>{ tryInject(); });
+    observer.observe(document.body, { childList:true, subtree:false });
+    tryInject();
+  }
+
+  // ====== 8. 단축키 Ctrl+Shift+T = Transactions ======
+  document.addEventListener('keydown', (e)=>{
+    if(e.ctrlKey && e.shiftKey && (e.key === 'T' || e.key === 't')){
+      e.preventDefault();
+      e.stopPropagation();
+      showTransactionHistoryModal();
+    }
+  });
+
+  // ====== 9. 초기화 ======
+  async function init(){
+    try {
+      const txCount = await JournalDB.count('transactions');
+      console.log(`✅ Stock Journal Phase 2 초기화 완료 (등록된 거래: ${txCount}건)`);
+      console.log('   - 보유 종목 카드 → 🔴매수 / 🔵매도 / 📜이력 버튼');
+      console.log('   - 단축키: Ctrl+Shift+T (전체 매매 이력)');
+      injectPhase2MenuItems();
+    } catch(err){
+      console.error('❌ Phase 2 초기화 실패:', err);
+    }
+  }
+
+  if(document.readyState === 'complete') init();
+  else window.addEventListener('load', init);
+})();
+</script>
+
+  <script>
 /* ===== Patch #40 + #41 + #42 통합 - OBV 라벨 인사이트 / 알파 버튼 / 메뉴 버튼 보호 ===== */
 (function(){
   if(window._patch40_42Installed) return;
