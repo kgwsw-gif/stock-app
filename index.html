@@ -23293,6 +23293,968 @@ window.showAddHoldingModal = showAddHoldingModal;
   else window.addEventListener('load', init);
 })();
 </script>
+<script>
+/* ============================================================
+   📔 Stock Journal System - Phase 4
+   일지 작성 + 태그 + 캘린더 + 검색
+   ============================================================ */
+(function(){
+  if(window._journalPhase4Installed) return;
+  window._journalPhase4Installed = true;
+
+  // ============ 0. 상수 정의 ============
+  const MOODS = {
+    optimistic: { emoji: '😄', label: '낙관', color: '#10b981' },
+    neutral:    { emoji: '😐', label: '중립', color: '#6b7280' },
+    anxious:    { emoji: '😰', label: '불안', color: '#f59e0b' },
+    fear:       { emoji: '😱', label: '공포', color: '#3b82f6' },
+    greed:      { emoji: '🤑', label: '탐욕', color: '#ef4444' }
+  };
+
+  const DEFAULT_TAGS = {
+    '매매': ['#매수', '#매도', '#관망', '#손절', '#익절'],
+    '평가': ['#성공', '#실수', '#FOMO', '#패닉', '#복기'],
+    '전략': ['#장기보유', '#단기매매', '#스윙', '#배당'],
+    '시장': ['#호재', '#악재', '#실적', '#차트분석'],
+    '감정': ['#욕심', '#두려움', '#확신', '#의심']
+  };
+
+  const TAG_COLORS = {
+    '#매수': '#dc2626', '#매도': '#2563eb', '#관망': '#6b7280',
+    '#손절': '#7c3aed', '#익절': '#059669',
+    '#성공': '#10b981', '#실수': '#ef4444', '#FOMO': '#f97316',
+    '#패닉': '#dc2626', '#복기': '#8b5cf6',
+    '#장기보유': '#0891b2', '#단기매매': '#ea580c', '#스윙': '#7c3aed', '#배당': '#16a34a',
+    '#호재': '#dc2626', '#악재': '#2563eb', '#실적': '#9333ea', '#차트분석': '#0284c7',
+    '#욕심': '#f59e0b', '#두려움': '#3b82f6', '#확신': '#10b981', '#의심': '#6b7280'
+  };
+
+  function getTagColor(tag){
+    return TAG_COLORS[tag] || '#64748b';
+  }
+
+  // ============ 1. DiaryManager ============
+  const DiaryManager = {
+    async create(data){
+      const now = new Date();
+      const entry = {
+        id: `d_${Date.now()}_${Math.random().toString(36).substr(2,5)}`,
+        date: data.date || now.toISOString().split('T')[0],
+        time: data.time || `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`,
+        title: data.title || '',
+        content: data.content || '',
+        linkedHoldings: data.linkedHoldings || [],
+        mood: data.mood || 'neutral',
+        tags: data.tags || [],
+        rating: data.rating || 0,
+        isImportant: data.isImportant || false,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString()
+      };
+      await JournalDB.add('diary_entries', entry);
+      return entry;
+    },
+    async update(id, updates){
+      const entry = await JournalDB.get('diary_entries', id);
+      if(!entry) throw new Error('Entry not found');
+      Object.assign(entry, updates, { updatedAt: new Date().toISOString() });
+      await JournalDB.put('diary_entries', entry);
+      return entry;
+    },
+    async delete(id){
+      await JournalDB.delete('diary_entries', id);
+    },
+    async getAll(){
+      const entries = await JournalDB.getAll('diary_entries');
+      entries.sort((a,b) => (b.date + b.time).localeCompare(a.date + a.time));
+      return entries;
+    },
+    async getByDate(date){
+      const entries = await JournalDB.getAll('diary_entries');
+      return entries.filter(e => e.date === date);
+    },
+    async getByHolding(holdingId){
+      const entries = await JournalDB.getAll('diary_entries');
+      return entries.filter(e => (e.linkedHoldings || []).includes(holdingId));
+    },
+    async search(keyword){
+      const entries = await JournalDB.getAll('diary_entries');
+      const lower = keyword.toLowerCase();
+      return entries.filter(e =>
+        (e.title || '').toLowerCase().includes(lower) ||
+        (e.content || '').toLowerCase().includes(lower) ||
+        (e.tags || []).some(t => t.toLowerCase().includes(lower))
+      );
+    },
+    async filterByTags(tags){
+      const entries = await JournalDB.getAll('diary_entries');
+      return entries.filter(e => tags.every(t => (e.tags || []).includes(t)));
+    },
+    async getCustomTags(){
+      const entries = await JournalDB.getAll('diary_entries');
+      const allDefault = Object.values(DEFAULT_TAGS).flat();
+      const custom = new Set();
+      entries.forEach(e => {
+        (e.tags || []).forEach(t => {
+          if(!allDefault.includes(t)) custom.add(t);
+        });
+      });
+      return [...custom];
+    },
+    async getTagStats(){
+      const entries = await JournalDB.getAll('diary_entries');
+      const counts = {};
+      entries.forEach(e => (e.tags || []).forEach(t => {
+        counts[t] = (counts[t] || 0) + 1;
+      }));
+      return Object.entries(counts).map(([tag, count]) => ({ tag, count }))
+        .sort((a,b) => b.count - a.count);
+    },
+    async getMoodStats(){
+      const entries = await JournalDB.getAll('diary_entries');
+      const counts = {};
+      entries.forEach(e => {
+        const m = e.mood || 'neutral';
+        counts[m] = (counts[m] || 0) + 1;
+      });
+      return counts;
+    }
+  };
+
+  window.DiaryManager = DiaryManager;
+
+  // ============ 2. 일지 작성/수정 모달 ============
+  async function showDiaryEditor(existingId){
+    const mp = document.getElementById('menu-panel');
+    if(mp) mp.style.display = 'none';
+    document.getElementById('diary-editor-modal')?.remove();
+
+    const holdings = await JournalDB.getAll('holdings');
+    const customTags = await DiaryManager.getCustomTags();
+    
+    let existing = null;
+    if(existingId){
+      existing = await JournalDB.get('diary_entries', existingId);
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+    const now = new Date();
+    const currentTime = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+
+    const modal = document.createElement('div');
+    modal.id = 'diary-editor-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100001;display:flex;align-items:center;justify-content:center;padding:10px;overflow-y:auto;';
+
+    const selectedTags = new Set(existing?.tags || []);
+    const selectedHoldings = new Set(existing?.linkedHoldings || []);
+    const selectedMood = existing?.mood || 'neutral';
+    const selectedRating = existing?.rating || 0;
+
+    modal.innerHTML = `
+      <div style="background:white;border-radius:12px;width:100%;max-width:700px;max-height:95vh;overflow-y:auto;padding:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h2 style="margin:0;font-size:20px;">${existing ? '✏️ 일지 수정' : '📝 새 일지 작성'}</h2>
+          <button id="diary-close" style="background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>
+        </div>
+
+        <!-- 날짜/시간 -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+          <div>
+            <label style="font-size:12px;color:#666;display:block;margin-bottom:4px;">📅 날짜</label>
+            <input id="diary-date" type="date" value="${existing?.date || today}" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:14px;">
+          </div>
+          <div>
+            <label style="font-size:12px;color:#666;display:block;margin-bottom:4px;">🕐 시간</label>
+            <input id="diary-time" type="time" value="${existing?.time || currentTime}" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:14px;">
+          </div>
+        </div>
+
+        <!-- 제목 -->
+        <div style="margin-bottom:12px;">
+          <label style="font-size:12px;color:#666;display:block;margin-bottom:4px;">📌 제목</label>
+          <input id="diary-title" type="text" placeholder="예: 삼성전자 추가 매수 결정" value="${(existing?.title || '').replace(/"/g,'&quot;')}" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:15px;">
+        </div>
+
+        <!-- 본문 -->
+        <div style="margin-bottom:12px;">
+          <label style="font-size:12px;color:#666;display:block;margin-bottom:4px;">📝 내용</label>
+          <textarea id="diary-content" rows="6" placeholder="오늘의 매매 판단, 시장 분석, 감정 등을 자유롭게 기록하세요..." style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px;font-family:inherit;resize:vertical;">${existing?.content || ''}</textarea>
+        </div>
+
+        <!-- 종목 연결 -->
+        <div style="margin-bottom:12px;">
+          <label style="font-size:12px;color:#666;display:block;margin-bottom:4px;">🔗 종목 연결 (선택)</label>
+          <div id="diary-holdings" style="display:flex;gap:6px;flex-wrap:wrap;padding:8px;background:#f8fafc;border-radius:6px;min-height:40px;">
+            ${holdings.filter(h => h.status === 'active').map(h => `
+              <button class="holding-tag" data-id="${h.id}" style="padding:6px 12px;border:1px solid ${selectedHoldings.has(h.id) ? '#3b82f6' : '#ddd'};background:${selectedHoldings.has(h.id) ? '#dbeafe' : 'white'};border-radius:16px;cursor:pointer;font-size:12px;">
+                ${h.name}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- 감정 -->
+        <div style="margin-bottom:12px;">
+          <label style="font-size:12px;color:#666;display:block;margin-bottom:4px;">💭 시장 감정</label>
+          <div id="diary-moods" style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${Object.entries(MOODS).map(([key, m]) => `
+              <button class="mood-btn" data-mood="${key}" style="padding:8px 14px;border:2px solid ${selectedMood === key ? m.color : '#ddd'};background:${selectedMood === key ? m.color+'22' : 'white'};border-radius:8px;cursor:pointer;font-size:13px;">
+                ${m.emoji} ${m.label}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- 태그 -->
+        <div style="margin-bottom:12px;">
+          <label style="font-size:12px;color:#666;display:block;margin-bottom:4px;">🏷️ 태그</label>
+          <div id="diary-tags-container" style="padding:8px;background:#f8fafc;border-radius:6px;">
+            ${Object.entries(DEFAULT_TAGS).map(([cat, tags]) => `
+              <div style="margin-bottom:8px;">
+                <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;">${cat}</div>
+                <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                  ${tags.map(t => {
+                    const sel = selectedTags.has(t);
+                    const c = getTagColor(t);
+                    return `<button class="tag-btn" data-tag="${t}" style="padding:4px 10px;border:1px solid ${sel?c:'#ddd'};background:${sel?c+'22':'white'};color:${sel?c:'#475569'};border-radius:12px;cursor:pointer;font-size:11px;font-weight:${sel?'bold':'normal'};">${t}</button>`;
+                  }).join('')}
+                </div>
+              </div>
+            `).join('')}
+            ${customTags.length > 0 ? `
+              <div style="margin-bottom:8px;">
+                <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;">사용자 정의</div>
+                <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                  ${customTags.map(t => {
+                    const sel = selectedTags.has(t);
+                    return `<button class="tag-btn" data-tag="${t}" style="padding:4px 10px;border:1px solid ${sel?'#64748b':'#ddd'};background:${sel?'#64748b22':'white'};color:#475569;border-radius:12px;cursor:pointer;font-size:11px;">${t}</button>`;
+                  }).join('')}
+                </div>
+              </div>
+            ` : ''}
+            <div style="margin-top:8px;display:flex;gap:6px;">
+              <input id="custom-tag-input" type="text" placeholder="#커스텀태그" style="flex:1;padding:6px;border:1px solid #ddd;border-radius:6px;font-size:12px;">
+              <button id="add-custom-tag" style="padding:6px 12px;background:#0ea5e9;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;">+ 추가</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 별점 -->
+        <div style="margin-bottom:12px;">
+          <label style="font-size:12px;color:#666;display:block;margin-bottom:4px;">⭐ 별점 (이 결정/매매 평가)</label>
+          <div id="diary-rating" style="display:flex;gap:4px;">
+            ${[1,2,3,4,5].map(n => `
+              <button class="star-btn" data-rating="${n}" style="background:none;border:none;font-size:24px;cursor:pointer;color:${n <= selectedRating ? '#fbbf24' : '#d1d5db'};">★</button>
+            `).join('')}
+            <button id="clear-rating" style="margin-left:8px;padding:4px 8px;background:#f1f5f9;border:1px solid #ddd;border-radius:4px;cursor:pointer;font-size:11px;">초기화</button>
+          </div>
+        </div>
+
+        <!-- 중요 표시 -->
+        <div style="margin-bottom:16px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+            <input id="diary-important" type="checkbox" ${existing?.isImportant ? 'checked' : ''}>
+            ⭐ 중요 일지로 표시
+          </label>
+        </div>
+
+        <!-- 버튼 -->
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          ${existing ? '<button id="diary-delete-btn" style="padding:10px 16px;background:#ef4444;color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px;">🗑️ 삭제</button>' : ''}
+          <button id="diary-cancel" style="padding:10px 16px;background:#f1f5f9;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:14px;">취소</button>
+          <button id="diary-save" style="padding:10px 20px;background:#10b981;color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:bold;">${existing ? '💾 수정 저장' : '✅ 저장'}</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    // 닫기
+    const closeModal = () => modal.remove();
+    modal.querySelector('#diary-close').onclick = closeModal;
+    modal.querySelector('#diary-cancel').onclick = closeModal;
+
+    // 종목 토글
+    modal.querySelectorAll('.holding-tag').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.id;
+        if(selectedHoldings.has(id)){
+          selectedHoldings.delete(id);
+          btn.style.background = 'white';
+          btn.style.borderColor = '#ddd';
+        } else {
+          selectedHoldings.add(id);
+          btn.style.background = '#dbeafe';
+          btn.style.borderColor = '#3b82f6';
+        }
+      };
+    });
+
+    // 감정 선택
+    let currentMood = selectedMood;
+    modal.querySelectorAll('.mood-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        currentMood = btn.dataset.mood;
+        modal.querySelectorAll('.mood-btn').forEach(b => {
+          const m = MOODS[b.dataset.mood];
+          if(b.dataset.mood === currentMood){
+            b.style.borderColor = m.color;
+            b.style.background = m.color + '22';
+          } else {
+            b.style.borderColor = '#ddd';
+            b.style.background = 'white';
+          }
+        });
+      };
+    });
+
+    // 태그 토글
+    function bindTagButtons(){
+      modal.querySelectorAll('.tag-btn').forEach(btn => {
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          const tag = btn.dataset.tag;
+          const c = getTagColor(tag);
+          if(selectedTags.has(tag)){
+            selectedTags.delete(tag);
+            btn.style.background = 'white';
+            btn.style.borderColor = '#ddd';
+            btn.style.color = '#475569';
+            btn.style.fontWeight = 'normal';
+          } else {
+            selectedTags.add(tag);
+            btn.style.background = c + '22';
+            btn.style.borderColor = c;
+            btn.style.color = c;
+            btn.style.fontWeight = 'bold';
+          }
+        };
+      });
+    }
+    bindTagButtons();
+
+    // 커스텀 태그 추가
+    modal.querySelector('#add-custom-tag').onclick = (e) => {
+      e.stopPropagation();
+      const input = modal.querySelector('#custom-tag-input');
+      let val = input.value.trim();
+      if(!val) return;
+      if(!val.startsWith('#')) val = '#' + val;
+      selectedTags.add(val);
+      input.value = '';
+      // 동적 버튼 추가
+      const container = modal.querySelector('#diary-tags-container');
+      let customSection = container.querySelector('.custom-section');
+      if(!customSection){
+        customSection = document.createElement('div');
+        customSection.className = 'custom-section';
+        customSection.style.cssText = 'margin-bottom:8px;';
+        customSection.innerHTML = `<div style="font-size:10px;color:#94a3b8;margin-bottom:4px;">사용자 정의</div><div class="custom-tags" style="display:flex;gap:4px;flex-wrap:wrap;"></div>`;
+        container.insertBefore(customSection, container.children[container.children.length - 1]);
+      }
+      const tagsDiv = customSection.querySelector('.custom-tags');
+      const btn = document.createElement('button');
+      btn.className = 'tag-btn';
+      btn.dataset.tag = val;
+      btn.style.cssText = `padding:4px 10px;border:1px solid #64748b;background:#64748b22;color:#475569;border-radius:12px;cursor:pointer;font-size:11px;`;
+      btn.textContent = val;
+      tagsDiv.appendChild(btn);
+      bindTagButtons();
+    };
+
+    // 별점
+    let currentRating = selectedRating;
+    modal.querySelectorAll('.star-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        currentRating = parseInt(btn.dataset.rating);
+        modal.querySelectorAll('.star-btn').forEach(s => {
+          const n = parseInt(s.dataset.rating);
+          s.style.color = n <= currentRating ? '#fbbf24' : '#d1d5db';
+        });
+      };
+    });
+    modal.querySelector('#clear-rating').onclick = (e) => {
+      e.stopPropagation();
+      currentRating = 0;
+      modal.querySelectorAll('.star-btn').forEach(s => { s.style.color = '#d1d5db'; });
+    };
+
+    // 삭제
+    if(existing){
+      modal.querySelector('#diary-delete-btn').onclick = async (e) => {
+        e.stopPropagation();
+        if(!confirm('이 일지를 삭제하시겠습니까?')) return;
+        await DiaryManager.delete(existing.id);
+        modal.remove();
+        document.getElementById('diary-list-modal')?.remove();
+        showDiaryListModal();
+      };
+    }
+
+    // 저장
+    modal.querySelector('#diary-save').onclick = async (e) => {
+      e.stopPropagation();
+      const data = {
+        date: modal.querySelector('#diary-date').value,
+        time: modal.querySelector('#diary-time').value,
+        title: modal.querySelector('#diary-title').value.trim(),
+        content: modal.querySelector('#diary-content').value.trim(),
+        linkedHoldings: [...selectedHoldings],
+        mood: currentMood,
+        tags: [...selectedTags],
+        rating: currentRating,
+        isImportant: modal.querySelector('#diary-important').checked
+      };
+      if(!data.title){
+        alert('제목을 입력해주세요.');
+        return;
+      }
+      if(existing){
+        await DiaryManager.update(existing.id, data);
+      } else {
+        await DiaryManager.create(data);
+      }
+      modal.remove();
+      document.getElementById('diary-list-modal')?.remove();
+      showDiaryListModal();
+    };
+  }
+
+  // ============ 3. 일지 목록 모달 ============
+  let listFilterState = { keyword: '', tags: [], mood: '', holdingId: '', dateFrom: '', dateTo: '' };
+
+  async function showDiaryListModal(){
+    const mp = document.getElementById('menu-panel');
+    if(mp) mp.style.display = 'none';
+    document.getElementById('diary-list-modal')?.remove();
+
+    const entries = await DiaryManager.getAll();
+    const holdings = await JournalDB.getAll('holdings');
+    const holdingMap = {};
+    holdings.forEach(h => { holdingMap[h.id] = h; });
+
+    const modal = document.createElement('div');
+    modal.id = 'diary-list-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100000;display:flex;align-items:center;justify-content:center;padding:10px;overflow-y:auto;';
+
+    modal.innerHTML = `
+      <div style="background:white;border-radius:12px;width:100%;max-width:900px;max-height:95vh;overflow-y:auto;padding:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
+          <h2 style="margin:0;font-size:20px;">📚 주식 일지</h2>
+          <div style="display:flex;gap:6px;">
+            <button id="diary-new-btn" style="padding:8px 14px;background:#10b981;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:bold;">📝 새 일지</button>
+            <button id="diary-calendar-btn" style="padding:8px 14px;background:#8b5cf6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">📅 캘린더</button>
+            <button id="diary-stats-btn" style="padding:8px 14px;background:#f59e0b;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">📊 통계</button>
+            <button id="diary-list-close" style="background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>
+          </div>
+        </div>
+
+        <!-- 검색/필터 -->
+        <div style="background:#f8fafc;padding:12px;border-radius:8px;margin-bottom:14px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+            <input id="diary-search" type="text" placeholder="🔍 키워드 검색 (제목/본문/태그)" value="${listFilterState.keyword}" style="padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;">
+            <select id="diary-mood-filter" style="padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;">
+              <option value="">💭 감정 (전체)</option>
+              ${Object.entries(MOODS).map(([k,m]) => `<option value="${k}" ${listFilterState.mood===k?'selected':''}>${m.emoji} ${m.label}</option>`).join('')}
+            </select>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+            <input id="diary-date-from" type="date" value="${listFilterState.dateFrom}" style="padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;">
+            <input id="diary-date-to" type="date" value="${listFilterState.dateTo}" style="padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;">
+            <select id="diary-holding-filter" style="padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;">
+              <option value="">🔗 종목 (전체)</option>
+              ${holdings.filter(h => h.status==='active').map(h => `<option value="${h.id}" ${listFilterState.holdingId===h.id?'selected':''}>${h.name}</option>`).join('')}
+            </select>
+          </div>
+          <div style="margin-top:8px;display:flex;gap:6px;">
+            <button id="diary-filter-apply" style="padding:6px 12px;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:12px;">🔍 검색</button>
+            <button id="diary-filter-clear" style="padding:6px 12px;background:#f1f5f9;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:12px;">↺ 초기화</button>
+            <span id="diary-count" style="margin-left:auto;font-size:12px;color:#64748b;align-self:center;"></span>
+          </div>
+        </div>
+
+        <!-- 목록 -->
+        <div id="diary-list-content"></div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    modal.querySelector('#diary-list-close').onclick = () => modal.remove();
+    modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+
+    modal.querySelector('#diary-new-btn').onclick = (e) => {
+      e.stopPropagation();
+      showDiaryEditor();
+    };
+    modal.querySelector('#diary-calendar-btn').onclick = (e) => {
+      e.stopPropagation();
+      modal.remove();
+      showDiaryCalendar();
+    };
+    modal.querySelector('#diary-stats-btn').onclick = (e) => {
+      e.stopPropagation();
+      showDiaryStats();
+    };
+
+    function renderList(){
+      let filtered = entries;
+      if(listFilterState.keyword){
+        const lower = listFilterState.keyword.toLowerCase();
+        filtered = filtered.filter(e =>
+          (e.title || '').toLowerCase().includes(lower) ||
+          (e.content || '').toLowerCase().includes(lower) ||
+          (e.tags || []).some(t => t.toLowerCase().includes(lower))
+        );
+      }
+      if(listFilterState.mood){
+        filtered = filtered.filter(e => e.mood === listFilterState.mood);
+      }
+      if(listFilterState.holdingId){
+        filtered = filtered.filter(e => (e.linkedHoldings || []).includes(listFilterState.holdingId));
+      }
+      if(listFilterState.dateFrom){
+        filtered = filtered.filter(e => e.date >= listFilterState.dateFrom);
+      }
+      if(listFilterState.dateTo){
+        filtered = filtered.filter(e => e.date <= listFilterState.dateTo);
+      }
+
+      modal.querySelector('#diary-count').textContent = `총 ${filtered.length}건 (전체 ${entries.length}건)`;
+
+      const container = modal.querySelector('#diary-list-content');
+      if(filtered.length === 0){
+        container.innerHTML = `
+          <div style="text-align:center;padding:40px;color:#94a3b8;">
+            <div style="font-size:48px;margin-bottom:12px;">📔</div>
+            <div>${entries.length === 0 ? '아직 일지가 없습니다.' : '검색 결과가 없습니다.'}</div>
+            ${entries.length === 0 ? '<div style="margin-top:8px;font-size:13px;">상단 "📝 새 일지" 버튼으로 첫 일지를 작성해보세요.</div>' : ''}
+          </div>
+        `;
+        return;
+      }
+
+      container.innerHTML = filtered.map(e => {
+        const mood = MOODS[e.mood] || MOODS.neutral;
+        const stars = '★'.repeat(e.rating) + '☆'.repeat(5 - e.rating);
+        const linkedNames = (e.linkedHoldings || []).map(id => holdingMap[id]?.name || '?').filter(Boolean);
+        return `
+          <div class="diary-card" data-id="${e.id}" style="background:white;border:1px solid #e5e7eb;border-left:4px solid ${mood.color};border-radius:8px;padding:14px;margin-bottom:10px;cursor:pointer;transition:box-shadow 0.15s;">
+            <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:6px;">
+              <div style="flex:1;">
+                <div style="font-size:11px;color:#64748b;margin-bottom:2px;">
+                  ${e.date} ${e.time} ${e.isImportant ? '⭐' : ''} ${mood.emoji} ${mood.label}
+                </div>
+                <div style="font-size:16px;font-weight:bold;color:#0f172a;">${e.title}</div>
+              </div>
+              ${e.rating > 0 ? `<div style="color:#fbbf24;font-size:14px;letter-spacing:1px;">${stars}</div>` : ''}
+            </div>
+            ${e.content ? `<div style="font-size:13px;color:#475569;margin:6px 0;white-space:pre-wrap;max-height:60px;overflow:hidden;">${e.content.substring(0,200)}${e.content.length>200?'...':''}</div>` : ''}
+            ${linkedNames.length > 0 ? `<div style="font-size:11px;color:#3b82f6;margin-top:6px;">🔗 ${linkedNames.join(', ')}</div>` : ''}
+            ${(e.tags || []).length > 0 ? `
+              <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px;">
+                ${e.tags.map(t => {
+                  const c = getTagColor(t);
+                  return `<span style="padding:2px 8px;background:${c}22;color:${c};border-radius:10px;font-size:10px;">${t}</span>`;
+                }).join('')}
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }).join('');
+
+      container.querySelectorAll('.diary-card').forEach(card => {
+        card.onclick = () => showDiaryEditor(card.dataset.id);
+        card.onmouseenter = () => { card.style.boxShadow = '0 4px 12px rgba(0,0,0,0.08)'; };
+        card.onmouseleave = () => { card.style.boxShadow = 'none'; };
+      });
+    }
+
+    modal.querySelector('#diary-filter-apply').onclick = (e) => {
+      e.stopPropagation();
+      listFilterState = {
+        keyword: modal.querySelector('#diary-search').value.trim(),
+        mood: modal.querySelector('#diary-mood-filter').value,
+        holdingId: modal.querySelector('#diary-holding-filter').value,
+        dateFrom: modal.querySelector('#diary-date-from').value,
+        dateTo: modal.querySelector('#diary-date-to').value,
+        tags: []
+      };
+      renderList();
+    };
+    modal.querySelector('#diary-filter-clear').onclick = (e) => {
+      e.stopPropagation();
+      listFilterState = { keyword:'', tags:[], mood:'', holdingId:'', dateFrom:'', dateTo:'' };
+      modal.querySelector('#diary-search').value = '';
+      modal.querySelector('#diary-mood-filter').value = '';
+      modal.querySelector('#diary-holding-filter').value = '';
+      modal.querySelector('#diary-date-from').value = '';
+      modal.querySelector('#diary-date-to').value = '';
+      renderList();
+    };
+    modal.querySelector('#diary-search').onkeydown = (e) => {
+      if(e.key === 'Enter') modal.querySelector('#diary-filter-apply').click();
+    };
+
+    renderList();
+  }
+
+  // ============ 4. 캘린더 뷰 ============
+  let calendarMonth = new Date().getMonth();
+  let calendarYear = new Date().getFullYear();
+
+  async function showDiaryCalendar(){
+    const mp = document.getElementById('menu-panel');
+    if(mp) mp.style.display = 'none';
+    document.getElementById('diary-calendar-modal')?.remove();
+
+    const entries = await DiaryManager.getAll();
+    const snaps = await JournalDB.getAll('daily_snapshots');
+    
+    // 날짜별 일지 그룹
+    const byDate = {};
+    entries.forEach(e => {
+      if(!byDate[e.date]) byDate[e.date] = [];
+      byDate[e.date].push(e);
+    });
+
+    // 날짜별 손익
+    const profitByDate = {};
+    const snapsByDate = {};
+    snaps.forEach(s => {
+      if(!snapsByDate[s.date]) snapsByDate[s.date] = [];
+      snapsByDate[s.date].push(s);
+    });
+    Object.keys(snapsByDate).forEach(d => {
+      const dayProfit = snapsByDate[d].reduce((sum, s) => sum + (s.profitLossKRW || 0), 0);
+      profitByDate[d] = dayProfit;
+    });
+
+    const modal = document.createElement('div');
+    modal.id = 'diary-calendar-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100000;display:flex;align-items:center;justify-content:center;padding:10px;overflow-y:auto;';
+
+    modal.innerHTML = `
+      <div style="background:white;border-radius:12px;width:100%;max-width:800px;max-height:95vh;overflow-y:auto;padding:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h2 style="margin:0;font-size:20px;">📅 일지 캘린더</h2>
+          <div style="display:flex;gap:6px;">
+            <button id="cal-back-list" style="padding:6px 12px;background:#f1f5f9;border:1px solid #ddd;border-radius:6px;cursor:pointer;font-size:13px;">📚 목록</button>
+            <button id="cal-close" style="background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:center;align-items:center;gap:14px;margin-bottom:16px;">
+          <button id="cal-prev" style="padding:8px 14px;background:#f1f5f9;border:1px solid #ddd;border-radius:6px;cursor:pointer;">◀</button>
+          <div id="cal-title" style="font-size:18px;font-weight:bold;min-width:160px;text-align:center;"></div>
+          <button id="cal-next" style="padding:8px 14px;background:#f1f5f9;border:1px solid #ddd;border-radius:6px;cursor:pointer;">▶</button>
+          <button id="cal-today" style="padding:8px 14px;background:#3b82f6;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">오늘</button>
+        </div>
+
+        <div id="cal-grid"></div>
+
+        <div style="margin-top:16px;padding:10px;background:#f8fafc;border-radius:6px;font-size:11px;color:#64748b;display:flex;gap:14px;flex-wrap:wrap;">
+          <span>📔 일지 있음</span>
+          <span style="color:#dc2626;">● 수익일</span>
+          <span style="color:#2563eb;">● 손실일</span>
+          <span>⭐ 중요</span>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    modal.querySelector('#cal-close').onclick = () => modal.remove();
+    modal.querySelector('#cal-back-list').onclick = () => { modal.remove(); showDiaryListModal(); };
+    modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+
+    function renderCalendar(){
+      const title = modal.querySelector('#cal-title');
+      title.textContent = `${calendarYear}년 ${calendarMonth + 1}월`;
+
+      const firstDay = new Date(calendarYear, calendarMonth, 1).getDay();
+      const lastDate = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+      const today = new Date().toISOString().split('T')[0];
+
+      let html = `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;">`;
+      ['일','월','화','수','목','금','토'].forEach((d,i) => {
+        const c = i === 0 ? '#ef4444' : i === 6 ? '#3b82f6' : '#475569';
+        html += `<div style="padding:8px;text-align:center;font-weight:bold;color:${c};font-size:12px;">${d}</div>`;
+      });
+
+      for(let i = 0; i < firstDay; i++){
+        html += '<div></div>';
+      }
+
+      for(let d = 1; d <= lastDate; d++){
+        const dateStr = `${calendarYear}-${String(calendarMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const entries = byDate[dateStr] || [];
+        const profit = profitByDate[dateStr];
+        const isToday = dateStr === today;
+        const hasImportant = entries.some(e => e.isImportant);
+        
+        let bgColor = 'white';
+        let borderColor = '#e5e7eb';
+        if(isToday){ borderColor = '#3b82f6'; bgColor = '#dbeafe'; }
+        
+        let profitMark = '';
+        if(profit !== undefined && profit !== null){
+          const c = profit >= 0 ? '#dc2626' : '#2563eb';
+          profitMark = `<div style="color:${c};font-size:9px;">●</div>`;
+        }
+
+        const entryMark = entries.length > 0 ? `<div style="font-size:10px;">📔${entries.length > 1 ? '×' + entries.length : ''}</div>` : '';
+        const importantMark = hasImportant ? '<span style="font-size:10px;">⭐</span>' : '';
+
+        html += `
+          <div class="cal-day" data-date="${dateStr}" style="border:2px solid ${borderColor};background:${bgColor};border-radius:6px;padding:6px;min-height:60px;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;">
+            <div style="font-size:13px;font-weight:bold;">${d} ${importantMark}</div>
+            ${entryMark}
+            ${profitMark}
+          </div>
+        `;
+      }
+      html += '</div>';
+
+      modal.querySelector('#cal-grid').innerHTML = html;
+
+      modal.querySelectorAll('.cal-day').forEach(d => {
+        d.onclick = async () => {
+          const date = d.dataset.date;
+          const entries = byDate[date] || [];
+          if(entries.length === 0){
+            // 새 일지
+            if(confirm(`${date}에 새 일지를 작성하시겠습니까?`)){
+              modal.remove();
+              await showDiaryEditor();
+              // 날짜를 해당일로 설정
+              const dateInput = document.querySelector('#diary-date');
+              if(dateInput) dateInput.value = date;
+            }
+          } else if(entries.length === 1){
+            modal.remove();
+            showDiaryEditor(entries[0].id);
+          } else {
+            // 여러 개 - 목록 표시
+            const choice = prompt(
+              `${date}의 일지 ${entries.length}건:\n\n` +
+              entries.map((e,i) => `${i+1}. ${e.title}`).join('\n') +
+              `\n\n번호 선택 (취소: 빈칸):`
+            );
+            const idx = parseInt(choice) - 1;
+            if(idx >= 0 && idx < entries.length){
+              modal.remove();
+              showDiaryEditor(entries[idx].id);
+            }
+          }
+        };
+      });
+    }
+
+    modal.querySelector('#cal-prev').onclick = (e) => {
+      e.stopPropagation();
+      calendarMonth--;
+      if(calendarMonth < 0){ calendarMonth = 11; calendarYear--; }
+      renderCalendar();
+    };
+    modal.querySelector('#cal-next').onclick = (e) => {
+      e.stopPropagation();
+      calendarMonth++;
+      if(calendarMonth > 11){ calendarMonth = 0; calendarYear++; }
+      renderCalendar();
+    };
+    modal.querySelector('#cal-today').onclick = (e) => {
+      e.stopPropagation();
+      calendarMonth = new Date().getMonth();
+      calendarYear = new Date().getFullYear();
+      renderCalendar();
+    };
+
+    renderCalendar();
+  }
+
+  // ============ 5. 통계 ============
+  async function showDiaryStats(){
+    document.getElementById('diary-stats-modal')?.remove();
+    const entries = await DiaryManager.getAll();
+    const tagStats = await DiaryManager.getTagStats();
+    const moodStats = await DiaryManager.getMoodStats();
+
+    const totalEntries = entries.length;
+    const importantCount = entries.filter(e => e.isImportant).length;
+    const avgRating = entries.length > 0 
+      ? (entries.filter(e => e.rating > 0).reduce((s,e) => s + e.rating, 0) / entries.filter(e => e.rating > 0).length || 0)
+      : 0;
+    const ratedCount = entries.filter(e => e.rating > 0).length;
+
+    const modal = document.createElement('div');
+    modal.id = 'diary-stats-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:100002;display:flex;align-items:center;justify-content:center;padding:10px;overflow-y:auto;';
+
+    modal.innerHTML = `
+      <div style="background:white;border-radius:12px;width:100%;max-width:600px;max-height:90vh;overflow-y:auto;padding:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h2 style="margin:0;font-size:20px;">📊 일지 통계</h2>
+          <button id="stats-close" style="background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;">✕</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px;">
+          <div style="background:#dbeafe;padding:12px;border-radius:8px;text-align:center;">
+            <div style="font-size:11px;color:#64748b;">📔 총 일지</div>
+            <div style="font-size:24px;font-weight:bold;color:#1e40af;">${totalEntries}</div>
+          </div>
+          <div style="background:#fef3c7;padding:12px;border-radius:8px;text-align:center;">
+            <div style="font-size:11px;color:#64748b;">⭐ 중요 일지</div>
+            <div style="font-size:24px;font-weight:bold;color:#b45309;">${importantCount}</div>
+          </div>
+          <div style="background:#fce7f3;padding:12px;border-radius:8px;text-align:center;">
+            <div style="font-size:11px;color:#64748b;">⭐ 평균 별점</div>
+            <div style="font-size:24px;font-weight:bold;color:#be185d;">${avgRating.toFixed(1)} <span style="font-size:11px;color:#64748b;">(${ratedCount}건)</span></div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:16px;">
+          <h3 style="font-size:14px;margin:0 0 8px 0;">💭 감정 분포</h3>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${Object.entries(MOODS).map(([k,m]) => {
+              const count = moodStats[k] || 0;
+              const pct = totalEntries > 0 ? (count/totalEntries*100).toFixed(1) : 0;
+              return `
+                <div style="flex:1;min-width:90px;background:${m.color}15;border:1px solid ${m.color}40;border-radius:8px;padding:10px;text-align:center;">
+                  <div style="font-size:24px;">${m.emoji}</div>
+                  <div style="font-size:11px;color:${m.color};font-weight:bold;">${m.label}</div>
+                  <div style="font-size:16px;font-weight:bold;">${count}</div>
+                  <div style="font-size:10px;color:#64748b;">${pct}%</div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+
+        <div>
+          <h3 style="font-size:14px;margin:0 0 8px 0;">🏷️ 태그 TOP 10</h3>
+          ${tagStats.length === 0 ? '<div style="text-align:center;color:#94a3b8;padding:20px;">태그 사용 기록 없음</div>' : `
+            <div>
+              ${tagStats.slice(0,10).map(({tag, count}) => {
+                const c = getTagColor(tag);
+                const max = tagStats[0].count;
+                const w = (count/max*100).toFixed(0);
+                return `
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                    <span style="min-width:90px;padding:3px 8px;background:${c}22;color:${c};border-radius:10px;font-size:11px;font-weight:bold;text-align:center;">${tag}</span>
+                    <div style="flex:1;background:#f1f5f9;border-radius:4px;height:18px;overflow:hidden;">
+                      <div style="width:${w}%;height:100%;background:${c};"></div>
+                    </div>
+                    <span style="min-width:30px;text-align:right;font-size:12px;font-weight:bold;">${count}</span>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          `}
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+    modal.querySelector('#stats-close').onclick = () => modal.remove();
+    modal.onclick = (e) => { if(e.target === modal) modal.remove(); };
+  }
+
+  // ============ 6. 보유 종목 카드에 "관련 일지" 버튼 추가 ============
+  function injectDiaryButtonsToHoldings(){
+    const cards = document.querySelectorAll('.holding-card-v2, [data-holding-card]');
+    cards.forEach(card => {
+      if(card.querySelector('.diary-link-btn')) return;
+      const id = card.dataset.holdingId;
+      if(!id) return;
+      const btnArea = card.querySelector('.holding-buttons') || card;
+      const btn = document.createElement('button');
+      btn.className = 'diary-link-btn';
+      btn.textContent = '📔 일지';
+      btn.style.cssText = 'margin:2px;padding:4px 8px;background:#ecfdf5;border:1px solid #10b981;color:#065f46;border-radius:4px;cursor:pointer;font-size:11px;';
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        listFilterState = { keyword:'', tags:[], mood:'', holdingId:id, dateFrom:'', dateTo:'' };
+        showDiaryListModal();
+      };
+      btnArea.appendChild(btn);
+    });
+  }
+
+  // ============ 7. 메뉴 주입 ============
+  function injectDiaryMenuItems(){
+    const panel = document.getElementById('menu-panel');
+    if(!panel) return;
+    const journalSection = panel.querySelector('#journal-menu-section');
+    if(!journalSection) return;
+    if(journalSection.querySelector('#diary-menu-list')) return;
+
+    const items = [
+      { id: 'diary-menu-new', text: '📝 새 일지 작성', color: '#10b981', bg: '#ecfdf5', action: () => showDiaryEditor() },
+      { id: 'diary-menu-list', text: '📚 일지 목록', color: '#3b82f6', bg: '#dbeafe', action: () => showDiaryListModal() },
+      { id: 'diary-menu-calendar', text: '📅 일지 캘린더', color: '#8b5cf6', bg: '#ede9fe', action: () => showDiaryCalendar() }
+    ];
+
+    items.forEach(item => {
+      const btn = document.createElement('button');
+      btn.id = item.id;
+      btn.textContent = item.text;
+      btn.style.cssText = `width:100%;padding:10px;margin:4px 0;background:${item.bg};border:1px solid ${item.color};border-radius:6px;cursor:pointer;font-size:14px;text-align:left;`;
+      btn.onclick = (e) => { e.stopPropagation(); item.action(); };
+      journalSection.appendChild(btn);
+    });
+  }
+
+  // ============ 8. 단축키 ============
+  document.addEventListener('keydown', (e) => {
+    if(!e.ctrlKey || !e.shiftKey) return;
+    const k = e.key.toUpperCase();
+    if(k === 'N'){
+      e.preventDefault();
+      showDiaryEditor();
+    } else if(k === 'B'){
+      e.preventDefault();
+      showDiaryListModal();
+    } else if(k === 'M'){
+      e.preventDefault();
+      showDiaryCalendar();
+    }
+  });
+
+  // ============ 9. 외부 노출 ============
+  window.showDiaryEditor = showDiaryEditor;
+  window.showDiaryListModal = showDiaryListModal;
+  window.showDiaryCalendar = showDiaryCalendar;
+  window.showDiaryStats = showDiaryStats;
+
+  // ============ 10. 초기화 ============
+  async function init(){
+    try {
+      const count = await JournalDB.count('diary_entries');
+      console.log(`✅ Phase 4 초기화 완료 (일지: ${count}건)`);
+      console.log(`   📝 새 일지: Ctrl+Shift+N  |  📚 목록: Ctrl+Shift+B  |  📅 캘린더: Ctrl+Shift+M`);
+      setTimeout(injectDiaryMenuItems, 600);
+      const menuBtn = document.getElementById('floating-menu-btn');
+      if(menuBtn){
+        menuBtn.addEventListener('click', () => setTimeout(injectDiaryMenuItems, 100));
+      }
+      setInterval(injectDiaryButtonsToHoldings, 2000);
+    } catch(err){
+      console.error('Phase 4 init error:', err);
+    }
+  }
+
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+ 
   <script>
 /* ===== Patch #40 + #41 + #42 최종 통합 ===== */
 (function(){
