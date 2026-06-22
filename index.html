@@ -22456,65 +22456,69 @@ window.showAddHoldingModal = showAddHoldingModal;
 
   <script>
 /* ============================================================
-   📈 Stock Journal System - Phase 3.5
-   일별 수익률 차트 (Chart.js)
+   📈 Stock Journal System - Phase 3.5 v2
+   일별 수익률 차트 (Chart.js) + 백필 v2 (필드명 수정)
    ============================================================ */
 (function(){
-  if(window._journalPhase35Installed) return;
-  window._journalPhase35Installed = true;
+  if(window._journalPhase35V2Installed) return;
+  window._journalPhase35V2Installed = true;
+
+  // 헬퍼: 스냅샷에서 KRW 평가액 추출 (구/신 필드명 모두 지원)
+  function getSnapValueKRW(s, h){
+    if(s.currentValueKRW != null && !isNaN(s.currentValueKRW)) return s.currentValueKRW;
+    const price = s.currentPriceKRW ?? s.currentPriceOriginal ?? s.currentPrice;
+    const qty = s.quantity ?? h?.currentQuantity ?? 0;
+    const rate = s.exchangeRate || 1;
+    if(price == null || isNaN(price)) return null;
+    const krwPrice = (h?.currency === 'USD') ? price * rate : price;
+    return krwPrice * qty;
+  }
+  function getSnapCostKRW(s, h){
+    if(s.totalInvestKRW != null && !isNaN(s.totalInvestKRW)) return s.totalInvestKRW;
+    const avg = s.avgBuyPriceKRW ?? s.avgBuyPriceOriginal ?? s.averagePrice ?? h?.avgBuyPriceKRW;
+    const qty = s.quantity ?? h?.currentQuantity ?? 0;
+    const rate = s.exchangeRate || 1;
+    if(avg == null || isNaN(avg)) return null;
+    const krwAvg = (h?.currency === 'USD') ? avg * rate : avg;
+    return krwAvg * qty;
+  }
 
   // ============ 1. 데이터 집계 ============
   async function aggregateDailyData(periodDays){
     const snapshots = await JournalDB.getAll('daily_snapshots');
     if(snapshots.length === 0) return { dates:[], totals:[], profits:[], cumReturns:[], stats:null, baseDate:null };
 
-    // 날짜별 그룹화
     const byDate = {};
     snapshots.forEach(s => {
       if(!byDate[s.date]) byDate[s.date] = [];
       byDate[s.date].push(s);
     });
 
-    // 정렬된 날짜
     let dates = Object.keys(byDate).sort();
     if(dates.length === 0) return { dates:[], totals:[], profits:[], cumReturns:[], stats:null, baseDate:null };
 
-    const baseDate = dates[0]; // 첫 스냅샷 기록일
-
-    // 전체 보유 종목 (계단식 보간용)
+    const baseDate = dates[0];
     const holdings = await JournalDB.getAll('holdings');
     const holdingMap = {};
     holdings.forEach(h => { holdingMap[h.id] = h; });
 
-    // 날짜별 종목 최신 가격 추적 (계단식)
-    const lastPriceByHolding = {}; // { holdingId: { priceKRW, valueKRW, costKRW } }
-    const totals = [];
-    const profits = [];
-    const cumReturns = [];
-    const dailyData = [];
-
+    const lastByHolding = {};
+    const totals = [], profits = [], cumReturns = [], dailyData = [];
     let baseTotal = null;
 
     dates.forEach((date, idx) => {
-      // 해당 날짜의 스냅샷으로 가격 업데이트
       byDate[date].forEach(s => {
         const h = holdingMap[s.holdingId];
         if(!h) return;
-        const rate = s.exchangeRate || 1;
-        const priceKRW = (h.currency === 'USD') ? s.currentPrice * rate : s.currentPrice;
-        const valueKRW = priceKRW * h.quantity;
-        const costKRW = (h.currency === 'USD') 
-          ? (h.averagePrice * h.quantity * rate)
-          : (h.averagePrice * h.quantity);
-        lastPriceByHolding[s.holdingId] = { priceKRW, valueKRW, costKRW };
+        const valueKRW = getSnapValueKRW(s, h);
+        const costKRW = getSnapCostKRW(s, h);
+        if(valueKRW != null) lastByHolding[s.holdingId] = { valueKRW, costKRW: costKRW || 0 };
       });
 
-      // 현재 보유 중인 모든 종목 합산 (계단식: 직전일 가격 유지)
-      let dayTotal = 0;
-      let dayCost = 0;
+      let dayTotal = 0, dayCost = 0;
       holdings.forEach(h => {
         if(h.status !== 'active') return;
-        const last = lastPriceByHolding[h.id];
+        const last = lastByHolding[h.id];
         if(last){
           dayTotal += last.valueKRW;
           dayCost += last.costKRW;
@@ -22522,7 +22526,6 @@ window.showAddHoldingModal = showAddHoldingModal;
       });
 
       if(baseTotal === null && dayTotal > 0) baseTotal = dayTotal;
-
       const prevTotal = idx > 0 ? totals[idx-1] : dayTotal;
       const dailyProfit = dayTotal - prevTotal;
       const cumReturn = baseTotal > 0 ? ((dayTotal - baseTotal) / baseTotal * 100) : 0;
@@ -22533,13 +22536,11 @@ window.showAddHoldingModal = showAddHoldingModal;
       dailyData.push({ date, total: dayTotal, profit: dailyProfit, cumReturn });
     });
 
-    // 기간 필터링
     let filtered = dailyData;
     if(periodDays && periodDays > 0 && dailyData.length > periodDays){
       filtered = dailyData.slice(-periodDays);
     }
 
-    // 통계 계산
     const profitDays = filtered.filter((d,i) => i > 0 && d.profit > 0).length;
     const lossDays = filtered.filter((d,i) => i > 0 && d.profit < 0).length;
     const tradeDays = profitDays + lossDays;
@@ -22557,12 +22558,7 @@ window.showAddHoldingModal = showAddHoldingModal;
       : 0;
 
     const stats = {
-      totalReturn,
-      bestDay,
-      worstDay,
-      winRate,
-      profitDays,
-      lossDays,
+      totalReturn, bestDay, worstDay, winRate, profitDays, lossDays,
       currentTotal: filtered.length > 0 ? filtered[filtered.length-1].total : 0,
       startTotal: filtered.length > 0 ? filtered[0].total : 0
     };
@@ -22572,18 +22568,16 @@ window.showAddHoldingModal = showAddHoldingModal;
       totals: filtered.map(d=>d.total),
       profits: filtered.map(d=>d.profit),
       cumReturns: filtered.map(d=>d.cumReturn),
-      stats,
-      baseDate
+      stats, baseDate
     };
   }
 
-  // ============ 2. 종목별 수익률 데이터 ============
+  // ============ 2. 종목별 수익률 ============
   async function getHoldingReturns(){
     const holdings = await JournalDB.getAll('holdings');
     const active = holdings.filter(h => h.status === 'active');
     const snapshots = await JournalDB.getAll('daily_snapshots');
     
-    // 종목별 최신 스냅샷
     const latestByHolding = {};
     snapshots.forEach(s => {
       if(!latestByHolding[s.holdingId] || s.date > latestByHolding[s.holdingId].date){
@@ -22596,28 +22590,29 @@ window.showAddHoldingModal = showAddHoldingModal;
       const snap = latestByHolding[h.id];
       if(!snap) return;
       const rate = snap.exchangeRate || 1;
-      const currentKRW = (h.currency === 'USD') ? snap.currentPrice * rate : snap.currentPrice;
-      const avgKRW = (h.currency === 'USD') ? h.averagePrice * rate : h.averagePrice;
+      const currentOrig = snap.currentPriceOriginal ?? snap.currentPriceKRW ?? snap.currentPrice;
+      const avgOrig = h.avgBuyPriceOriginal ?? h.avgBuyPriceKRW ?? snap.avgBuyPriceOriginal ?? snap.averagePrice;
+      if(currentOrig == null || avgOrig == null || isNaN(currentOrig) || isNaN(avgOrig)) return;
+      const currentKRW = (h.currency === 'USD') ? currentOrig * rate : currentOrig;
+      const avgKRW = (h.currency === 'USD') ? avgOrig * rate : avgOrig;
       const returnPct = avgKRW > 0 ? ((currentKRW - avgKRW) / avgKRW * 100) : 0;
       results.push({ name: h.name, ticker: h.ticker, returnPct, currency: h.currency });
     });
 
-    // 수익률 내림차순 정렬
     results.sort((a,b) => b.returnPct - a.returnPct);
     return results;
   }
 
   // ============ 3. 차트 모달 ============
-  let currentPeriod = 0; // 0 = 전체
+  let currentPeriod = 0;
   let chartInstances = {};
 
   async function showChartModal(){
     if(typeof Chart === 'undefined'){
-      alert('❌ Chart.js 로드 실패. 페이지를 새로고침해주세요.\n\n<head>에 Chart.js CDN이 추가되었는지 확인하세요.');
+      alert('❌ Chart.js 로드 실패. 페이지를 새로고침해주세요.');
       return;
     }
 
-    // 메뉴 패널 숨김
     const mp = document.getElementById('menu-panel');
     if(mp) mp.style.display = 'none';
 
@@ -22631,17 +22626,16 @@ window.showAddHoldingModal = showAddHoldingModal;
       <div style="background:white;border-radius:12px;width:100%;max-width:1000px;max-height:95vh;overflow-y:auto;padding:20px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
           <h2 style="margin:0;font-size:20px;">📈 수익률 차트</h2>
-          <button id="chart-close" style="background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>
+          <div>
+            <button id="backfill-btn" style="margin-right:10px;padding:6px 12px;background:#f59e0b;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;">🔄 과거 데이터 백필</button>
+            <button id="chart-close" style="background:#ef4444;color:white;border:none;width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px;">✕</button>
+          </div>
         </div>
 
         <div id="chart-period" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;">
           ${[
-            {label:'1주', days:7},
-            {label:'1개월', days:30},
-            {label:'3개월', days:90},
-            {label:'6개월', days:180},
-            {label:'1년', days:365},
-            {label:'전체', days:0}
+            {label:'1주', days:7},{label:'1개월', days:30},{label:'3개월', days:90},
+            {label:'6개월', days:180},{label:'1년', days:365},{label:'전체', days:0}
           ].map(p => `
             <button class="period-btn" data-days="${p.days}" style="padding:8px 16px;border:1px solid #ddd;background:${currentPeriod===p.days?'#3b82f6':'white'};color:${currentPeriod===p.days?'white':'#333'};border-radius:6px;cursor:pointer;font-size:13px;">${p.label}</button>
           `).join('')}
@@ -22653,17 +22647,14 @@ window.showAddHoldingModal = showAddHoldingModal;
           <h3 style="font-size:15px;margin:0 0 8px 0;color:#333;">💰 자산 추이</h3>
           <div style="position:relative;height:250px;"><canvas id="chart-total"></canvas></div>
         </div>
-
         <div style="margin-bottom:20px;">
           <h3 style="font-size:15px;margin:0 0 8px 0;color:#333;">📊 일별 손익</h3>
           <div style="position:relative;height:220px;"><canvas id="chart-profit"></canvas></div>
         </div>
-
         <div style="margin-bottom:20px;">
           <h3 style="font-size:15px;margin:0 0 8px 0;color:#333;">📈 누적 수익률 (%)</h3>
           <div style="position:relative;height:220px;"><canvas id="chart-cumreturn"></canvas></div>
         </div>
-
         <div style="margin-bottom:10px;">
           <h3 style="font-size:15px;margin:0 0 8px 0;color:#333;">🏆 종목별 수익률 비교</h3>
           <div style="position:relative;height:300px;"><canvas id="chart-holdings"></canvas></div>
@@ -22675,7 +22666,6 @@ window.showAddHoldingModal = showAddHoldingModal;
 
     document.body.appendChild(modal);
 
-    // 닫기
     modal.querySelector('#chart-close').onclick = () => {
       Object.values(chartInstances).forEach(c => c?.destroy());
       chartInstances = {};
@@ -22688,8 +22678,11 @@ window.showAddHoldingModal = showAddHoldingModal;
         modal.remove();
       }
     };
+    modal.querySelector('#backfill-btn').onclick = (e) => {
+      e.stopPropagation();
+      backfillSnapshots();
+    };
 
-    // 기간 버튼
     modal.querySelectorAll('.period-btn').forEach(btn => {
       btn.onclick = async () => {
         currentPeriod = parseInt(btn.dataset.days);
@@ -22710,16 +22703,13 @@ window.showAddHoldingModal = showAddHoldingModal;
     const data = await aggregateDailyData(currentPeriod);
     const holdingReturns = await getHoldingReturns();
 
-    // 통계 카드
     renderStats(data.stats, data.baseDate);
 
-    // 정보 영역
     const info = document.getElementById('chart-info');
     if(info){
-      info.innerHTML = `📅 기준일: <b>${data.baseDate || '데이터 없음'}</b> &nbsp;|&nbsp; 📊 데이터 포인트: <b>${data.dates.length}일</b> &nbsp;|&nbsp; 🔄 결측일은 직전일 가격 유지 (계단식)`;
+      info.innerHTML = `📅 기준일: <b>${data.baseDate || '데이터 없음'}</b> &nbsp;|&nbsp; 📊 데이터: <b>${data.dates.length}일</b> &nbsp;|&nbsp; 🔄 계단식 보간`;
     }
 
-    // 기존 차트 제거
     Object.values(chartInstances).forEach(c => c?.destroy());
     chartInstances = {};
 
@@ -22732,140 +22722,34 @@ window.showAddHoldingModal = showAddHoldingModal;
           ctx.fillStyle = '#999';
           ctx.font = '14px sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText('스냅샷 데이터가 없습니다. 현재가를 먼저 입력하세요.', canvas.width/2, canvas.height/2);
+          ctx.fillText('데이터 없음', canvas.width/2, canvas.height/2);
         }
       });
       return;
     }
 
-    // 차트 1: 자산 추이
     chartInstances.total = new Chart(document.getElementById('chart-total'), {
       type: 'line',
-      data: {
-        labels: data.dates,
-        datasets: [{
-          label: '총 자산 (₩)',
-          data: data.totals,
-          borderColor: '#3b82f6',
-          backgroundColor: 'rgba(59,130,246,0.1)',
-          fill: true,
-          tension: 0.2,
-          pointRadius: 2,
-          borderWidth: 2
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: true },
-          tooltip: {
-            callbacks: {
-              label: ctx => `₩${Math.round(ctx.parsed.y).toLocaleString()}`
-            }
-          }
-        },
-        scales: {
-          y: { ticks: { callback: v => '₩' + (v/10000).toFixed(0) + '만' } }
-        }
-      }
+      data: { labels: data.dates, datasets: [{ label:'총 자산 (₩)', data: data.totals, borderColor:'#3b82f6', backgroundColor:'rgba(59,130,246,0.1)', fill:true, tension:0.2, pointRadius:2, borderWidth:2 }]},
+      options: { responsive:true, maintainAspectRatio:false, plugins:{ tooltip:{ callbacks:{ label: ctx => `₩${Math.round(ctx.parsed.y).toLocaleString()}` }}}, scales:{ y:{ ticks:{ callback: v => '₩'+(v/10000).toFixed(0)+'만' }}}}
     });
 
-    // 차트 2: 일별 손익
     chartInstances.profit = new Chart(document.getElementById('chart-profit'), {
       type: 'bar',
-      data: {
-        labels: data.dates,
-        datasets: [{
-          label: '일별 손익 (₩)',
-          data: data.profits,
-          backgroundColor: data.profits.map(p => p >= 0 ? 'rgba(239,68,68,0.7)' : 'rgba(59,130,246,0.7)'),
-          borderColor: data.profits.map(p => p >= 0 ? '#ef4444' : '#3b82f6'),
-          borderWidth: 1
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: ctx => {
-                const v = ctx.parsed.y;
-                return (v >= 0 ? '+' : '') + '₩' + Math.round(v).toLocaleString();
-              }
-            }
-          }
-        },
-        scales: {
-          y: { ticks: { callback: v => '₩' + (v/10000).toFixed(0) + '만' } }
-        }
-      }
+      data: { labels: data.dates, datasets: [{ label:'일별 손익 (₩)', data: data.profits, backgroundColor: data.profits.map(p => p >= 0 ? 'rgba(239,68,68,0.7)' : 'rgba(59,130,246,0.7)'), borderColor: data.profits.map(p => p >= 0 ? '#ef4444' : '#3b82f6'), borderWidth:1 }]},
+      options: { responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => (ctx.parsed.y>=0?'+':'')+'₩'+Math.round(ctx.parsed.y).toLocaleString() }}}, scales:{ y:{ ticks:{ callback: v => '₩'+(v/10000).toFixed(0)+'만' }}}}
     });
 
-    // 차트 3: 누적 수익률
     chartInstances.cumreturn = new Chart(document.getElementById('chart-cumreturn'), {
       type: 'line',
-      data: {
-        labels: data.dates,
-        datasets: [{
-          label: '누적 수익률 (%)',
-          data: data.cumReturns,
-          borderColor: '#10b981',
-          backgroundColor: 'rgba(16,185,129,0.1)',
-          fill: true,
-          tension: 0.2,
-          pointRadius: 2,
-          borderWidth: 2
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: true },
-          tooltip: {
-            callbacks: {
-              label: ctx => (ctx.parsed.y >= 0 ? '+' : '') + ctx.parsed.y.toFixed(2) + '%'
-            }
-          }
-        },
-        scales: {
-          y: { ticks: { callback: v => v.toFixed(1) + '%' } }
-        }
-      }
+      data: { labels: data.dates, datasets: [{ label:'누적 수익률 (%)', data: data.cumReturns, borderColor:'#10b981', backgroundColor:'rgba(16,185,129,0.1)', fill:true, tension:0.2, pointRadius:2, borderWidth:2 }]},
+      options: { responsive:true, maintainAspectRatio:false, plugins:{ tooltip:{ callbacks:{ label: ctx => (ctx.parsed.y>=0?'+':'')+ctx.parsed.y.toFixed(2)+'%' }}}, scales:{ y:{ ticks:{ callback: v => v.toFixed(1)+'%' }}}}
     });
 
-    // 차트 4: 종목별 수익률
     chartInstances.holdings = new Chart(document.getElementById('chart-holdings'), {
       type: 'bar',
-      data: {
-        labels: holdingReturns.map(h => `${h.name} (${h.ticker})`),
-        datasets: [{
-          label: '수익률 (%)',
-          data: holdingReturns.map(h => h.returnPct),
-          backgroundColor: holdingReturns.map(h => h.returnPct >= 0 ? 'rgba(239,68,68,0.7)' : 'rgba(59,130,246,0.7)'),
-          borderColor: holdingReturns.map(h => h.returnPct >= 0 ? '#ef4444' : '#3b82f6'),
-          borderWidth: 1
-        }]
-      },
-      options: {
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              label: ctx => (ctx.parsed.x >= 0 ? '+' : '') + ctx.parsed.x.toFixed(2) + '%'
-            }
-          }
-        },
-        scales: {
-          x: { ticks: { callback: v => v.toFixed(0) + '%' } }
-        }
-      }
+      data: { labels: holdingReturns.map(h => `${h.name} (${h.ticker})`), datasets: [{ label:'수익률 (%)', data: holdingReturns.map(h => h.returnPct), backgroundColor: holdingReturns.map(h => h.returnPct>=0?'rgba(239,68,68,0.7)':'rgba(59,130,246,0.7)'), borderColor: holdingReturns.map(h => h.returnPct>=0?'#ef4444':'#3b82f6'), borderWidth:1 }]},
+      options: { indexAxis:'y', responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label: ctx => (ctx.parsed.x>=0?'+':'')+ctx.parsed.x.toFixed(2)+'%' }}}, scales:{ x:{ ticks:{ callback: v => v.toFixed(0)+'%' }}}}
     });
   }
 
@@ -22877,34 +22761,12 @@ window.showAddHoldingModal = showAddHoldingModal;
       el.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#999;padding:20px;">데이터 없음</div>';
       return;
     }
-
     const cards = [
-      {
-        label: '📊 기간 수익률',
-        value: (stats.totalReturn >= 0 ? '+' : '') + stats.totalReturn.toFixed(2) + '%',
-        color: stats.totalReturn >= 0 ? '#ef4444' : '#3b82f6',
-        sub: `₩${Math.round(stats.startTotal).toLocaleString()} → ₩${Math.round(stats.currentTotal).toLocaleString()}`
-      },
-      {
-        label: '🚀 최고 수익일',
-        value: stats.bestDay ? '+₩' + Math.round(stats.bestDay.profit).toLocaleString() : '-',
-        color: '#ef4444',
-        sub: stats.bestDay ? stats.bestDay.date : ''
-      },
-      {
-        label: '📉 최대 손실일',
-        value: stats.worstDay ? '₩' + Math.round(stats.worstDay.profit).toLocaleString() : '-',
-        color: '#3b82f6',
-        sub: stats.worstDay ? stats.worstDay.date : ''
-      },
-      {
-        label: '🎯 승률',
-        value: stats.winRate.toFixed(1) + '%',
-        color: stats.winRate >= 50 ? '#ef4444' : '#3b82f6',
-        sub: `수익 ${stats.profitDays}일 / 손실 ${stats.lossDays}일`
-      }
+      { label:'📊 기간 수익률', value:(stats.totalReturn>=0?'+':'')+stats.totalReturn.toFixed(2)+'%', color: stats.totalReturn>=0?'#ef4444':'#3b82f6', sub:`₩${Math.round(stats.startTotal).toLocaleString()} → ₩${Math.round(stats.currentTotal).toLocaleString()}` },
+      { label:'🚀 최고 수익일', value: stats.bestDay?'+₩'+Math.round(stats.bestDay.profit).toLocaleString():'-', color:'#ef4444', sub: stats.bestDay?stats.bestDay.date:'' },
+      { label:'📉 최대 손실일', value: stats.worstDay?'₩'+Math.round(stats.worstDay.profit).toLocaleString():'-', color:'#3b82f6', sub: stats.worstDay?stats.worstDay.date:'' },
+      { label:'🎯 승률', value: stats.winRate.toFixed(1)+'%', color: stats.winRate>=50?'#ef4444':'#3b82f6', sub:`수익 ${stats.profitDays}일 / 손실 ${stats.lossDays}일` }
     ];
-
     el.innerHTML = cards.map(c => `
       <div style="background:#f8fafc;border-left:4px solid ${c.color};padding:12px;border-radius:6px;">
         <div style="font-size:11px;color:#666;margin-bottom:4px;">${c.label}</div>
@@ -22914,26 +22776,143 @@ window.showAddHoldingModal = showAddHoldingModal;
     `).join('');
   }
 
-  // ============ 6. 메뉴 주입 ============
+  // ============ 6. 백필 v2 (정확한 필드명) ============
+  async function backfillSnapshots(){
+    const confirm1 = confirm(
+      '⚠️ 매매 기록 기반 과거 스냅샷 자동 생성 (v2)\n\n' +
+      '• 매수일 ~ 오늘 일별 데이터 생성\n' +
+      '• 평균매수가 → 현재가로 선형 보간\n' +
+      '• 기존 스냅샷 보존\n\n' +
+      '계속하시겠습니까?'
+    );
+    if(!confirm1) return;
+
+    const holdings = await JournalDB.getAll('holdings');
+    const transactions = await JournalDB.getAll('transactions');
+    const existingSnaps = await JournalDB.getAll('daily_snapshots');
+    const existingKeys = new Set(existingSnaps.map(s => `${s.holdingId}_${s.date}`));
+
+    const latestByHolding = {};
+    existingSnaps.forEach(s => {
+      if(!latestByHolding[s.holdingId] || s.date > latestByHolding[s.holdingId].date){
+        latestByHolding[s.holdingId] = s;
+      }
+    });
+
+    const today = new Date().toISOString().split('T')[0];
+    let created = 0, skipped = 0;
+    const log = [];
+
+    for(const h of holdings){
+      if(h.status !== 'active') continue;
+      const myTx = transactions.filter(t => t.holdingId === h.id && t.type === 'buy').sort((a,b) => a.date.localeCompare(b.date));
+      if(myTx.length === 0){ log.push(`⚠️ ${h.name}: 매수 기록 없음`); continue; }
+
+      const firstBuyDate = myTx[0].date;
+      const latestSnap = latestByHolding[h.id];
+      const startPriceOriginal = h.avgBuyPriceOriginal ?? h.avgBuyPriceKRW ?? 0;
+      const endPriceOriginal = latestSnap 
+        ? (latestSnap.currentPriceOriginal ?? latestSnap.currentPriceKRW ?? startPriceOriginal)
+        : startPriceOriginal;
+      const endRate = latestSnap ? (latestSnap.exchangeRate || 1) : (h.currency === 'USD' ? 1380 : 1);
+
+      if(startPriceOriginal <= 0){ log.push(`⚠️ ${h.name}: 평균매수가 0`); continue; }
+
+      const start = new Date(firstBuyDate);
+      const end = new Date(today);
+      const dayMs = 86400000;
+      const totalDays = Math.floor((end - start) / dayMs);
+      if(totalDays < 0) continue;
+
+      let hCreated = 0;
+      for(let i = 0; i <= totalDays; i++){
+        const d = new Date(start.getTime() + i * dayMs);
+        const dateStr = d.toISOString().split('T')[0];
+        const key = `${h.id}_${dateStr}`;
+        if(existingKeys.has(key)){ skipped++; continue; }
+
+        const progress = totalDays > 0 ? (i / totalDays) : 1;
+        const interpPriceOriginal = startPriceOriginal + (endPriceOriginal - startPriceOriginal) * progress;
+
+        let qty = 0;
+        let totalCostOriginal = 0;
+        transactions.filter(t => t.holdingId === h.id && t.date <= dateStr).forEach(t => {
+          if(t.type === 'buy'){
+            qty += (t.quantity || 0);
+            totalCostOriginal += (t.grossAmount || (t.price * t.quantity)) + (t.fee || 0);
+          } else if(t.type === 'sell'){
+            if(qty > 0){
+              const avgCost = totalCostOriginal / qty;
+              totalCostOriginal -= avgCost * (t.quantity || 0);
+            }
+            qty -= (t.quantity || 0);
+          }
+        });
+        if(qty <= 0) continue;
+
+        const avgPriceOriginal = qty > 0 ? totalCostOriginal / qty : startPriceOriginal;
+        const currentValueOriginal = interpPriceOriginal * qty;
+        const profitLossOriginal = currentValueOriginal - totalCostOriginal;
+        const profitRateOriginal = totalCostOriginal > 0 ? (profitLossOriginal / totalCostOriginal * 100) : 0;
+        const rate = h.currency === 'USD' ? endRate : 1;
+
+        const snapshot = {
+          id: `snap_bf_${h.id}_${dateStr}`,
+          holdingId: h.id,
+          date: dateStr,
+          ticker: h.ticker,
+          name: h.name,
+          currency: h.currency,
+          quantity: qty,
+          exchangeRate: rate,
+          avgBuyPriceOriginal: Math.round(avgPriceOriginal * 100) / 100,
+          currentPriceOriginal: Math.round(interpPriceOriginal * 100) / 100,
+          totalInvestOriginal: Math.round(totalCostOriginal),
+          currentValueOriginal: Math.round(currentValueOriginal),
+          profitLossOriginal: Math.round(profitLossOriginal),
+          profitRateOriginal: Math.round(profitRateOriginal * 100) / 100,
+          avgBuyPriceKRW: Math.round(avgPriceOriginal * rate * 100) / 100,
+          currentPriceKRW: Math.round(interpPriceOriginal * rate * 100) / 100,
+          totalInvestKRW: Math.round(totalCostOriginal * rate),
+          currentValueKRW: Math.round(currentValueOriginal * rate),
+          profitLossKRW: Math.round(profitLossOriginal * rate),
+          profitRateKRW: Math.round(profitRateOriginal * 100) / 100,
+          pureStockProfitKRW: Math.round(profitLossOriginal * rate),
+          exchangeProfitKRW: 0,
+          notes: '[자동 백필 v2]',
+          isBackfilled: true,
+          createdAt: new Date().toISOString()
+        };
+
+        try {
+          await JournalDB.add('daily_snapshots', snapshot);
+          created++;
+          hCreated++;
+        } catch(err){}
+      }
+      log.push(`✅ ${h.name}: ${hCreated}일 (${startPriceOriginal.toLocaleString()} → ${endPriceOriginal.toLocaleString()})`);
+    }
+
+    alert(`🎉 백필 v2 완료!\n\n✅ 생성: ${created}건\n⏭️ 유지: ${skipped}건\n\n${log.join('\n')}`);
+    document.getElementById('chart-modal')?.remove();
+    showChartModal();
+  }
+
+  // ============ 7. 메뉴 주입 ============
   function injectChartMenuItem(){
     const panel = document.getElementById('menu-panel');
     if(!panel || panel.querySelector('#chart-menu-btn')) return;
-
     const journalSection = panel.querySelector('#journal-menu-section');
     if(!journalSection) return;
-
     const btn = document.createElement('button');
     btn.id = 'chart-menu-btn';
     btn.textContent = '📈 수익률 차트';
     btn.style.cssText = 'width:100%;padding:10px;margin:4px 0;background:#ecfdf5;border:1px solid #10b981;border-radius:6px;cursor:pointer;font-size:14px;text-align:left;';
-    btn.onclick = (e) => {
-      e.stopPropagation();
-      showChartModal();
-    };
+    btn.onclick = (e) => { e.stopPropagation(); showChartModal(); };
     journalSection.appendChild(btn);
   }
 
-  // ============ 7. 대시보드에 버튼 추가 ============
+  // ============ 8. 대시보드 버튼 ============
   const origShowDashboard = window.showDashboardModal;
   if(typeof origShowDashboard === 'function'){
     window.showDashboardModal = async function(){
@@ -22954,7 +22933,7 @@ window.showAddHoldingModal = showAddHoldingModal;
     };
   }
 
-  // ============ 8. 단축키 ============
+  // ============ 9. 단축키 ============
   document.addEventListener('keydown', (e) => {
     if(e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')){
       e.preventDefault();
@@ -22962,28 +22941,23 @@ window.showAddHoldingModal = showAddHoldingModal;
     }
   });
 
-  // ============ 9. 외부 노출 ============
+  // ============ 10. 외부 노출 ============
   window.showChartModal = showChartModal;
+  window.backfillSnapshots = backfillSnapshots;
 
-  // ============ 10. 초기화 ============
+  // ============ 11. 초기화 ============
   async function init(){
     try {
       const snapCount = await JournalDB.count('daily_snapshots');
-      console.log(`✅ Stock Journal Phase 3.5 초기화 완료 (스냅샷: ${snapCount}건)`);
-      console.log(`   📈 차트 단축키: Ctrl+Shift+C`);
-      
-      // 메뉴 항목 주입 (지연)
+      console.log(`✅ Phase 3.5 v2 초기화 완료 (스냅샷: ${snapCount}건, 백필 v2 통합)`);
+      console.log(`   📈 차트: Ctrl+Shift+C`);
       setTimeout(injectChartMenuItem, 500);
-      
-      // 메뉴 열릴 때마다 재주입
       const menuBtn = document.getElementById('floating-menu-btn');
       if(menuBtn){
-        menuBtn.addEventListener('click', () => {
-          setTimeout(injectChartMenuItem, 100);
-        });
+        menuBtn.addEventListener('click', () => setTimeout(injectChartMenuItem, 100));
       }
     } catch(err){
-      console.error('Phase 3.5 init error:', err);
+      console.error('Phase 3.5 v2 init error:', err);
     }
   }
 
@@ -22992,167 +22966,6 @@ window.showAddHoldingModal = showAddHoldingModal;
   } else {
     init();
   }
-// ============ 11. 과거 데이터 백필 (매매 기록 기반) ============
-async function backfillSnapshots(){
-  const confirm1 = confirm(
-    '⚠️ 매매 기록 기반으로 과거 스냅샷을 자동 생성합니다.\n\n' +
-    '• 매수일부터 오늘까지 일별 데이터 생성\n' +
-    '• 가격은 현재 입력된 평균매수가 → 최신 가격으로 보간\n' +
-    '• 기존 스냅샷은 유지 (덮어쓰지 않음)\n\n' +
-    '계속하시겠습니까?'
-  );
-  if(!confirm1) return;
-
-  const holdings = await JournalDB.getAll('holdings');
-  const transactions = await JournalDB.getAll('transactions');
-  const existingSnaps = await JournalDB.getAll('daily_snapshots');
-  
-  // 기존 스냅샷 인덱스 (holdingId + date)
-  const existingKeys = new Set(existingSnaps.map(s => `${s.holdingId}_${s.date}`));
-  
-  // 최신 스냅샷 (현재가 참조용)
-  const latestSnapByHolding = {};
-  existingSnaps.forEach(s => {
-    if(!latestSnapByHolding[s.holdingId] || s.date > latestSnapByHolding[s.holdingId].date){
-      latestSnapByHolding[s.holdingId] = s;
-    }
-  });
-
-  const today = new Date().toISOString().split('T')[0];
-  let created = 0;
-  let skipped = 0;
-  const log = [];
-
-  for(const h of holdings){
-    if(h.status !== 'active') continue;
-    
-    // 이 종목의 첫 매수일 찾기
-    const myTx = transactions
-      .filter(t => t.holdingId === h.id && t.type === 'buy')
-      .sort((a,b) => a.date.localeCompare(b.date));
-    
-    if(myTx.length === 0){
-      log.push(`⚠️ ${h.name}: 매수 기록 없음, 건너뜀`);
-      continue;
-    }
-
-    const firstBuyDate = myTx[0].date;
-    const latestSnap = latestSnapByHolding[h.id];
-    const endPrice = latestSnap ? latestSnap.currentPrice : h.averagePrice;
-    const endRate = latestSnap ? (latestSnap.exchangeRate || 1) : (h.currency === 'USD' ? 1380 : 1);
-    const startPrice = h.averagePrice;
-    
-    // 날짜 범위 생성 (첫 매수일 ~ 오늘)
-    const start = new Date(firstBuyDate);
-    const end = new Date(today);
-    const dayMs = 86400000;
-    const totalDays = Math.floor((end - start) / dayMs);
-    
-    if(totalDays < 0) continue;
-
-    let hCreated = 0;
-    for(let i = 0; i <= totalDays; i++){
-      const d = new Date(start.getTime() + i * dayMs);
-      const dateStr = d.toISOString().split('T')[0];
-      const key = `${h.id}_${dateStr}`;
-      
-      if(existingKeys.has(key)){
-        skipped++;
-        continue;
-      }
-
-      // 선형 보간 (매수가 → 현재가)
-      const progress = totalDays > 0 ? (i / totalDays) : 1;
-      const interpPrice = startPrice + (endPrice - startPrice) * progress;
-      
-      // 해당 시점의 보유 수량 계산
-      let qty = 0;
-      let totalCost = 0;
-      transactions
-        .filter(t => t.holdingId === h.id && t.date <= dateStr)
-        .forEach(t => {
-          if(t.type === 'buy'){
-            qty += t.quantity;
-            totalCost += t.quantity * t.price + (t.fee || 0);
-          } else if(t.type === 'sell'){
-            if(qty > 0){
-              const avgCost = totalCost / qty;
-              totalCost -= avgCost * t.quantity;
-            }
-            qty -= t.quantity;
-          }
-        });
-      
-      if(qty <= 0) continue;
-      
-      const avgPrice = qty > 0 ? totalCost / qty : startPrice;
-      const currentValue = interpPrice * qty;
-      const costValue = avgPrice * qty;
-      const profit = currentValue - costValue;
-      const profitRate = costValue > 0 ? (profit / costValue * 100) : 0;
-
-      const snapshot = {
-        id: `snap_${h.id}_${dateStr}`,
-        holdingId: h.id,
-        date: dateStr,
-        currentPrice: Math.round(interpPrice * 100) / 100,
-        quantity: qty,
-        averagePrice: Math.round(avgPrice * 100) / 100,
-        exchangeRate: endRate,
-        currentValue: Math.round(currentValue),
-        profit: Math.round(profit),
-        profitRate: Math.round(profitRate * 100) / 100,
-        notes: '[자동 백필] 매매 기록 기반 추정',
-        isBackfilled: true,
-        createdAt: new Date().toISOString()
-      };
-
-      try {
-        await JournalDB.add('daily_snapshots', snapshot);
-        created++;
-        hCreated++;
-      } catch(err){
-        // 중복이면 무시
-      }
-    }
-    log.push(`✅ ${h.name}: ${hCreated}일 생성`);
-  }
-
-  alert(
-    `🎉 백필 완료!\n\n` +
-    `✅ 새로 생성: ${created}건\n` +
-    `⏭️ 기존 유지: ${skipped}건\n\n` +
-    log.join('\n')
-  );
-
-  // 차트 새로고침
-  document.getElementById('chart-modal')?.remove();
-  showChartModal();
-}
-
-window.backfillSnapshots = backfillSnapshots;
-
-// 차트 모달에 백필 버튼 추가
-const origShowChartModal = showChartModal;
-showChartModal = async function(){
-  await origShowChartModal.apply(this, arguments);
-  setTimeout(() => {
-    const modal = document.getElementById('chart-modal');
-    if(!modal || modal.querySelector('#backfill-btn')) return;
-    const closeBtn = modal.querySelector('#chart-close');
-    if(closeBtn && closeBtn.parentElement){
-      const backfillBtn = document.createElement('button');
-      backfillBtn.id = 'backfill-btn';
-      backfillBtn.textContent = '🔄 과거 데이터 백필';
-      backfillBtn.title = '매매 기록 기반으로 과거 스냅샷 자동 생성';
-      backfillBtn.style.cssText = 'margin-right:10px;padding:6px 12px;background:#f59e0b;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;';
-      backfillBtn.onclick = (e) => { e.stopPropagation(); backfillSnapshots(); };
-      closeBtn.parentElement.insertBefore(backfillBtn, closeBtn);
-    }
-  }, 100);
-};
-window.showChartModal = showChartModal;
-  
 })();
 </script>
 
