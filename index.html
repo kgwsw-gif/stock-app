@@ -24402,6 +24402,95 @@ window.showAddHoldingModal = showAddHoldingModal;
 
 <script>
 /* ============================================================
+   🎯 시그널 적중률 메뉴 통합 v2
+   - 떠다니는 hitrate-box 영구 숨김
+   - 메뉴에서 클릭 시 적중률 박스 표시
+   ============================================================ */
+(function(){
+  if(window._hitrateMenuV2Installed) return;
+  window._hitrateMenuV2Installed = true;
+  
+  const style = document.createElement('style');
+  style.id = 'hitrate-permanent-hide';
+  style.textContent = `
+    #hitrate-box {
+      visibility: hidden !important;
+      pointer-events: none !important;
+      opacity: 0 !important;
+    }
+    #hitrate-box.menu-opened {
+      visibility: visible !important;
+      pointer-events: auto !important;
+      opacity: 1 !important;
+    }
+  `;
+  document.head.appendChild(style);
+  
+  window.openHitrateFromMenu = function(){
+    let box = document.getElementById('hitrate-box');
+    if(box){
+      box.classList.add('menu-opened');
+    } else {
+      if(typeof window.showDualHitRate === 'function'){
+        window.showDualHitRate();
+        setTimeout(() => {
+          box = document.getElementById('hitrate-box');
+          if(box) box.classList.add('menu-opened');
+        }, 100);
+      }
+    }
+    const panel = document.getElementById('menu-panel');
+    if(panel) panel.style.display = 'none';
+  };
+  
+  document.addEventListener('click', function(e){
+    const box = document.getElementById('hitrate-box');
+    if(!box || !box.classList.contains('menu-opened')) return;
+    
+    const closeBtn = e.target.closest('button, span, div');
+    if(closeBtn && (closeBtn.textContent.trim() === '×' || closeBtn.textContent.trim() === '✕' || closeBtn.textContent.trim() === 'X')){
+      if(box.contains(closeBtn)){
+        box.classList.remove('menu-opened');
+      }
+    }
+  }, true);
+  
+  function injectMenuItem(){
+    const panel = document.getElementById('menu-panel');
+    if(!panel) return false;
+    if(panel.querySelector('#hitrate-menu-btn')) return true;
+    
+    const btn = document.createElement('button');
+    btn.id = 'hitrate-menu-btn';
+    btn.textContent = '🎯 시그널 적중률';
+    btn.style.cssText = `
+      display:block; width:calc(100% - 20px); padding:12px 16px; margin:8px 10px;
+      background:linear-gradient(135deg, #10b981, #059669);
+      color:white; border:none; border-radius:8px;
+      cursor:pointer; font-size:14px; font-weight:600; text-align:left;
+    `;
+    btn.onclick = () => window.openHitrateFromMenu();
+    
+    panel.appendChild(btn);
+    return true;
+  }
+  
+  function init(){
+    setInterval(injectMenuItem, 2000);
+    setTimeout(injectMenuItem, 500);
+    console.log('✅ 시그널 적중률 메뉴 통합 v2 활성화');
+  }
+  
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    setTimeout(init, 300);
+  }
+})();
+</script>
+  
+<script>
+/* ============================================================
    🔗 메뉴 함수 별칭 매핑 v2 (인자 0개 함수 우선)
    ============================================================ */
 (function(){
