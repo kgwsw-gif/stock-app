@@ -24399,6 +24399,68 @@ window.showAddHoldingModal = showAddHoldingModal;
   }
 })();
 </script>
+
+<script>
+/* ============================================================
+   🔗 메뉴 함수 별칭 매핑 (Alias)
+   - 메뉴 버튼이 호출하는 짧은 이름 → 실제 함수에 연결
+   ============================================================ */
+(function(){
+  if(window._menuAliasInstalled) return;
+  window._menuAliasInstalled = true;
+  
+  const aliases = {
+    showFlow: 'showFlowModal',
+    showCharts: 'showBSACharts',
+    showChange: 'showTodayChangesModal',
+    showSector: 'showSectorTrendChart',
+    showTracker: 'showStockTracker',
+    showWatch: 'showWatchList',
+    showBackup: 'showBackupManager',
+    showMacro: 'showMacroData',
+    showRegime: 'showMarketRegime',
+    showVal: 'showValidation',
+    showExpiry: 'showExpirationCalendar',
+    showWagThe: 'showWagTheDog',
+    showStrong: 'showStrongCandidates',
+    showSim: 'showSimulator'
+  };
+  
+  function installAliases(){
+    let installed = 0;
+    Object.entries(aliases).forEach(([alias, real]) => {
+      if(typeof window[real] === 'function' && typeof window[alias] !== 'function'){
+        window[alias] = (...args) => window[real](...args);
+        installed++;
+      }
+    });
+    return installed;
+  }
+  
+  let count = installAliases();
+  console.log(`✅ 메뉴 함수 별칭 ${count}개 등록`);
+  
+  let retries = 0;
+  const retryInterval = setInterval(() => {
+    const newCount = installAliases();
+    if(newCount > count){
+      console.log(`🔄 추가 별칭 ${newCount - count}개 등록 (총 ${newCount}개)`);
+      count = newCount;
+    }
+    retries++;
+    if(retries >= 3 || count >= Object.keys(aliases).length){
+      clearInterval(retryInterval);
+      console.log(`✅ 별칭 설치 완료 (${count}/${Object.keys(aliases).length})`);
+    }
+  }, 2000);
+  
+  if(typeof window.showCsv !== 'function'){
+    window.showCsv = () => {
+      alert('💡 CSV 다운로드는 차트 모달 안의 CSV 버튼을 사용하세요.\n\n📈 수익률 차트 & 분석 → 📥 CSV 내보내기');
+    };
+  }
+})();
+</script>
   
   <script>
 /* ===== Patch #40 + #41 + #42 최종 통합 ===== */
