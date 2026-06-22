@@ -22992,6 +22992,167 @@ window.showAddHoldingModal = showAddHoldingModal;
   } else {
     init();
   }
+// ============ 11. 과거 데이터 백필 (매매 기록 기반) ============
+async function backfillSnapshots(){
+  const confirm1 = confirm(
+    '⚠️ 매매 기록 기반으로 과거 스냅샷을 자동 생성합니다.\n\n' +
+    '• 매수일부터 오늘까지 일별 데이터 생성\n' +
+    '• 가격은 현재 입력된 평균매수가 → 최신 가격으로 보간\n' +
+    '• 기존 스냅샷은 유지 (덮어쓰지 않음)\n\n' +
+    '계속하시겠습니까?'
+  );
+  if(!confirm1) return;
+
+  const holdings = await JournalDB.getAll('holdings');
+  const transactions = await JournalDB.getAll('transactions');
+  const existingSnaps = await JournalDB.getAll('daily_snapshots');
+  
+  // 기존 스냅샷 인덱스 (holdingId + date)
+  const existingKeys = new Set(existingSnaps.map(s => `${s.holdingId}_${s.date}`));
+  
+  // 최신 스냅샷 (현재가 참조용)
+  const latestSnapByHolding = {};
+  existingSnaps.forEach(s => {
+    if(!latestSnapByHolding[s.holdingId] || s.date > latestSnapByHolding[s.holdingId].date){
+      latestSnapByHolding[s.holdingId] = s;
+    }
+  });
+
+  const today = new Date().toISOString().split('T')[0];
+  let created = 0;
+  let skipped = 0;
+  const log = [];
+
+  for(const h of holdings){
+    if(h.status !== 'active') continue;
+    
+    // 이 종목의 첫 매수일 찾기
+    const myTx = transactions
+      .filter(t => t.holdingId === h.id && t.type === 'buy')
+      .sort((a,b) => a.date.localeCompare(b.date));
+    
+    if(myTx.length === 0){
+      log.push(`⚠️ ${h.name}: 매수 기록 없음, 건너뜀`);
+      continue;
+    }
+
+    const firstBuyDate = myTx[0].date;
+    const latestSnap = latestSnapByHolding[h.id];
+    const endPrice = latestSnap ? latestSnap.currentPrice : h.averagePrice;
+    const endRate = latestSnap ? (latestSnap.exchangeRate || 1) : (h.currency === 'USD' ? 1380 : 1);
+    const startPrice = h.averagePrice;
+    
+    // 날짜 범위 생성 (첫 매수일 ~ 오늘)
+    const start = new Date(firstBuyDate);
+    const end = new Date(today);
+    const dayMs = 86400000;
+    const totalDays = Math.floor((end - start) / dayMs);
+    
+    if(totalDays < 0) continue;
+
+    let hCreated = 0;
+    for(let i = 0; i <= totalDays; i++){
+      const d = new Date(start.getTime() + i * dayMs);
+      const dateStr = d.toISOString().split('T')[0];
+      const key = `${h.id}_${dateStr}`;
+      
+      if(existingKeys.has(key)){
+        skipped++;
+        continue;
+      }
+
+      // 선형 보간 (매수가 → 현재가)
+      const progress = totalDays > 0 ? (i / totalDays) : 1;
+      const interpPrice = startPrice + (endPrice - startPrice) * progress;
+      
+      // 해당 시점의 보유 수량 계산
+      let qty = 0;
+      let totalCost = 0;
+      transactions
+        .filter(t => t.holdingId === h.id && t.date <= dateStr)
+        .forEach(t => {
+          if(t.type === 'buy'){
+            qty += t.quantity;
+            totalCost += t.quantity * t.price + (t.fee || 0);
+          } else if(t.type === 'sell'){
+            if(qty > 0){
+              const avgCost = totalCost / qty;
+              totalCost -= avgCost * t.quantity;
+            }
+            qty -= t.quantity;
+          }
+        });
+      
+      if(qty <= 0) continue;
+      
+      const avgPrice = qty > 0 ? totalCost / qty : startPrice;
+      const currentValue = interpPrice * qty;
+      const costValue = avgPrice * qty;
+      const profit = currentValue - costValue;
+      const profitRate = costValue > 0 ? (profit / costValue * 100) : 0;
+
+      const snapshot = {
+        id: `snap_${h.id}_${dateStr}`,
+        holdingId: h.id,
+        date: dateStr,
+        currentPrice: Math.round(interpPrice * 100) / 100,
+        quantity: qty,
+        averagePrice: Math.round(avgPrice * 100) / 100,
+        exchangeRate: endRate,
+        currentValue: Math.round(currentValue),
+        profit: Math.round(profit),
+        profitRate: Math.round(profitRate * 100) / 100,
+        notes: '[자동 백필] 매매 기록 기반 추정',
+        isBackfilled: true,
+        createdAt: new Date().toISOString()
+      };
+
+      try {
+        await JournalDB.add('daily_snapshots', snapshot);
+        created++;
+        hCreated++;
+      } catch(err){
+        // 중복이면 무시
+      }
+    }
+    log.push(`✅ ${h.name}: ${hCreated}일 생성`);
+  }
+
+  alert(
+    `🎉 백필 완료!\n\n` +
+    `✅ 새로 생성: ${created}건\n` +
+    `⏭️ 기존 유지: ${skipped}건\n\n` +
+    log.join('\n')
+  );
+
+  // 차트 새로고침
+  document.getElementById('chart-modal')?.remove();
+  showChartModal();
+}
+
+window.backfillSnapshots = backfillSnapshots;
+
+// 차트 모달에 백필 버튼 추가
+const origShowChartModal = showChartModal;
+showChartModal = async function(){
+  await origShowChartModal.apply(this, arguments);
+  setTimeout(() => {
+    const modal = document.getElementById('chart-modal');
+    if(!modal || modal.querySelector('#backfill-btn')) return;
+    const closeBtn = modal.querySelector('#chart-close');
+    if(closeBtn && closeBtn.parentElement){
+      const backfillBtn = document.createElement('button');
+      backfillBtn.id = 'backfill-btn';
+      backfillBtn.textContent = '🔄 과거 데이터 백필';
+      backfillBtn.title = '매매 기록 기반으로 과거 스냅샷 자동 생성';
+      backfillBtn.style.cssText = 'margin-right:10px;padding:6px 12px;background:#f59e0b;color:white;border:none;border-radius:6px;cursor:pointer;font-size:13px;';
+      backfillBtn.onclick = (e) => { e.stopPropagation(); backfillSnapshots(); };
+      closeBtn.parentElement.insertBefore(backfillBtn, closeBtn);
+    }
+  }, 100);
+};
+window.showChartModal = showChartModal;
+  
 })();
 </script>
 
