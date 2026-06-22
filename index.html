@@ -24254,6 +24254,152 @@ window.showAddHoldingModal = showAddHoldingModal;
   }
 })();
 </script>
+
+  <script>
+/* ============================================================
+   🧹 메뉴 자동 정리 v3 + X 버튼 동작 수정
+   - 중복 백업/리포트 버튼 자동 제거 (MutationObserver)
+   - 모달 X 클릭 시 메뉴 패널 보호
+   ============================================================ */
+(function(){
+  if(window._menuCleanV3Installed) return;
+  window._menuCleanV3Installed = true;
+
+  // ─── 1. 메뉴 중복 정리 ───────────────────
+  function cleanMenu(){
+    const panel = document.getElementById('menu-panel');
+    if(!panel) return 0;
+    let fixed = 0;
+    
+    panel.querySelectorAll('button').forEach(btn => {
+      const fullText = btn.textContent;
+      if(fullText.includes('💾 데이터 백업/복구') || fullText.includes('📊 주간 리포트')){
+        Array.from(btn.querySelectorAll('*')).forEach(child => {
+          const ct = child.textContent.trim();
+          if((ct === '💾 데이터 백업/복구' || ct === '📊 주간 리포트') && ct.length < 30){
+            child.remove();
+            fixed++;
+          }
+        });
+        Array.from(btn.childNodes).forEach(node => {
+          if(node.nodeType === 3){
+            const cleaned = node.textContent
+              .replace(/💾\s*데이터\s*백업\/?복구/g, '')
+              .replace(/📊\s*주간\s*리포트/g, '');
+            if(cleaned !== node.textContent){
+              node.textContent = cleaned;
+              fixed++;
+            }
+          }
+        });
+      }
+    });
+    
+    Array.from(panel.children).forEach(child => {
+      const text = child.textContent.replace(/\s+/g, ' ').trim();
+      if((text === '💾 데이터 백업/복구' || text === '📊 주간 리포트') 
+         && child.tagName === 'DIV' && child.children.length === 0){
+        child.remove();
+        fixed++;
+      }
+    });
+    
+    const diarySection = document.getElementById('journal-menu-section');
+    if(diarySection){
+      Array.from(diarySection.querySelectorAll('div')).forEach(div => {
+        const text = div.textContent.replace(/\s+/g, ' ').trim();
+        if((text === '💾 데이터 백업/복구' || text === '📊 주간 리포트') 
+           && div.children.length === 0){
+          div.remove();
+          fixed++;
+        }
+      });
+    }
+    return fixed;
+  }
+
+  // ─── 2. MutationObserver 감시 ───────────────────
+  const observer = new MutationObserver((mutations) => {
+    let shouldClean = false;
+    for(const m of mutations){
+      if(m.addedNodes.length > 0){
+        for(const node of m.addedNodes){
+          if(node.nodeType === 1){
+            const text = node.textContent || '';
+            if(text.includes('백업/복구') || text.includes('주간 리포트') || 
+               text.includes('일지') || text.includes('대시보드')){
+              shouldClean = true;
+              break;
+            }
+          }
+        }
+      }
+      if(shouldClean) break;
+    }
+    if(shouldClean){
+      setTimeout(cleanMenu, 100);
+    }
+  });
+
+  function startObserving(){
+    const panel = document.getElementById('menu-panel');
+    if(panel){
+      observer.observe(panel, { childList: true, subtree: true });
+    } else {
+      observer.observe(document.body, { childList: true, subtree: true });
+      const checkInterval = setInterval(() => {
+        const p = document.getElementById('menu-panel');
+        if(p){
+          observer.disconnect();
+          observer.observe(p, { childList: true, subtree: true });
+          clearInterval(checkInterval);
+        }
+      }, 1000);
+    }
+  }
+
+  // ─── 3. X 버튼 동작 수정 (메뉴 보호) ───────────────────
+  // 모달의 X 버튼 클릭 시 모달만 닫고, 메뉴 패널은 살아남게 함
+  document.addEventListener('click', function(e){
+    const closeBtn = e.target.closest('[id$="-close"], .modal-close, .close-btn');
+    if(!closeBtn) return;
+    
+    // 메뉴 패널의 닫기 버튼이면 정상 작동 (메뉴 닫기)
+    const menuPanel = closeBtn.closest('#menu-panel');
+    if(menuPanel) return;
+    
+    // 모달 내부의 X 버튼이면, 모달 닫은 후 메뉴 상태 보호
+    const modal = closeBtn.closest('[id$="-modal"], .modal');
+    if(modal){
+      // 모달 닫힘 - 메뉴 패널 상태는 그대로 유지
+      // (메뉴는 이미 닫혀있을 수 있지만, 사용자가 다시 열면 정상 동작해야 함)
+      setTimeout(() => {
+        // 메뉴 버튼이 정상적으로 작동하는지 확인
+        const menuBtn = document.getElementById('floating-menu-btn');
+        if(menuBtn && menuBtn.style.display === 'none'){
+          menuBtn.style.display = 'flex';
+        }
+      }, 200);
+    }
+  }, true);
+
+  // ─── 4. 초기화 ───────────────────
+  function init(){
+    cleanMenu();
+    startObserving();
+    setInterval(cleanMenu, 3000);
+    console.log('✅ 메뉴 자동 정리 v3 활성화 (중복 제거 + 메뉴 보호)');
+  }
+  
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    setTimeout(init, 500);
+  }
+})();
+</script>
+
+  
 <script>
 /* ============================================================
    🧹 메뉴 자동 정리 v3 (영구)
