@@ -24256,6 +24256,122 @@ window.showAddHoldingModal = showAddHoldingModal;
 </script>
 <script>
 /* ============================================================
+   🧹 메뉴 자동 정리 v3 (영구)
+   - 중복 백업/리포트 버튼 자동 제거
+   - MutationObserver + 3초 주기 정리
+   ============================================================ */
+(function(){
+  if(window._menuAutoCleanInstalled) return;
+  window._menuAutoCleanInstalled = true;
+
+  function cleanMenu(){
+    const panel = document.getElementById('menu-panel');
+    if(!panel) return 0;
+    let fixed = 0;
+    
+    panel.querySelectorAll('button').forEach(btn => {
+      const fullText = btn.textContent;
+      if(fullText.includes('💾 데이터 백업/복구') || fullText.includes('📊 주간 리포트')){
+        Array.from(btn.querySelectorAll('*')).forEach(child => {
+          const ct = child.textContent.trim();
+          if((ct === '💾 데이터 백업/복구' || ct === '📊 주간 리포트') && ct.length < 30){
+            child.remove();
+            fixed++;
+          }
+        });
+        Array.from(btn.childNodes).forEach(node => {
+          if(node.nodeType === 3){
+            const cleaned = node.textContent
+              .replace(/💾\s*데이터\s*백업\/?복구/g, '')
+              .replace(/📊\s*주간\s*리포트/g, '');
+            if(cleaned !== node.textContent){
+              node.textContent = cleaned;
+              fixed++;
+            }
+          }
+        });
+      }
+    });
+    
+    Array.from(panel.children).forEach(child => {
+      const text = child.textContent.replace(/\s+/g, ' ').trim();
+      if((text === '💾 데이터 백업/복구' || text === '📊 주간 리포트') 
+         && child.tagName === 'DIV' && child.children.length === 0){
+        child.remove();
+        fixed++;
+      }
+    });
+    
+    const diarySection = document.getElementById('journal-menu-section');
+    if(diarySection){
+      Array.from(diarySection.querySelectorAll('div')).forEach(div => {
+        const text = div.textContent.replace(/\s+/g, ' ').trim();
+        if((text === '💾 데이터 백업/복구' || text === '📊 주간 리포트') 
+           && div.children.length === 0){
+          div.remove();
+          fixed++;
+        }
+      });
+    }
+    return fixed;
+  }
+
+  const observer = new MutationObserver((mutations) => {
+    let shouldClean = false;
+    for(const m of mutations){
+      if(m.addedNodes.length > 0){
+        for(const node of m.addedNodes){
+          if(node.nodeType === 1){
+            const text = node.textContent || '';
+            if(text.includes('백업/복구') || text.includes('주간 리포트') || 
+               text.includes('일지') || text.includes('대시보드')){
+              shouldClean = true;
+              break;
+            }
+          }
+        }
+      }
+      if(shouldClean) break;
+    }
+    if(shouldClean){
+      setTimeout(() => { cleanMenu(); }, 100);
+    }
+  });
+
+  function startObserving(){
+    const panel = document.getElementById('menu-panel');
+    if(panel){
+      observer.observe(panel, { childList: true, subtree: true });
+    } else {
+      observer.observe(document.body, { childList: true, subtree: true });
+      const checkInterval = setInterval(() => {
+        const p = document.getElementById('menu-panel');
+        if(p){
+          observer.disconnect();
+          observer.observe(p, { childList: true, subtree: true });
+          clearInterval(checkInterval);
+        }
+      }, 1000);
+    }
+  }
+  
+  function init(){
+    cleanMenu();
+    startObserving();
+    setInterval(cleanMenu, 3000);
+    console.log('✅ 메뉴 자동 정리 v3 활성화');
+  }
+  
+  if(document.readyState === 'loading'){
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    setTimeout(init, 500);
+  }
+})();
+</script>
+  
+<script>
+/* ============================================================
    📱 통합 메뉴 시스템 v1 (모바일 친화)
    - 모든 기능을 카테고리별로 정리
    - 한 페이지 스크롤 방식
