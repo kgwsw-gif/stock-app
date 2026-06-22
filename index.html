@@ -20262,6 +20262,475 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   overflow: hidden !important;
 }
 </style>
+  
+<script>
+/* ============================================================
+   📔 Stock Journal System - Phase 1
+   IndexedDB 기반 보유 종목 관리
+   ============================================================ */
+(function(){
+  if(window._journalPhase1Installed) return;
+  window._journalPhase1Installed = true;
+
+  // ====== 1. IndexedDB 초기화 ======
+  const DB_NAME = 'StockJournalDB';
+  const DB_VERSION = 1;
+  let dbInstance = null;
+
+  function openDB(){
+    return new Promise((resolve, reject)=>{
+      if(dbInstance){ resolve(dbInstance); return; }
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onerror = ()=> reject(req.error);
+      req.onsuccess = ()=>{
+        dbInstance = req.result;
+        resolve(dbInstance);
+      };
+      req.onupgradeneeded = (e)=>{
+        const db = e.target.result;
+
+        // holdings 테이블
+        if(!db.objectStoreNames.contains('holdings')){
+          const store = db.createObjectStore('holdings', { keyPath: 'id' });
+          store.createIndex('ticker', 'ticker', { unique: false });
+          store.createIndex('status', 'status', { unique: false });
+          store.createIndex('currency', 'currency', { unique: false });
+          store.createIndex('createdAt', 'createdAt', { unique: false });
+        }
+
+        // daily_snapshots 테이블
+        if(!db.objectStoreNames.contains('daily_snapshots')){
+          const store = db.createObjectStore('daily_snapshots', { keyPath: 'id' });
+          store.createIndex('date', 'date', { unique: false });
+          store.createIndex('ticker', 'ticker', { unique: false });
+          store.createIndex('holdingId', 'holdingId', { unique: false });
+        }
+
+        // diary_entries 테이블
+        if(!db.objectStoreNames.contains('diary_entries')){
+          const store = db.createObjectStore('diary_entries', { keyPath: 'id' });
+          store.createIndex('date', 'date', { unique: true });
+          store.createIndex('mood', 'mood', { unique: false });
+        }
+
+        // transactions 테이블
+        if(!db.objectStoreNames.contains('transactions')){
+          const store = db.createObjectStore('transactions', { keyPath: 'id' });
+          store.createIndex('date', 'date', { unique: false });
+          store.createIndex('ticker', 'ticker', { unique: false });
+          store.createIndex('type', 'type', { unique: false });
+          store.createIndex('holdingId', 'holdingId', { unique: false });
+        }
+
+        // dividends 테이블
+        if(!db.objectStoreNames.contains('dividends')){
+          const store = db.createObjectStore('dividends', { keyPath: 'id' });
+          store.createIndex('date', 'date', { unique: false });
+          store.createIndex('ticker', 'ticker', { unique: false });
+          store.createIndex('holdingId', 'holdingId', { unique: false });
+        }
+
+        console.log('✅ IndexedDB 스키마 생성 완료 (5개 테이블)');
+      };
+    });
+  }
+
+  // ====== 2. JournalDB 래퍼 클래스 ======
+  const JournalDB = {
+    async add(store, data){
+      const db = await openDB();
+      return new Promise((resolve, reject)=>{
+        const tx = db.transaction(store, 'readwrite');
+        const req = tx.objectStore(store).add(data);
+        req.onsuccess = ()=> resolve(req.result);
+        req.onerror = ()=> reject(req.error);
+      });
+    },
+    async put(store, data){
+      const db = await openDB();
+      return new Promise((resolve, reject)=>{
+        const tx = db.transaction(store, 'readwrite');
+        const req = tx.objectStore(store).put(data);
+        req.onsuccess = ()=> resolve(req.result);
+        req.onerror = ()=> reject(req.error);
+      });
+    },
+    async get(store, id){
+      const db = await openDB();
+      return new Promise((resolve, reject)=>{
+        const tx = db.transaction(store, 'readonly');
+        const req = tx.objectStore(store).get(id);
+        req.onsuccess = ()=> resolve(req.result);
+        req.onerror = ()=> reject(req.error);
+      });
+    },
+    async getAll(store){
+      const db = await openDB();
+      return new Promise((resolve, reject)=>{
+        const tx = db.transaction(store, 'readonly');
+        const req = tx.objectStore(store).getAll();
+        req.onsuccess = ()=> resolve(req.result || []);
+        req.onerror = ()=> reject(req.error);
+      });
+    },
+    async delete(store, id){
+      const db = await openDB();
+      return new Promise((resolve, reject)=>{
+        const tx = db.transaction(store, 'readwrite');
+        const req = tx.objectStore(store).delete(id);
+        req.onsuccess = ()=> resolve(true);
+        req.onerror = ()=> reject(req.error);
+      });
+    },
+    async getByIndex(store, indexName, value){
+      const db = await openDB();
+      return new Promise((resolve, reject)=>{
+        const tx = db.transaction(store, 'readonly');
+        const req = tx.objectStore(store).index(indexName).getAll(value);
+        req.onsuccess = ()=> resolve(req.result || []);
+        req.onerror = ()=> reject(req.error);
+      });
+    },
+    async count(store){
+      const db = await openDB();
+      return new Promise((resolve, reject)=>{
+        const tx = db.transaction(store, 'readonly');
+        const req = tx.objectStore(store).count();
+        req.onsuccess = ()=> resolve(req.result);
+        req.onerror = ()=> reject(req.error);
+      });
+    }
+  };
+  window.JournalDB = JournalDB;
+
+  // ====== 3. 유틸 함수 ======
+  function genId(prefix){
+    return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+  }
+  function today(){
+    return new Date().toISOString().slice(0,10);
+  }
+  function formatNumber(n, decimals=0){
+    if(n === null || n === undefined || isNaN(n)) return '-';
+    return Number(n).toLocaleString('ko-KR', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  }
+
+  // ====== 4. 보유 종목 관리 ======
+  const HoldingsManager = {
+    async create(data){
+      const holding = {
+        id: genId('h'),
+        ticker: data.ticker || '',
+        name: data.name || '',
+        market: data.market || 'KOSPI',
+        sector: data.sector || '',
+        currency: data.currency || 'KRW',
+        status: 'active',
+        createdAt: today(),
+        closedAt: null,
+        avgBuyPriceOriginal: 0,
+        avgBuyPriceKRW: 0,
+        totalBuyAmountOriginal: 0,
+        totalBuyAmountKRW: 0,
+        totalSellAmountOriginal: 0,
+        totalSellAmountKRW: 0,
+        currentQuantity: 0,
+        realizedProfitKRW: 0,
+        exchangeRateHistory: [],
+        notes: data.notes || ''
+      };
+      await JournalDB.add('holdings', holding);
+      console.log('✅ 종목 등록:', holding.name, `(${holding.ticker})`);
+      return holding;
+    },
+    async list(filterStatus='active'){
+      const all = await JournalDB.getAll('holdings');
+      return filterStatus ? all.filter(h => h.status === filterStatus) : all;
+    },
+    async update(id, patch){
+      const h = await JournalDB.get('holdings', id);
+      if(!h) throw new Error('종목 없음: ' + id);
+      Object.assign(h, patch);
+      await JournalDB.put('holdings', h);
+      return h;
+    },
+    async remove(id){
+      await JournalDB.delete('holdings', id);
+      console.log('🗑️ 종목 삭제:', id);
+    }
+  };
+  window.HoldingsManager = HoldingsManager;
+
+  // ====== 5. UI - 보유 종목 모달 ======
+  async function showHoldingsModal(){
+    document.getElementById('holdings-modal')?.remove();
+
+    const holdings = await HoldingsManager.list('active');
+    const closed = await HoldingsManager.list('closed');
+
+    const modal = document.createElement('div');
+    modal.id = 'holdings-modal';
+    modal.style.cssText = `
+      position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10000;
+      display:flex; align-items:center; justify-content:center; padding:20px;
+    `;
+
+    modal.innerHTML = `
+      <div style="background:white; border-radius:12px; max-width:600px; width:100%;
+                  max-height:90vh; overflow-y:auto; padding:20px; position:relative;">
+        <div style="display:flex; justify-content:space-between; align-items:center;
+                    border-bottom:2px solid #3b82f6; padding-bottom:12px; margin-bottom:16px;">
+          <h2 style="margin:0; font-size:20px;">💼 보유 종목 관리</h2>
+          <button id="close-holdings" style="background:#ef4444; color:white; border:none;
+                  width:32px; height:32px; border-radius:50%; cursor:pointer; font-size:16px;">✕</button>
+        </div>
+
+        <div style="display:flex; gap:8px; margin-bottom:16px;">
+          <button id="add-holding-btn" style="flex:1; padding:12px; background:linear-gradient(135deg,#3b82f6,#1d4ed8);
+                  color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600;">
+            ➕ 새 종목 추가
+          </button>
+          <button id="show-closed-btn" style="padding:12px 16px; background:#f1f5f9; color:#475569;
+                  border:1px solid #cbd5e1; border-radius:8px; cursor:pointer;">
+            🗂️ 청산 종목 (${closed.length})
+          </button>
+        </div>
+
+        <div style="font-size:13px; color:#64748b; margin-bottom:8px;">
+          보유 중 (${holdings.length})
+        </div>
+
+        <div id="holdings-list">
+          ${holdings.length === 0 ?
+            `<div style="text-align:center; padding:40px; color:#94a3b8; background:#f8fafc; border-radius:8px;">
+              아직 등록된 종목이 없습니다.<br>
+              <span style="font-size:12px;">"새 종목 추가"를 눌러 시작하세요.</span>
+            </div>` :
+            holdings.map(h => `
+              <div style="padding:12px; margin-bottom:8px; background:#f8fafc; border-radius:8px;
+                          border-left:4px solid ${h.currency === 'USD' ? '#8b5cf6' : '#3b82f6'};">
+                <div style="display:flex; justify-content:space-between; align-items:start;">
+                  <div style="flex:1;">
+                    <div style="font-weight:600; font-size:15px;">
+                      ${h.name} <span style="color:#94a3b8; font-size:12px;">${h.ticker}</span>
+                    </div>
+                    <div style="font-size:12px; color:#64748b; margin-top:4px;">
+                      ${h.market} · ${h.sector || '미분류'} · ${h.currency}
+                      ${h.currentQuantity > 0 ? ` · 보유 ${formatNumber(h.currentQuantity)}주` : ''}
+                    </div>
+                    ${h.notes ? `<div style="font-size:12px; color:#475569; margin-top:4px; font-style:italic;">"${h.notes}"</div>` : ''}
+                  </div>
+                  <div style="display:flex; gap:4px;">
+                    <button class="edit-holding" data-id="${h.id}" style="padding:4px 8px; background:#fef3c7; border:1px solid #fde68a; border-radius:4px; cursor:pointer; font-size:11px;">✏️</button>
+                    <button class="delete-holding" data-id="${h.id}" data-name="${h.name}" style="padding:4px 8px; background:#fee2e2; border:1px solid #fca5a5; border-radius:4px; cursor:pointer; font-size:11px;">🗑️</button>
+                  </div>
+                </div>
+              </div>
+            `).join('')
+          }
+        </div>
+
+        <div style="margin-top:16px; padding:12px; background:#eff6ff; border-radius:8px; font-size:12px; color:#1e40af;">
+          💡 <b>Phase 1</b>: 종목 등록만 가능합니다. 매매 기록과 수익률 계산은 Phase 2에서 추가됩니다.
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    // 이벤트 바인딩
+    modal.querySelector('#close-holdings').onclick = ()=> modal.remove();
+    modal.onclick = (e)=>{ if(e.target === modal) modal.remove(); };
+    modal.querySelector('#add-holding-btn').onclick = ()=>{ modal.remove(); showAddHoldingModal(); };
+    modal.querySelector('#show-closed-btn').onclick = ()=>{ alert('Phase 2에서 청산 종목 조회가 추가됩니다.'); };
+
+    modal.querySelectorAll('.edit-holding').forEach(btn => {
+      btn.onclick = async ()=>{
+        const id = btn.dataset.id;
+        const h = await JournalDB.get('holdings', id);
+        modal.remove();
+        showAddHoldingModal(h);
+      };
+    });
+
+    modal.querySelectorAll('.delete-holding').forEach(btn => {
+      btn.onclick = async ()=>{
+        if(!confirm(`"${btn.dataset.name}" 종목을 삭제하시겠습니까?\n(관련 매매 기록은 Phase 2부터 보존됩니다)`)) return;
+        await HoldingsManager.remove(btn.dataset.id);
+        modal.remove();
+        showHoldingsModal();
+      };
+    });
+  }
+
+  // ====== 6. UI - 종목 추가/수정 모달 ======
+  function showAddHoldingModal(existing=null){
+    document.getElementById('add-holding-modal')?.remove();
+    const isEdit = !!existing;
+
+    const modal = document.createElement('div');
+    modal.id = 'add-holding-modal';
+    modal.style.cssText = `
+      position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:10001;
+      display:flex; align-items:center; justify-content:center; padding:20px;
+    `;
+
+    modal.innerHTML = `
+      <div style="background:white; border-radius:12px; max-width:500px; width:100%; padding:20px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;
+                    border-bottom:2px solid #3b82f6; padding-bottom:12px; margin-bottom:16px;">
+          <h2 style="margin:0; font-size:18px;">${isEdit ? '✏️ 종목 수정' : '➕ 새 종목 추가'}</h2>
+          <button id="cancel-add" style="background:#ef4444; color:white; border:none;
+                  width:28px; height:28px; border-radius:50%; cursor:pointer;">✕</button>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          <div>
+            <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">통화 *</label>
+            <div style="display:flex; gap:8px;">
+              <label style="flex:1; padding:10px; background:#f8fafc; border:2px solid #e2e8f0; border-radius:8px; cursor:pointer; text-align:center;">
+                <input type="radio" name="currency" value="KRW" ${(!existing || existing.currency==='KRW') ? 'checked' : ''} style="margin-right:6px;"> 🇰🇷 KRW
+              </label>
+              <label style="flex:1; padding:10px; background:#f8fafc; border:2px solid #e2e8f0; border-radius:8px; cursor:pointer; text-align:center;">
+                <input type="radio" name="currency" value="USD" ${existing?.currency==='USD' ? 'checked' : ''} style="margin-right:6px;"> 🇺🇸 USD
+              </label>
+            </div>
+          </div>
+
+          <div>
+            <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">종목 코드 *</label>
+            <input id="input-ticker" type="text" placeholder="005930 또는 AAPL" value="${existing?.ticker || ''}"
+                   style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:6px; font-size:14px;">
+          </div>
+
+          <div>
+            <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">종목명 *</label>
+            <input id="input-name" type="text" placeholder="삼성전자" value="${existing?.name || ''}"
+                   style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:6px; font-size:14px;">
+          </div>
+
+          <div style="display:flex; gap:8px;">
+            <div style="flex:1;">
+              <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">시장</label>
+              <select id="input-market" style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:6px;">
+                <option value="KOSPI" ${existing?.market==='KOSPI' ? 'selected' : ''}>KOSPI</option>
+                <option value="KOSDAQ" ${existing?.market==='KOSDAQ' ? 'selected' : ''}>KOSDAQ</option>
+                <option value="NASDAQ" ${existing?.market==='NASDAQ' ? 'selected' : ''}>NASDAQ</option>
+                <option value="NYSE" ${existing?.market==='NYSE' ? 'selected' : ''}>NYSE</option>
+                <option value="ETC" ${existing?.market==='ETC' ? 'selected' : ''}>기타</option>
+              </select>
+            </div>
+            <div style="flex:1;">
+              <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">섹터</label>
+              <input id="input-sector" type="text" placeholder="반도체" value="${existing?.sector || ''}"
+                     style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:6px; font-size:14px;">
+            </div>
+          </div>
+
+          <div>
+            <label style="display:block; font-size:13px; font-weight:600; margin-bottom:4px;">메모</label>
+            <textarea id="input-notes" placeholder="장기 보유 목적 등" rows="2"
+                      style="width:100%; padding:10px; border:1px solid #cbd5e1; border-radius:6px; font-size:14px; resize:vertical;">${existing?.notes || ''}</textarea>
+          </div>
+
+          <button id="save-holding" style="padding:12px; background:linear-gradient(135deg,#3b82f6,#1d4ed8);
+                  color:white; border:none; border-radius:8px; cursor:pointer; font-weight:600; font-size:15px;">
+            ${isEdit ? '💾 수정 저장' : '✅ 종목 추가'}
+          </button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    modal.querySelector('#cancel-add').onclick = ()=>{ modal.remove(); showHoldingsModal(); };
+    modal.onclick = (e)=>{ if(e.target === modal){ modal.remove(); showHoldingsModal(); } };
+
+    modal.querySelector('#save-holding').onclick = async ()=>{
+      const ticker = modal.querySelector('#input-ticker').value.trim();
+      const name = modal.querySelector('#input-name').value.trim();
+      const currency = modal.querySelector('input[name="currency"]:checked').value;
+      const market = modal.querySelector('#input-market').value;
+      const sector = modal.querySelector('#input-sector').value.trim();
+      const notes = modal.querySelector('#input-notes').value.trim();
+
+      if(!ticker || !name){ alert('종목 코드와 종목명은 필수입니다.'); return; }
+
+      try {
+        if(isEdit){
+          await HoldingsManager.update(existing.id, { ticker, name, currency, market, sector, notes });
+          alert('✅ 종목이 수정되었습니다.');
+        } else {
+          await HoldingsManager.create({ ticker, name, currency, market, sector, notes });
+          alert('✅ 종목이 등록되었습니다.');
+        }
+        modal.remove();
+        showHoldingsModal();
+      } catch(err){
+        alert('❌ 저장 실패: ' + err.message);
+      }
+    };
+  }
+
+  window.showHoldingsModal = showHoldingsModal;
+
+  // ====== 7. 메뉴에 📔 주식 일지 항목 추가 ======
+  function injectJournalMenuItem(){
+    const tryInject = ()=>{
+      const panel = document.getElementById('menu-panel');
+      if(!panel || document.getElementById('journal-menu-section')) return false;
+
+      const section = document.createElement('div');
+      section.id = 'journal-menu-section';
+      section.style.cssText = 'margin-top:16px; padding-top:16px; border-top:2px solid #e2e8f0;';
+      section.innerHTML = `
+        <div style="font-size:13px; font-weight:600; color:#64748b; margin-bottom:8px; padding-left:4px;">
+          📔 주식 일지
+        </div>
+        <button id="open-holdings-btn" style="width:100%; padding:12px; margin:4px 0;
+                background:linear-gradient(135deg,#dbeafe,#bfdbfe); border:1px solid #93c5fd;
+                border-radius:8px; cursor:pointer; font-size:14px; text-align:left;">
+          💼 보유 종목 관리
+        </button>
+      `;
+      panel.appendChild(section);
+      section.querySelector('#open-holdings-btn').onclick = ()=>{
+        document.getElementById('menu-panel')?.remove();
+        showHoldingsModal();
+      };
+      return true;
+    };
+
+    // 메뉴 패널이 열릴 때마다 자동 주입
+    const observer = new MutationObserver(()=>{ tryInject(); });
+    observer.observe(document.body, { childList:true, subtree:false });
+    tryInject();
+  }
+
+  // ====== 8. 단축키 (Ctrl+Shift+H = Holdings) ======
+  document.addEventListener('keydown', (e)=>{
+    if(e.ctrlKey && e.shiftKey && e.key === 'H'){
+      e.preventDefault();
+      showHoldingsModal();
+    }
+  });
+
+  // ====== 9. 초기화 ======
+  async function init(){
+    try {
+      await openDB();
+      const count = await JournalDB.count('holdings');
+      console.log(`✅ Stock Journal Phase 1 초기화 완료 (등록된 종목: ${count}개)`);
+      console.log('   - 메뉴 → 📔 주식 일지 → 💼 보유 종목 관리');
+      console.log('   - 단축키: Ctrl+Shift+H');
+      injectJournalMenuItem();
+    } catch(err){
+      console.error('❌ Journal 초기화 실패:', err);
+    }
+  }
+
+  if(document.readyState === 'complete') init();
+  else window.addEventListener('load', init);
+})();
+</script>
 
   <script>
 /* ===== Patch #40 + #41 + #42 통합 - OBV 라벨 인사이트 / 알파 버튼 / 메뉴 버튼 보호 ===== */
