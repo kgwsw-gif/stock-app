@@ -10865,7 +10865,7 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
   }
   
   // 4. 메뉴 패널 생성
-  document.getElementById('menu-panel')?.remove();
+  const _mp = document.getElementById('menu-panel'); if(_mp) _mp.style.display = 'none';
   let panelHTML = `<div id="menu-panel" style="position:fixed;bottom:96px;right:20px;width:340px;max-height:75vh;overflow-y:auto;background:white;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,0.25);z-index:9999;padding:16px;display:none;border:1px solid #e5e7eb;">`;
   panelHTML += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;border-bottom:2px solid #3b82f6;padding-bottom:10px;">
     <h3 style="margin:0;color:#1f2937;font-size:17px;">📋 전체 메뉴 (14)</h3>
@@ -20454,7 +20454,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   // ====== 5. 보유 종목 모달 ======
   async function showHoldingsModal(){
     // 메뉴 패널 먼저 닫기
-    document.getElementById('menu-panel')?.remove();
+    const _mp = document.getElementById('menu-panel'); if(_mp) _mp.style.display = 'none';
     document.getElementById('holdings-modal')?.remove();
 
     const holdings = await HoldingsManager.list('active');
