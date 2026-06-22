@@ -20219,7 +20219,9 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
 </script>
 
 <style>
-/* ===== Patch #43 - 메뉴 UI CSS 강제 차단 ===== */
+/* ===== Patch #43 v3 - 메뉴 UI 강제 차단 (최종) ===== */
+
+/* 1. floating-menu-btn 내부의 잘못된 항목 차단 */
 #floating-menu-btn [data-backup-item],
 #floating-menu-btn [data-report-item] {
   display: none !important;
@@ -20228,13 +20230,31 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   height: 0 !important;
   overflow: hidden !important;
 }
-#menu-panel > [data-backup-item],
-#menu-panel > [data-report-item] {
+
+/* 2. ★ 핵심: menu-close(X 버튼) 내부의 잘못된 항목 차단 */
+#menu-close [data-backup-item],
+#menu-close [data-report-item] {
   display: none !important;
+  visibility: hidden !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
 }
+
+/* 3. X 버튼 자체 크기 강제 고정 (28x28) */
+#menu-close {
+  width: 28px !important;
+  height: 28px !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+}
+
+/* 4. menu-panel 오버플로우 차단 */
 #menu-panel {
   overflow-x: hidden !important;
 }
+
+/* 5. floating 메뉴 버튼 크기 고정 */
 #floating-menu-btn {
   width: 64px !important;
   height: 64px !important;
