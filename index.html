@@ -11702,9 +11702,9 @@ console.log('✅ BSA 보정 시스템 로드 완료 (외국인 수급 가중치 
             }
             
             // 🆕 야간선물
-            if(macro.esFutureChange !== null) document.getElementById('wtd-esfuture').value = macro.esFutureChange.toFixed(2);
-            if(macro.nqFutureChange !== null) document.getElementById('wtd-nqfuture').value = macro.nqFutureChange.toFixed(2);
-            
+            if(macro.esFutureChange !== null) { const el = document.getElementById('wtd-esfuture'); if(el) el.value = macro.esFutureChange.toFixed(2); }
+            if(macro.nqFutureChange !== null) { const el = document.getElementById('wtd-nqfuture'); if(el) el.value = macro.nqFutureChange.toFixed(2); }
+  
             const futureInfoEl = document.getElementById('wtd-future-info');
             if(futureInfoEl && macro.futureAvg !== null){
               const fSign = macro.futureAvg >= 0 ? '+' : '';
