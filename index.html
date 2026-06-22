@@ -24942,6 +24942,18 @@ window.showAddHoldingModal = showAddHoldingModal;
   else window.addEventListener('load', init);
 })();
 </script>
+  <!-- KRX 수급 박스 숨김 (메뉴의 🐶 왝더독 분석 사용) -->
+<script>
+(function() {
+  if (!document.getElementById('krx-box-hide-style')) {
+    const style = document.createElement('style');
+    style.id = 'krx-box-hide-style';
+    style.textContent = `#krx-main-box { display: none !important; }`;
+    document.head.appendChild(style);
+    console.log('✅ KRX 수급 박스 숨김');
+  }
+})();
+</script>
 </body>
 </html>
 
