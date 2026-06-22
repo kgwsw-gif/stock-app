@@ -20265,8 +20265,9 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   
 <script>
 /* ============================================================
-   📔 Stock Journal System - Phase 1
-   IndexedDB 기반 보유 종목 관리
+   📔 Stock Journal System - Phase 1 (v1.1 Hotfix)
+   - 단축키 변경: Ctrl+Shift+H → Ctrl+Shift+J (Journal)
+   - 메뉴 패널 재오픈 충돌 수정
    ============================================================ */
 (function(){
   if(window._journalPhase1Installed) return;
@@ -20288,8 +20289,6 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
       };
       req.onupgradeneeded = (e)=>{
         const db = e.target.result;
-
-        // holdings 테이블
         if(!db.objectStoreNames.contains('holdings')){
           const store = db.createObjectStore('holdings', { keyPath: 'id' });
           store.createIndex('ticker', 'ticker', { unique: false });
@@ -20297,23 +20296,17 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
           store.createIndex('currency', 'currency', { unique: false });
           store.createIndex('createdAt', 'createdAt', { unique: false });
         }
-
-        // daily_snapshots 테이블
         if(!db.objectStoreNames.contains('daily_snapshots')){
           const store = db.createObjectStore('daily_snapshots', { keyPath: 'id' });
           store.createIndex('date', 'date', { unique: false });
           store.createIndex('ticker', 'ticker', { unique: false });
           store.createIndex('holdingId', 'holdingId', { unique: false });
         }
-
-        // diary_entries 테이블
         if(!db.objectStoreNames.contains('diary_entries')){
           const store = db.createObjectStore('diary_entries', { keyPath: 'id' });
           store.createIndex('date', 'date', { unique: true });
           store.createIndex('mood', 'mood', { unique: false });
         }
-
-        // transactions 테이블
         if(!db.objectStoreNames.contains('transactions')){
           const store = db.createObjectStore('transactions', { keyPath: 'id' });
           store.createIndex('date', 'date', { unique: false });
@@ -20321,21 +20314,18 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
           store.createIndex('type', 'type', { unique: false });
           store.createIndex('holdingId', 'holdingId', { unique: false });
         }
-
-        // dividends 테이블
         if(!db.objectStoreNames.contains('dividends')){
           const store = db.createObjectStore('dividends', { keyPath: 'id' });
           store.createIndex('date', 'date', { unique: false });
           store.createIndex('ticker', 'ticker', { unique: false });
           store.createIndex('holdingId', 'holdingId', { unique: false });
         }
-
         console.log('✅ IndexedDB 스키마 생성 완료 (5개 테이블)');
       };
     });
   }
 
-  // ====== 2. JournalDB 래퍼 클래스 ======
+  // ====== 2. JournalDB 래퍼 ======
   const JournalDB = {
     async add(store, data){
       const db = await openDB();
@@ -20403,7 +20393,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   };
   window.JournalDB = JournalDB;
 
-  // ====== 3. 유틸 함수 ======
+  // ====== 3. 유틸 ======
   function genId(prefix){
     return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
   }
@@ -20461,8 +20451,10 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
   };
   window.HoldingsManager = HoldingsManager;
 
-  // ====== 5. UI - 보유 종목 모달 ======
+  // ====== 5. 보유 종목 모달 ======
   async function showHoldingsModal(){
+    // 메뉴 패널 먼저 닫기
+    document.getElementById('menu-panel')?.remove();
     document.getElementById('holdings-modal')?.remove();
 
     const holdings = await HoldingsManager.list('active');
@@ -20537,7 +20529,6 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     `;
     document.body.appendChild(modal);
 
-    // 이벤트 바인딩
     modal.querySelector('#close-holdings').onclick = ()=> modal.remove();
     modal.onclick = (e)=>{ if(e.target === modal) modal.remove(); };
     modal.querySelector('#add-holding-btn').onclick = ()=>{ modal.remove(); showAddHoldingModal(); };
@@ -20554,7 +20545,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
 
     modal.querySelectorAll('.delete-holding').forEach(btn => {
       btn.onclick = async ()=>{
-        if(!confirm(`"${btn.dataset.name}" 종목을 삭제하시겠습니까?\n(관련 매매 기록은 Phase 2부터 보존됩니다)`)) return;
+        if(!confirm(`"${btn.dataset.name}" 종목을 삭제하시겠습니까?`)) return;
         await HoldingsManager.remove(btn.dataset.id);
         modal.remove();
         showHoldingsModal();
@@ -20562,7 +20553,7 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     });
   }
 
-  // ====== 6. UI - 종목 추가/수정 모달 ======
+  // ====== 6. 종목 추가/수정 모달 ======
   function showAddHoldingModal(existing=null){
     document.getElementById('add-holding-modal')?.remove();
     const isEdit = !!existing;
@@ -20657,10 +20648,8 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
       try {
         if(isEdit){
           await HoldingsManager.update(existing.id, { ticker, name, currency, market, sector, notes });
-          alert('✅ 종목이 수정되었습니다.');
         } else {
           await HoldingsManager.create({ ticker, name, currency, market, sector, notes });
-          alert('✅ 종목이 등록되었습니다.');
         }
         modal.remove();
         showHoldingsModal();
@@ -20672,43 +20661,54 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
 
   window.showHoldingsModal = showHoldingsModal;
 
-  // ====== 7. 메뉴에 📔 주식 일지 항목 추가 ======
-  function injectJournalMenuItem(){
-    const tryInject = ()=>{
-      const panel = document.getElementById('menu-panel');
-      if(!panel || document.getElementById('journal-menu-section')) return false;
+  // ====== 7. 메뉴 패널에 📔 섹션 주입 (안전 버전) ======
+  function injectJournalSection(panel){
+    if(!panel || panel.querySelector('#journal-menu-section')) return;
 
-      const section = document.createElement('div');
-      section.id = 'journal-menu-section';
-      section.style.cssText = 'margin-top:16px; padding-top:16px; border-top:2px solid #e2e8f0;';
-      section.innerHTML = `
-        <div style="font-size:13px; font-weight:600; color:#64748b; margin-bottom:8px; padding-left:4px;">
-          📔 주식 일지
-        </div>
-        <button id="open-holdings-btn" style="width:100%; padding:12px; margin:4px 0;
-                background:linear-gradient(135deg,#dbeafe,#bfdbfe); border:1px solid #93c5fd;
-                border-radius:8px; cursor:pointer; font-size:14px; text-align:left;">
-          💼 보유 종목 관리
-        </button>
-      `;
-      panel.appendChild(section);
-      section.querySelector('#open-holdings-btn').onclick = ()=>{
-        document.getElementById('menu-panel')?.remove();
-        showHoldingsModal();
-      };
-      return true;
-    };
+    const section = document.createElement('div');
+    section.id = 'journal-menu-section';
+    section.style.cssText = 'margin-top:16px; padding-top:16px; border-top:2px solid #e2e8f0;';
+    section.innerHTML = `
+      <div style="font-size:13px; font-weight:600; color:#64748b; margin-bottom:8px; padding-left:4px;">
+        📔 주식 일지
+      </div>
+      <button id="open-holdings-btn" style="width:100%; padding:12px; margin:4px 0;
+              background:linear-gradient(135deg,#dbeafe,#bfdbfe); border:1px solid #93c5fd;
+              border-radius:8px; cursor:pointer; font-size:14px; text-align:left;">
+        💼 보유 종목 관리
+      </button>
+    `;
+    panel.appendChild(section);
 
-    // 메뉴 패널이 열릴 때마다 자동 주입
-    const observer = new MutationObserver(()=>{ tryInject(); });
-    observer.observe(document.body, { childList:true, subtree:false });
-    tryInject();
+    section.querySelector('#open-holdings-btn').addEventListener('click', (e)=>{
+      e.preventDefault();
+      e.stopPropagation();
+      showHoldingsModal();
+    });
   }
 
-  // ====== 8. 단축키 (Ctrl+Shift+H = Holdings) ======
+  // MutationObserver: 메뉴 패널이 새로 생길 때마다 섹션 자동 주입
+  const menuObserver = new MutationObserver((mutations)=>{
+    for(const mut of mutations){
+      for(const node of mut.addedNodes){
+        if(node.nodeType === 1 && node.id === 'menu-panel'){
+          setTimeout(()=> injectJournalSection(node), 50);
+        }
+      }
+    }
+    // 이미 열려있는 경우도 처리
+    const existing = document.getElementById('menu-panel');
+    if(existing && !existing.querySelector('#journal-menu-section')){
+      injectJournalSection(existing);
+    }
+  });
+  menuObserver.observe(document.body, { childList:true, subtree:false });
+
+  // ====== 8. 단축키 (Ctrl+Shift+J = Journal) ======
   document.addEventListener('keydown', (e)=>{
-    if(e.ctrlKey && e.shiftKey && e.key === 'H'){
+    if(e.ctrlKey && e.shiftKey && (e.key === 'J' || e.key === 'j')){
       e.preventDefault();
+      e.stopPropagation();
       showHoldingsModal();
     }
   });
@@ -20718,10 +20718,11 @@ console.log('✅ 뉴스 fetch 리다이렉트 활성화 (v2 - 한글 지원)');
     try {
       await openDB();
       const count = await JournalDB.count('holdings');
-      console.log(`✅ Stock Journal Phase 1 초기화 완료 (등록된 종목: ${count}개)`);
+      console.log(`✅ Stock Journal Phase 1 v1.1 초기화 완료 (등록된 종목: ${count}개)`);
       console.log('   - 메뉴 → 📔 주식 일지 → 💼 보유 종목 관리');
-      console.log('   - 단축키: Ctrl+Shift+H');
-      injectJournalMenuItem();
+      console.log('   - 단축키: Ctrl+Shift+J');
+      const panel = document.getElementById('menu-panel');
+      if(panel) injectJournalSection(panel);
     } catch(err){
       console.error('❌ Journal 초기화 실패:', err);
     }
