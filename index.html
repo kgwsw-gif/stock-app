@@ -24241,6 +24241,667 @@ window.showAddHoldingModal = showAddHoldingModal;
   }
 })();
 </script>
+
+  <!-- Phase 5: 배당금 관리 시스템 v1 -->
+<script>
+(function() {
+  'use strict';
+  
+  if (window._dividendPhase5Installed) return;
+  
+  const DB_NAME = 'StockJournalDB';
+  const STORE = 'dividends';
+  const TAX_KR = 0.154;  // 국내 15.4%
+  const TAX_US = 0.15;   // 미국 15%
+  
+  // ========== DB 헬퍼 ==========
+  function openDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  
+  async function getHoldings() {
+    const db = await openDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(['holdings'], 'readonly');
+      const req = tx.objectStore('holdings').getAll();
+      req.onsuccess = () => { db.close(); resolve(req.result); };
+    });
+  }
+  
+  async function getAllDividends() {
+    const db = await openDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction([STORE], 'readonly');
+      const req = tx.objectStore(STORE).getAll();
+      req.onsuccess = () => { db.close(); resolve(req.result); };
+    });
+  }
+  
+  async function saveDividend(div) {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([STORE], 'readwrite');
+      const req = tx.objectStore(STORE).put(div);
+      req.onsuccess = () => { db.close(); resolve(); };
+      req.onerror = () => { db.close(); reject(req.error); };
+    });
+  }
+  
+  async function deleteDividend(id) {
+    const db = await openDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction([STORE], 'readwrite');
+      tx.objectStore(STORE).delete(id).onsuccess = () => { db.close(); resolve(); };
+    });
+  }
+  
+  // ========== 유틸 ==========
+  const isUS = (ticker) => !/^\d{6}$/.test(ticker || '');
+  const fmt = (n) => Math.round(n).toLocaleString();
+  const fmtKRW = (n) => '₩' + fmt(n);
+  const fmtUSD = (n) => '$' + n.toFixed(2);
+  
+  function calcTax(amount, country, isPretax) {
+    // amount: 세전이면 발표 배당금, 세후면 실수령액
+    const rate = country === 'US' ? TAX_US : TAX_KR;
+    if (isPretax) {
+      const tax = amount * rate;
+      return { gross: amount, tax: tax, net: amount - tax };
+    } else {
+      // 세후 → 세전 역산
+      const gross = amount / (1 - rate);
+      return { gross: gross, tax: gross - amount, net: amount };
+    }
+  }
+  
+  function genId() {
+    return 'div_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  }
+  
+  // ========== 모달 헬퍼 ==========
+  function closeModal(id) {
+    const m = document.getElementById(id);
+    if (m) m.remove();
+  }
+  
+  function createModal(id, title, contentHTML, opts={}) {
+    closeModal(id);
+    const wrap = document.createElement('div');
+    wrap.id = id;
+    wrap.style.cssText = `
+      position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+      z-index: 99999; display: flex; align-items: center; justify-content: center;
+      padding: 16px;
+    `;
+    wrap.innerHTML = `
+      <div style="background: white; border-radius: 16px; padding: 24px; max-width: ${opts.maxWidth||'520px'}; width: 100%; max-height: 90vh; overflow-y: auto;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+          <h2 style="font-size: 20px; font-weight: 700; margin: 0;">${title}</h2>
+          <button onclick="document.getElementById('${id}').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280;">×</button>
+        </div>
+        ${contentHTML}
+      </div>
+    `;
+    wrap.addEventListener('click', (e) => {
+      if (e.target === wrap) wrap.remove();
+    });
+    document.body.appendChild(wrap);
+    return wrap;
+  }
+  
+  // ========== 1. 배당금 입력 모달 ==========
+  window.showDividendInput = async function(existingDiv = null) {
+    const holdings = await getHoldings();
+    const isEdit = !!existingDiv;
+    
+    const html = `
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <!-- 종목 선택 -->
+        <div>
+          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">종목 선택</label>
+          <select id="div-holding" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;">
+            <option value="">선택하세요</option>
+            ${holdings.map(h => `<option value="${h.id}" data-ticker="${h.ticker}" data-name="${h.name}" ${existingDiv?.holdingId===h.id?'selected':''}>${h.name} (${h.ticker})</option>`).join('')}
+          </select>
+        </div>
+        
+        <!-- 배당 지급일 -->
+        <div>
+          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">배당 지급일</label>
+          <input type="date" id="div-date" value="${existingDiv?.date || new Date().toISOString().slice(0,10)}" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;">
+        </div>
+        
+        <!-- 세금 처리 방식 토글 -->
+        <div>
+          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">입력 방식</label>
+          <div style="display: flex; gap: 8px;">
+            <button type="button" id="div-mode-gross" class="div-mode-btn" data-mode="gross" style="flex: 1; padding: 10px; border: 2px solid #3b82f6; background: #eff6ff; color: #1d4ed8; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 13px;">세전 입력 (자동 차감)</button>
+            <button type="button" id="div-mode-net" class="div-mode-btn" data-mode="net" style="flex: 1; padding: 10px; border: 2px solid #d1d5db; background: white; color: #6b7280; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 13px;">세후 입력 (실수령)</button>
+          </div>
+          <p id="div-mode-hint" style="font-size: 11px; color: #6b7280; margin-top: 4px;">발표 배당금을 입력하면 세금이 자동 차감됩니다</p>
+        </div>
+        
+        <!-- 금액 입력 -->
+        <div>
+          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">
+            <span id="div-amount-label">주당 배당금 (세전)</span>
+            <span id="div-currency-tag" style="font-size: 11px; padding: 2px 8px; background: #f3f4f6; border-radius: 12px; margin-left: 6px;">₩</span>
+          </label>
+          <input type="number" id="div-amount" step="0.01" placeholder="예: 354" value="${existingDiv?.amountPerShare || ''}" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;">
+        </div>
+        
+        <!-- 보유 수량 -->
+        <div>
+          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">보유 수량 (배당 기준일)</label>
+          <input type="number" id="div-quantity" placeholder="예: 100" value="${existingDiv?.quantity || ''}" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;">
+        </div>
+        
+        <!-- 환율 (미국 주식 시) -->
+        <div id="div-fx-row" style="display: none;">
+          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">환율 (USD/KRW)</label>
+          <input type="number" id="div-fx" step="0.01" placeholder="예: 1380.50" value="${existingDiv?.fxRate || ''}" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;">
+        </div>
+        
+        <!-- 메모 -->
+        <div>
+          <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px;">메모 (선택)</label>
+          <input type="text" id="div-memo" placeholder="예: 2026년 분기배당" value="${existingDiv?.memo || ''}" style="width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;">
+        </div>
+        
+        <!-- 미리보기 -->
+        <div id="div-preview" style="background: #f9fafb; padding: 12px; border-radius: 8px; font-size: 13px; display: none;">
+          <div style="font-weight: 600; margin-bottom: 6px;">📊 자동 계산 결과</div>
+          <div id="div-preview-content"></div>
+        </div>
+        
+        <button id="div-save-btn" style="width: 100%; padding: 12px; background: #3b82f6; color: white; border: none; border-radius: 8px; font-weight: 700; font-size: 15px; cursor: pointer;">
+          ${isEdit ? '✏️ 수정' : '💾 저장'}
+        </button>
+      </div>
+    `;
+    
+    createModal('dividend-input-modal', isEdit ? '✏️ 배당금 수정' : '💰 배당금 입력', html);
+    
+    let mode = existingDiv?.inputMode || 'gross';
+    
+    // 모드 토글
+    function setMode(newMode) {
+      mode = newMode;
+      document.querySelectorAll('.div-mode-btn').forEach(b => {
+        if (b.dataset.mode === newMode) {
+          b.style.cssText = b.style.cssText.replace(/border-color:[^;]+;/, '') + 'border: 2px solid #3b82f6; background: #eff6ff; color: #1d4ed8;';
+        } else {
+          b.style.cssText = b.style.cssText.replace(/border-color:[^;]+;/, '') + 'border: 2px solid #d1d5db; background: white; color: #6b7280;';
+        }
+      });
+      document.getElementById('div-amount-label').textContent = newMode === 'gross' ? '주당 배당금 (세전)' : '주당 배당금 (세후)';
+      document.getElementById('div-mode-hint').textContent = newMode === 'gross' 
+        ? '발표 배당금을 입력하면 세금이 자동 차감됩니다'
+        : '증권사 입금액(세후)을 직접 입력합니다';
+      updatePreview();
+    }
+    
+    document.querySelectorAll('.div-mode-btn').forEach(b => {
+      b.onclick = () => setMode(b.dataset.mode);
+    });
+    
+    // 종목 선택 시 통화 표시
+    function updateCurrency() {
+      const sel = document.getElementById('div-holding');
+      const opt = sel.options[sel.selectedIndex];
+      const ticker = opt?.dataset.ticker;
+      const isUSStock = ticker && isUS(ticker);
+      document.getElementById('div-currency-tag').textContent = isUSStock ? '$' : '₩';
+      document.getElementById('div-fx-row').style.display = isUSStock ? 'block' : 'none';
+      updatePreview();
+    }
+    
+    // 자동 계산 미리보기
+    function updatePreview() {
+      const sel = document.getElementById('div-holding');
+      const opt = sel.options[sel.selectedIndex];
+      const ticker = opt?.dataset.ticker;
+      if (!ticker) {
+        document.getElementById('div-preview').style.display = 'none';
+        return;
+      }
+      
+      const amount = parseFloat(document.getElementById('div-amount').value) || 0;
+      const qty = parseFloat(document.getElementById('div-quantity').value) || 0;
+      const fx = parseFloat(document.getElementById('div-fx').value) || 1;
+      const isUSStock = isUS(ticker);
+      
+      if (amount <= 0 || qty <= 0) {
+        document.getElementById('div-preview').style.display = 'none';
+        return;
+      }
+      
+      const totalLocal = amount * qty;  // 종목 통화 기준 총액
+      const country = isUSStock ? 'US' : 'KR';
+      const tax = calcTax(totalLocal, country, mode === 'gross');
+      
+      const totalKRW = isUSStock ? tax.net * fx : tax.net;
+      const taxKRW = isUSStock ? tax.tax * fx : tax.tax;
+      const grossKRW = isUSStock ? tax.gross * fx : tax.gross;
+      
+      const cur = isUSStock ? '$' : '₩';
+      const taxRate = isUSStock ? '15%' : '15.4%';
+      
+      let html = `
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 12px;">
+          <div>주당 ${mode === 'gross' ? '세전' : '세후'}:</div><div style="text-align: right; font-weight: 600;">${cur}${amount.toLocaleString()}</div>
+          <div>수량:</div><div style="text-align: right; font-weight: 600;">${qty}주</div>
+          <div>세전 총액:</div><div style="text-align: right; font-weight: 600;">${cur}${fmt(tax.gross)}</div>
+          <div>세금 (${taxRate}):</div><div style="text-align: right; color: #ef4444;">-${cur}${fmt(tax.tax)}</div>
+          <div style="font-weight: 700;">실수령액:</div><div style="text-align: right; font-weight: 700; color: #10b981;">${cur}${fmt(tax.net)}</div>
+      `;
+      
+      if (isUSStock && fx > 0) {
+        html += `
+          <div style="grid-column: 1/3; border-top: 1px dashed #d1d5db; margin: 4px 0;"></div>
+          <div>환율:</div><div style="text-align: right;">${fx.toLocaleString()}원</div>
+          <div style="font-weight: 700; color: #1d4ed8;">원화 환산:</div><div style="text-align: right; font-weight: 700; color: #1d4ed8;">${fmtKRW(totalKRW)}</div>
+        `;
+      }
+      
+      html += '</div>';
+      document.getElementById('div-preview-content').innerHTML = html;
+      document.getElementById('div-preview').style.display = 'block';
+    }
+    
+    document.getElementById('div-holding').onchange = updateCurrency;
+    document.getElementById('div-amount').oninput = updatePreview;
+    document.getElementById('div-quantity').oninput = updatePreview;
+    document.getElementById('div-fx').oninput = updatePreview;
+    
+    // 초기화
+    setMode(mode);
+    updateCurrency();
+    
+    // 저장
+    document.getElementById('div-save-btn').onclick = async () => {
+      const sel = document.getElementById('div-holding');
+      const opt = sel.options[sel.selectedIndex];
+      const holdingId = sel.value;
+      const ticker = opt?.dataset.ticker;
+      const name = opt?.dataset.name;
+      const date = document.getElementById('div-date').value;
+      const amount = parseFloat(document.getElementById('div-amount').value);
+      const qty = parseFloat(document.getElementById('div-quantity').value);
+      const fx = parseFloat(document.getElementById('div-fx').value) || null;
+      const memo = document.getElementById('div-memo').value;
+      
+      if (!holdingId || !date || !amount || !qty) {
+        alert('종목, 날짜, 금액, 수량을 모두 입력하세요');
+        return;
+      }
+      
+      const isUSStock = isUS(ticker);
+      if (isUSStock && !fx) {
+        alert('미국 주식은 환율을 입력하세요');
+        return;
+      }
+      
+      const totalLocal = amount * qty;
+      const country = isUSStock ? 'US' : 'KR';
+      const tax = calcTax(totalLocal, country, mode === 'gross');
+      
+      const div = {
+        id: existingDiv?.id || genId(),
+        holdingId, ticker, name, date,
+        market: isUSStock ? 'US' : 'KR',
+        inputMode: mode,
+        amountPerShare: amount,
+        quantity: qty,
+        currency: isUSStock ? 'USD' : 'KRW',
+        fxRate: fx,
+        grossAmount: tax.gross,
+        taxAmount: tax.tax,
+        netAmount: tax.net,
+        netAmountKRW: isUSStock ? tax.net * fx : tax.net,
+        memo,
+        createdAt: existingDiv?.createdAt || Date.now(),
+        updatedAt: Date.now()
+      };
+      
+      await saveDividend(div);
+      closeModal('dividend-input-modal');
+      alert(isEdit ? '✏️ 수정되었습니다' : '💾 저장되었습니다');
+      if (document.getElementById('dividend-list-modal')) {
+        window.showDividendList();
+      }
+    };
+  };
+  
+  // ========== 2. 배당금 목록 ==========
+  window.showDividendList = async function() {
+    const dividends = await getAllDividends();
+    dividends.sort((a, b) => b.date.localeCompare(a.date));
+    
+    const totalKRW = dividends.reduce((s, d) => s + (d.netAmountKRW || 0), 0);
+    const thisYear = new Date().getFullYear();
+    const yearKRW = dividends.filter(d => d.date.startsWith(thisYear)).reduce((s, d) => s + (d.netAmountKRW || 0), 0);
+    
+    const html = `
+      <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+        <div style="flex: 1; background: #eff6ff; padding: 10px; border-radius: 8px; text-align: center;">
+          <div style="font-size: 11px; color: #6b7280;">전체 누적</div>
+          <div style="font-size: 16px; font-weight: 700; color: #1d4ed8;">${fmtKRW(totalKRW)}</div>
+        </div>
+        <div style="flex: 1; background: #f0fdf4; padding: 10px; border-radius: 8px; text-align: center;">
+          <div style="font-size: 11px; color: #6b7280;">${thisYear}년</div>
+          <div style="font-size: 16px; font-weight: 700; color: #059669;">${fmtKRW(yearKRW)}</div>
+        </div>
+        <div style="flex: 1; background: #fef3c7; padding: 10px; border-radius: 8px; text-align: center;">
+          <div style="font-size: 11px; color: #6b7280;">건수</div>
+          <div style="font-size: 16px; font-weight: 700; color: #d97706;">${dividends.length}건</div>
+        </div>
+      </div>
+      
+      <button onclick="window.showDividendInput()" style="width: 100%; padding: 10px; background: #3b82f6; color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; margin-bottom: 12px;">+ 새 배당 입력</button>
+      
+      <div id="div-list-items" style="display: flex; flex-direction: column; gap: 8px;">
+        ${dividends.length === 0 ? '<p style="text-align: center; color: #6b7280; padding: 20px;">아직 입력된 배당금이 없습니다</p>' : ''}
+        ${dividends.map(d => {
+          const cur = d.currency === 'USD' ? '$' : '₩';
+          const flag = d.market === 'US' ? '🇺🇸' : '🇰🇷';
+          return `
+            <div style="border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; background: white;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <div>
+                  <span style="font-weight: 700;">${flag} ${d.name}</span>
+                  <span style="font-size: 11px; color: #6b7280; margin-left: 6px;">${d.ticker}</span>
+                </div>
+                <div style="font-size: 11px; color: #6b7280;">${d.date}</div>
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; font-size: 12px; margin-bottom: 8px;">
+                <div>주당: ${cur}${d.amountPerShare.toLocaleString()} × ${d.quantity}주</div>
+                <div style="text-align: right;">세금: -${cur}${fmt(d.taxAmount)}</div>
+                <div style="font-weight: 600; color: #10b981;">실수령: ${cur}${fmt(d.netAmount)}</div>
+                <div style="text-align: right; font-weight: 700; color: #1d4ed8;">${fmtKRW(d.netAmountKRW)}</div>
+              </div>
+              ${d.memo ? `<div style="font-size: 11px; color: #6b7280; margin-bottom: 6px;">📝 ${d.memo}</div>` : ''}
+              <div style="display: flex; gap: 6px;">
+                <button onclick='window._editDiv(${JSON.stringify(d).replace(/'/g,"\\'")})' style="flex: 1; padding: 6px; background: #f3f4f6; border: none; border-radius: 6px; font-size: 12px; cursor: pointer;">✏️ 수정</button>
+                <button onclick="window._delDiv('${d.id}')" style="flex: 1; padding: 6px; background: #fef2f2; color: #dc2626; border: none; border-radius: 6px; font-size: 12px; cursor: pointer;">🗑️ 삭제</button>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+    
+    createModal('dividend-list-modal', '💰 배당금 목록', html, { maxWidth: '600px' });
+  };
+  
+  window._editDiv = (d) => window.showDividendInput(d);
+  window._delDiv = async (id) => {
+    if (!confirm('삭제하시겠습니까?')) return;
+    await deleteDividend(id);
+    window.showDividendList();
+  };
+  
+  // ========== 3. 배당 통계 ==========
+  window.showDividendStats = async function() {
+    const dividends = await getAllDividends();
+    const holdings = await getHoldings();
+    
+    if (dividends.length === 0) {
+      createModal('dividend-stats-modal', '📊 배당 통계', '<p style="text-align: center; color: #6b7280; padding: 40px;">아직 배당금 데이터가 없습니다</p>');
+      return;
+    }
+    
+    // 종목별 집계
+    const byStock = {};
+    dividends.forEach(d => {
+      if (!byStock[d.ticker]) {
+        byStock[d.ticker] = { name: d.name, market: d.market, count: 0, totalKRW: 0, dates: [] };
+      }
+      byStock[d.ticker].count++;
+      byStock[d.ticker].totalKRW += d.netAmountKRW || 0;
+      byStock[d.ticker].dates.push(d.date);
+    });
+    
+    // 월별 집계 (최근 12개월)
+    const byMonth = {};
+    dividends.forEach(d => {
+      const ym = d.date.slice(0, 7);
+      byMonth[ym] = (byMonth[ym] || 0) + (d.netAmountKRW || 0);
+    });
+    const monthKeys = Object.keys(byMonth).sort().slice(-12);
+    
+    // 연도별
+    const byYear = {};
+    dividends.forEach(d => {
+      const y = d.date.slice(0, 4);
+      byYear[y] = (byYear[y] || 0) + (d.netAmountKRW || 0);
+    });
+    
+    // 예측: 종목별 최근 4건 평균 × 4
+    const predictions = [];
+    for (const [ticker, info] of Object.entries(byStock)) {
+      const recent = dividends.filter(d => d.ticker === ticker).sort((a,b) => b.date.localeCompare(a.date)).slice(0, 4);
+      if (recent.length >= 2) {
+        const avg = recent.reduce((s, d) => s + (d.netAmountKRW || 0), 0) / recent.length;
+        const annualEst = avg * 4;  // 분기배당 가정
+        predictions.push({ ticker, name: info.name, annualEst });
+      }
+    }
+    predictions.sort((a, b) => b.annualEst - a.annualEst);
+    
+    const totalKRW = dividends.reduce((s, d) => s + (d.netAmountKRW || 0), 0);
+    const totalEst = predictions.reduce((s, p) => s + p.annualEst, 0);
+    
+    const html = `
+      <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+        <div style="flex: 1; background: #eff6ff; padding: 12px; border-radius: 8px; text-align: center;">
+          <div style="font-size: 11px; color: #6b7280;">전체 누적</div>
+          <div style="font-size: 18px; font-weight: 700; color: #1d4ed8;">${fmtKRW(totalKRW)}</div>
+        </div>
+        <div style="flex: 1; background: #f0fdf4; padding: 12px; border-radius: 8px; text-align: center;">
+          <div style="font-size: 11px; color: #6b7280;">연간 예상</div>
+          <div style="font-size: 18px; font-weight: 700; color: #059669;">${fmtKRW(totalEst)}</div>
+        </div>
+      </div>
+      
+      <!-- 연도별 -->
+      <div style="margin-bottom: 16px;">
+        <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">📅 연도별 누적</h3>
+        ${Object.entries(byYear).sort().reverse().map(([y, amt]) => `
+          <div style="display: flex; justify-content: space-between; padding: 6px 10px; background: #f9fafb; border-radius: 6px; margin-bottom: 4px;">
+            <span style="font-weight: 600;">${y}년</span>
+            <span style="font-weight: 700; color: #1d4ed8;">${fmtKRW(amt)}</span>
+          </div>
+        `).join('')}
+      </div>
+      
+      <!-- 월별 (최근 12개월) -->
+      <div style="margin-bottom: 16px;">
+        <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">📊 월별 (최근 12개월)</h3>
+        <div style="display: flex; flex-direction: column; gap: 3px;">
+        ${monthKeys.map(ym => {
+          const amt = byMonth[ym];
+          const max = Math.max(...Object.values(byMonth));
+          const pct = max > 0 ? (amt / max * 100) : 0;
+          return `
+            <div style="display: flex; align-items: center; gap: 8px; font-size: 12px;">
+              <span style="width: 60px; color: #6b7280;">${ym}</span>
+              <div style="flex: 1; background: #f3f4f6; border-radius: 4px; height: 18px; position: relative;">
+                <div style="width: ${pct}%; background: linear-gradient(90deg, #3b82f6, #10b981); height: 100%; border-radius: 4px;"></div>
+              </div>
+              <span style="width: 90px; text-align: right; font-weight: 600;">${fmtKRW(amt)}</span>
+            </div>
+          `;
+        }).join('')}
+        </div>
+      </div>
+      
+      <!-- 종목별 -->
+      <div style="margin-bottom: 16px;">
+        <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">🏢 종목별 기여도</h3>
+        ${Object.entries(byStock).sort((a,b) => b[1].totalKRW - a[1].totalKRW).map(([t, info]) => {
+          const pct = totalKRW > 0 ? (info.totalKRW / totalKRW * 100).toFixed(1) : 0;
+          const flag = info.market === 'US' ? '🇺🇸' : '🇰🇷';
+          return `
+            <div style="padding: 8px; background: #f9fafb; border-radius: 6px; margin-bottom: 4px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                <span style="font-weight: 600;">${flag} ${info.name}</span>
+                <span style="font-weight: 700;">${fmtKRW(info.totalKRW)} (${pct}%)</span>
+              </div>
+              <div style="background: #e5e7eb; border-radius: 3px; height: 6px;">
+                <div style="width: ${pct}%; background: #3b82f6; height: 100%; border-radius: 3px;"></div>
+              </div>
+              <div style="font-size: 11px; color: #6b7280; margin-top: 4px;">${info.count}회 수령</div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+      
+      <!-- 예측 -->
+      ${predictions.length > 0 ? `
+      <div>
+        <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 8px;">🔮 종목별 연간 예상 (과거 평균 × 4분기)</h3>
+        ${predictions.map(p => `
+          <div style="display: flex; justify-content: space-between; padding: 6px 10px; background: #fef3c7; border-radius: 6px; margin-bottom: 4px;">
+            <span style="font-weight: 600;">${p.name}</span>
+            <span style="font-weight: 700; color: #d97706;">${fmtKRW(p.annualEst)}/년</span>
+          </div>
+        `).join('')}
+        <p style="font-size: 11px; color: #6b7280; margin-top: 6px;">※ 최근 배당 평균에 4를 곱한 단순 추정치입니다</p>
+      </div>
+      ` : ''}
+    `;
+    
+    createModal('dividend-stats-modal', '📊 배당 통계', html, { maxWidth: '600px' });
+  };
+  
+  // ========== 4. 배당 캘린더 ==========
+  window.showDividendCalendar = async function() {
+    const dividends = await getAllDividends();
+    const now = new Date();
+    let viewYear = now.getFullYear();
+    let viewMonth = now.getMonth();
+    
+    function render() {
+      const firstDay = new Date(viewYear, viewMonth, 1);
+      const lastDay = new Date(viewYear, viewMonth + 1, 0);
+      const startWeekday = firstDay.getDay();
+      const daysInMonth = lastDay.getDate();
+      
+      const monthDivs = dividends.filter(d => {
+        const dd = new Date(d.date);
+        return dd.getFullYear() === viewYear && dd.getMonth() === viewMonth;
+      });
+      
+      const monthTotal = monthDivs.reduce((s, d) => s + (d.netAmountKRW || 0), 0);
+      
+      const byDay = {};
+      monthDivs.forEach(d => {
+        const day = parseInt(d.date.slice(8, 10));
+        if (!byDay[day]) byDay[day] = [];
+        byDay[day].push(d);
+      });
+      
+      let cells = '';
+      for (let i = 0; i < startWeekday; i++) cells += '<div></div>';
+      for (let d = 1; d <= daysInMonth; d++) {
+        const divs = byDay[d] || [];
+        const total = divs.reduce((s, x) => s + (x.netAmountKRW || 0), 0);
+        cells += `
+          <div style="min-height: 60px; border: 1px solid #e5e7eb; padding: 4px; border-radius: 4px; ${divs.length > 0 ? 'background: #ecfdf5;' : ''}">
+            <div style="font-size: 11px; font-weight: 600;">${d}</div>
+            ${divs.map(x => `<div style="font-size: 9px; color: #059669; margin-top: 2px;">${x.name.slice(0,4)} ${fmtKRW(x.netAmountKRW)}</div>`).join('')}
+          </div>
+        `;
+      }
+      
+      const html = `
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <button id="div-cal-prev" style="padding: 6px 12px; background: #f3f4f6; border: none; border-radius: 6px; cursor: pointer;">◀</button>
+          <h3 style="margin: 0; font-size: 16px; font-weight: 700;">${viewYear}년 ${viewMonth + 1}월</h3>
+          <button id="div-cal-next" style="padding: 6px 12px; background: #f3f4f6; border: none; border-radius: 6px; cursor: pointer;">▶</button>
+        </div>
+        
+        <div style="background: #f0fdf4; padding: 10px; border-radius: 8px; text-align: center; margin-bottom: 12px;">
+          <div style="font-size: 11px; color: #6b7280;">이달 배당 수령</div>
+          <div style="font-size: 18px; font-weight: 700; color: #059669;">${fmtKRW(monthTotal)} (${monthDivs.length}건)</div>
+        </div>
+        
+        <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; margin-bottom: 4px; text-align: center; font-size: 11px; font-weight: 600; color: #6b7280;">
+          <div>일</div><div>월</div><div>화</div><div>수</div><div>목</div><div>금</div><div>토</div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;">
+          ${cells}
+        </div>
+      `;
+      
+      const modal = document.getElementById('dividend-calendar-modal');
+      if (modal) {
+        modal.querySelector('div > div').innerHTML = `
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <h2 style="font-size: 20px; font-weight: 700; margin: 0;">📅 배당 캘린더</h2>
+            <button onclick="document.getElementById('dividend-calendar-modal').remove()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #6b7280;">×</button>
+          </div>
+          ${html}
+        `;
+      } else {
+        createModal('dividend-calendar-modal', '📅 배당 캘린더', html, { maxWidth: '600px' });
+      }
+      
+      document.getElementById('div-cal-prev').onclick = () => {
+        viewMonth--;
+        if (viewMonth < 0) { viewMonth = 11; viewYear--; }
+        render();
+      };
+      document.getElementById('div-cal-next').onclick = () => {
+        viewMonth++;
+        if (viewMonth > 11) { viewMonth = 0; viewYear++; }
+        render();
+      };
+    }
+    
+    render();
+  };
+  
+  // ========== 메뉴 통합 ==========
+  function addToMenu() {
+    const panel = document.getElementById('menu-panel');
+    if (!panel) return false;
+    if (panel.querySelector('[data-menu-id="dividend-section"]')) return true;
+    
+    const section = document.createElement('div');
+    section.setAttribute('data-menu-id', 'dividend-section');
+    section.style.cssText = 'margin: 8px 0; padding: 8px; border-top: 2px solid #e5e7eb;';
+    section.innerHTML = `
+      <h3 style="margin: 8px 0; color: #1f2937; font-size: 14px; font-weight: 700;">💰 배당금 관리</h3>
+      <button onclick="window.showDividendInput()" style="display: block; width: 100%; padding: 10px; margin: 4px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; text-align: left; font-size: 14px; cursor: pointer;">➕ 배당금 입력</button>
+      <button onclick="window.showDividendList()" style="display: block; width: 100%; padding: 10px; margin: 4px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; text-align: left; font-size: 14px; cursor: pointer;">📋 배당 목록</button>
+      <button onclick="window.showDividendCalendar()" style="display: block; width: 100%; padding: 10px; margin: 4px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; text-align: left; font-size: 14px; cursor: pointer;">📅 배당 캘린더</button>
+      <button onclick="window.showDividendStats()" style="display: block; width: 100%; padding: 10px; margin: 4px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; text-align: left; font-size: 14px; cursor: pointer;">📊 배당 통계 & 예측</button>
+    `;
+    panel.appendChild(section);
+    return true;
+  }
+  
+  addToMenu();
+  const obs = new MutationObserver(() => {
+    const panel = document.getElementById('menu-panel');
+    if (panel && getComputedStyle(panel).display !== 'none') addToMenu();
+  });
+  obs.observe(document.body, { childList: true, subtree: true });
+  
+  window._dividendPhase5Installed = true;
+  console.log('✅ Phase 5 배당금 관리 시스템 활성화');
+  console.log('   💰 window.showDividendInput() - 배당 입력');
+  console.log('   📋 window.showDividendList() - 목록');
+  console.log('   📅 window.showDividendCalendar() - 캘린더');
+  console.log('   📊 window.showDividendStats() - 통계');
+})();
+</script>
   
 <script>
 /* ============================================================
