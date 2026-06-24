@@ -26501,6 +26501,190 @@ window.showAddHoldingModal = showAddHoldingModal;
   }
 })();
 </script>
+  <!-- ===== Phase 10 v3: KRX 박스 위치 최적화 + 메뉴 토글 (capture 방식) ===== -->
+<script>
+(function() {
+  'use strict';
+  const TAG = '[Phase 10 v3]';
+  
+  // 1) 숨김 CSS 제거 + 위치 CSS 영구 주입
+  function injectCss() {
+    document.getElementById('krx-box-hide-style')?.remove();
+    if (document.getElementById('krx-box-show-style')) return;
+    
+    const css = document.createElement('style');
+    css.id = 'krx-box-show-style';
+    css.textContent = `
+      #krx-main-box {
+        display: block !important;
+        position: fixed !important;
+        right: 12px !important;
+        top: 60px !important;
+        left: auto !important;
+        width: 280px !important;
+        max-height: 80vh !important;
+        overflow-y: auto !important;
+        z-index: 9990 !important;
+      }
+      body.krx-hidden #krx-main-box {
+        display: none !important;
+      }
+      @media (max-width: 600px) {
+        #krx-main-box {
+          right: 8px !important;
+          top: 56px !important;
+          width: calc(100vw - 16px) !important;
+          max-width: 280px !important;
+        }
+      }
+    `;
+    document.head.appendChild(css);
+  }
+  
+  // 2) 상태 관리
+  function getVisible() {
+    const s = localStorage.getItem('krx_box_visible');
+    return s === null ? true : s === 'true';
+  }
+  
+  function setVisible(v) {
+    localStorage.setItem('krx_box_visible', v ? 'true' : 'false');
+    document.body.classList.toggle('krx-hidden', !v);
+    localStorage.removeItem('krx_box_hidden_until');
+    updateAllStates();
+    console.log(TAG, v ? '👁️ 표시' : '🙈 숨김');
+  }
+  
+  function updateAllStates() {
+    document.querySelectorAll('.st-krx').forEach(st => {
+      st.textContent = getVisible() ? '🟢' : '🔴';
+    });
+  }
+  
+  // 3) × 버튼 패치
+  function patchCloseBtn() {
+    const box = document.getElementById('krx-main-box');
+    if (!box || box.dataset.p10v3 === '1') return;
+    
+    box.querySelectorAll('*').forEach(el => {
+      if (el.children.length !== 0) return;
+      const t = (el.textContent || '').trim();
+      if (/^[×xX✕✖❌－—\-]$/.test(t)) {
+        el.style.cursor = 'pointer';
+        el.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          setVisible(false);
+        }, true);
+      }
+    });
+    
+    box.dataset.p10v3 = '1';
+  }
+  
+  // 4) 메뉴 토글 버튼 추가
+  function addMenuToggle() {
+    const section = document.getElementById('sys-section-v2');
+    if (!section) return false;
+    
+    // 중복 제거
+    const existing = section.querySelectorAll('[data-act="krx"]');
+    if (existing.length > 0) {
+      existing.forEach((b, i) => { if (i > 0) b.remove(); });
+      updateAllStates();
+      return true;
+    }
+    
+    const btn = document.createElement('button');
+    btn.className = 'sys-btn';
+    btn.dataset.act = 'krx';
+    btn.style.cssText = 'display:flex;align-items:center;justify-content:space-between;width:100%;padding:10px;margin:4px 0;background:#1a1a1a;border:1px solid #333;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;';
+    btn.innerHTML = `<span>🇰🇷 KRX 박스</span><span class="st-krx">${getVisible() ? '🟢' : '🔴'}</span>`;
+    
+    section.appendChild(btn);
+    return true;
+  }
+  
+  // 5) 🔥 핵심: 메뉴 패널 캡처 가로채기 (검증된 작동 방식)
+  function installPanelInterceptor() {
+    const panel = document.getElementById('menu-panel');
+    if (!panel || panel.dataset.p10v3Installed === '1') return;
+    
+    panel.addEventListener('click', (e) => {
+      const krxBtn = e.target.closest('[data-act="krx"]');
+      if (!krxBtn) return;
+      
+      e.stopImmediatePropagation();
+      e.stopPropagation();
+      e.preventDefault();
+      
+      setVisible(!getVisible());
+    }, true); // capture
+    
+    panel.dataset.p10v3Installed = '1';
+    console.log(TAG, '✅ 메뉴 패널 인터셉터 설치');
+  }
+  
+  // 6) MutationObserver
+  function watchMenu() {
+    const panel = document.getElementById('menu-panel');
+    if (!panel) return;
+    
+    const obs = new MutationObserver(() => {
+      const section = document.getElementById('sys-section-v2');
+      if (section && !section.querySelector('[data-act="krx"]')) {
+        addMenuToggle();
+      } else {
+        updateAllStates();
+      }
+    });
+    obs.observe(panel, { childList: true, subtree: true });
+  }
+  
+  function watchBox() {
+    const obs = new MutationObserver(() => {
+      const box = document.getElementById('krx-main-box');
+      if (box && !box.dataset.p10v3) {
+        patchCloseBtn();
+      }
+    });
+    obs.observe(document.body, { childList: true, subtree: false });
+  }
+  
+  // 7) 초기화
+  function init() {
+    injectCss();
+    document.body.classList.toggle('krx-hidden', !getVisible());
+    
+    if (window._lastKrxData && window.renderModernKrxBox) {
+      window.renderModernKrxBox().then(() => {
+        setTimeout(patchCloseBtn, 200);
+      }).catch(() => {});
+    }
+    
+    addMenuToggle();
+    installPanelInterceptor();
+    watchMenu();
+    watchBox();
+    
+    window.__phase10 = {
+      version: '3.0',
+      show: () => setVisible(true),
+      hide: () => setVisible(false),
+      toggle: () => setVisible(!getVisible()),
+      isVisible: getVisible
+    };
+    
+    console.log(TAG, '✅ 설치 완료, 표시:', getVisible());
+  }
+  
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(init, 1500));
+  } else {
+    setTimeout(init, 1500);
+  }
+})();
+</script>
 </body>
 </html>
 
