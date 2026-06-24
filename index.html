@@ -26347,6 +26347,156 @@ window.showAddHoldingModal = showAddHoldingModal;
   console.log('✅ Phase 7: 매일 종가 자동 입력 시스템 설치 완료');
 })();
 </script>
+  <!-- ===== Phase 8: 시스템 섹션 메뉴 통합 + 부동 아이콘 제거 ===== -->
+<script>
+(function() {
+  'use strict';
+  const TAG = '[Phase 8]';
+
+  // 1) 부동 아이콘 숨김 (CSS 우선순위 최상위)
+  function hideFloatingIcons() {
+    const style = document.createElement('style');
+    style.id = 'phase8-hide-floating';
+    style.textContent = `
+      #phase6-root, #phase7-btn {
+        display: none !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+      }
+    `;
+    document.head.appendChild(style);
+    console.log(TAG, '✅ 부동 아이콘 숨김 CSS 주입');
+  }
+
+  // 2) 시스템 섹션 생성
+  function buildSystemSection() {
+    const panel = document.getElementById('menu-panel');
+    if (!panel) return false;
+    if (document.getElementById('sys-section-v2')) return true; // 중복 방지
+
+    const section = document.createElement('div');
+    section.id = 'sys-section-v2';
+    section.style.cssText = 'margin:12px 0;padding:10px;border-top:1px solid #333;';
+    section.innerHTML = `
+      <div style="font-size:12px;color:#888;margin-bottom:8px;font-weight:600;">⚙️ 시스템</div>
+      <button class="sys-btn" data-act="poll" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:10px;margin:4px 0;background:#1a1a1a;border:1px solid #333;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">
+        <span>🔄 실시간 폴링</span><span class="st-poll">⚪</span>
+      </button>
+      <button class="sys-btn" data-act="snap" style="display:flex;align-items:center;justify-content:space-between;width:100%;padding:10px;margin:4px 0;background:#1a1a1a;border:1px solid #333;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">
+        <span>💾 자동 스냅샷</span><span class="st-snap">⚪</span>
+      </button>
+      <button class="sys-btn" data-act="phase7" style="display:flex;align-items:center;width:100%;padding:10px;margin:4px 0;background:#1a1a1a;border:1px solid #333;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">
+        <span>💎 오늘 종가 입력</span>
+      </button>
+      <button class="sys-btn" data-act="status" style="display:flex;align-items:center;width:100%;padding:10px;margin:4px 0;background:#1a1a1a;border:1px solid #333;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;">
+        <span>📊 시스템 상태</span>
+      </button>
+    `;
+
+    // journal-menu-section 앞 또는 패널 끝에 삽입
+    const jms = panel.querySelector('#journal-menu-section, .journal-menu-section');
+    if (jms) jms.parentNode.insertBefore(section, jms);
+    else panel.appendChild(section);
+
+    // 캡처 단계 이벤트 (메뉴 기본 핸들러 우회)
+    section.addEventListener('click', (e) => {
+      const btn = e.target.closest('.sys-btn');
+      if (!btn) return;
+      e.stopPropagation();
+      const act = btn.dataset.act;
+      try {
+        if (act === 'poll') {
+          const p6a = window.Phase6 && window.Phase6.A;
+          if (!p6a) return alert('Phase 6-A 미초기화');
+          p6a.running ? p6a.stop() : p6a.start();
+          updateStatus();
+        } else if (act === 'snap') {
+          const p6b = window.Phase6 && window.Phase6.B;
+          if (!p6b) return alert('Phase 6-B 미초기화');
+          p6b.running ? p6b.stop() : p6b.start();
+          updateStatus();
+        } else if (act === 'phase7') {
+          if (!window.__phase7) return alert('Phase 7 미초기화');
+          window.__phase7.run({ force: true });
+        } else if (act === 'status') {
+          const p7 = window.__phase7 ? window.__phase7.state() : {};
+          const p6a = window.Phase6 && window.Phase6.A;
+          const p6b = window.Phase6 && window.Phase6.B;
+          alert(
+            '📊 시스템 상태\n\n' +
+            '실시간 폴링: ' + (p6a && p6a.running ? '🟢 ON' : '🔴 OFF') + '\n' +
+            '자동 스냅샷: ' + (p6b && p6b.running ? '🟢 ON' : '🔴 OFF') + '\n' +
+            'Phase 7 마지막 실행: ' + (p7.lastRun || '없음') + '\n' +
+            'Phase 7 예약: ' + (p7.scheduled ? '🟢' : '🔴')
+          );
+        }
+      } catch (err) {
+        console.error(TAG, err);
+        alert('오류: ' + err.message);
+      }
+    }, true);
+
+    updateStatus();
+    console.log(TAG, '✅ 시스템 섹션 생성');
+    return true;
+  }
+
+  function updateStatus() {
+    const section = document.getElementById('sys-section-v2');
+    if (!section) return;
+    const p6a = window.Phase6 && window.Phase6.A;
+    const p6b = window.Phase6 && window.Phase6.B;
+    const pollEl = section.querySelector('.st-poll');
+    const snapEl = section.querySelector('.st-snap');
+    if (pollEl) pollEl.textContent = (p6a && p6a.running) ? '🟢' : '🔴';
+    if (snapEl) snapEl.textContent = (p6b && p6b.running) ? '🟢' : '🔴';
+  }
+
+  // 3) 메뉴 열릴 때마다 섹션 재생성 (메뉴 재렌더링 대응)
+  function watchMenu() {
+    const btn = document.getElementById('floating-menu-btn');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        setTimeout(() => buildSystemSection(), 100);
+        setTimeout(() => buildSystemSection(), 300);
+      });
+    }
+    // MutationObserver: menu-panel 내용 변화 감지
+    const panel = document.getElementById('menu-panel');
+    if (panel) {
+      const obs = new MutationObserver(() => {
+        if (!document.getElementById('sys-section-v2')) {
+          buildSystemSection();
+        } else {
+          updateStatus();
+        }
+      });
+      obs.observe(panel, { childList: true, subtree: false });
+    }
+  }
+
+  // 4) 초기화
+  function init() {
+    hideFloatingIcons();
+    buildSystemSection();
+    watchMenu();
+    // 상태 업데이트 주기적 동기화 (10초)
+    setInterval(updateStatus, 10000);
+    window.__phase8 = {
+      version: '1.0',
+      rebuild: buildSystemSection,
+      updateStatus: updateStatus
+    };
+    console.log(TAG, '✅ 설치 완료');
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(init, 500));
+  } else {
+    setTimeout(init, 500);
+  }
+})();
+</script>
 </body>
 </html>
 
