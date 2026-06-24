@@ -25931,6 +25931,102 @@ window.showAddHoldingModal = showAddHoldingModal;
   else window.addEventListener('load', () => setTimeout(boot, 1500));
 })();
 </script>
+  <!-- ============================================ -->
+<!-- Phase 6-E: 차트 기간 필터 동기화 패치 v1     -->
+<!-- chart-profit, chart-cumreturn을              -->
+<!-- chart-total의 기간 필터에 동기화             -->
+<!-- ============================================ -->
+<script>
+(function installChartSyncPatch() {
+  if (window.__chartSyncPatch) return;
+
+  const TARGET_CHARTS = ['chart-profit', 'chart-cumreturn'];
+  const SOURCE_CHART = 'chart-total';
+  let timer = null;
+  const originalData = new Map();
+
+  function backupOriginal(chartId) {
+    if (originalData.has(chartId)) return;
+    const canvas = document.getElementById(chartId);
+    if (!canvas) return;
+    const inst = (window.Chart && Chart.getChart) ? Chart.getChart(canvas) : null;
+    if (!inst) return;
+    originalData.set(chartId, {
+      labels: [...inst.data.labels],
+      datasets: inst.data.datasets.map(d => ({ ...d, data: [...d.data] }))
+    });
+  }
+
+  function syncCharts() {
+    const sourceCanvas = document.getElementById(SOURCE_CHART);
+    if (!sourceCanvas || !window.Chart) return;
+    const sourceInst = Chart.getChart(sourceCanvas);
+    if (!sourceInst) return;
+
+    const sourceLabels = sourceInst.data.labels;
+    if (!sourceLabels || sourceLabels.length === 0) return;
+
+    const firstDate = sourceLabels[0];
+    const lastDate = sourceLabels[sourceLabels.length - 1];
+
+    TARGET_CHARTS.forEach(targetId => {
+      const canvas = document.getElementById(targetId);
+      if (!canvas) return;
+      const inst = Chart.getChart(canvas);
+      if (!inst) return;
+
+      backupOriginal(targetId);
+      const orig = originalData.get(targetId);
+      if (!orig) return;
+
+      const startIdx = orig.labels.findIndex(l => l >= firstDate);
+      let endIdx = -1;
+      for (let i = orig.labels.length - 1; i >= 0; i--) {
+        if (orig.labels[i] <= lastDate) { endIdx = i; break; }
+      }
+      if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) return;
+
+      inst.data.labels = orig.labels.slice(startIdx, endIdx + 1);
+      inst.data.datasets.forEach((ds, dsIdx) => {
+        const origDs = orig.datasets[dsIdx];
+        if (origDs) ds.data = origDs.data.slice(startIdx, endIdx + 1);
+      });
+      inst.update('none');
+    });
+  }
+
+  function onPeriodClick(e) {
+    const btn = e.target.closest('[data-days]');
+    if (!btn) return;
+    clearTimeout(timer);
+    timer = setTimeout(syncCharts, 150);
+  }
+
+  document.addEventListener('click', onPeriodClick, true);
+  setTimeout(syncCharts, 1000);
+
+  window.__chartSyncPatch = {
+    sync: syncCharts,
+    uninstall: () => {
+      document.removeEventListener('click', onPeriodClick, true);
+      originalData.forEach((orig, chartId) => {
+        const canvas = document.getElementById(chartId);
+        if (!canvas) return;
+        const inst = Chart.getChart(canvas);
+        if (!inst) return;
+        inst.data.labels = orig.labels;
+        inst.data.datasets.forEach((ds, i) => {
+          if (orig.datasets[i]) ds.data = orig.datasets[i].data;
+        });
+        inst.update('none');
+      });
+      delete window.__chartSyncPatch;
+    }
+  };
+
+  console.log('✅ Phase 6-E: Chart Sync Patch 설치 완료');
+})();
+</script>
 </body>
 </html>
 
