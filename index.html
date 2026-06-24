@@ -26501,6 +26501,131 @@ window.showAddHoldingModal = showAddHoldingModal;
   }
 })();
 </script>
+  <!-- ===== Phase 10 v4.1: KRX 박스 위치 최적화 + 메뉴 토글 (가벼운 안전 버전) ===== -->
+<script>
+(function() {
+  'use strict';
+  const TAG = '[Phase 10 v4.1]';
+  
+  function injectCss() {
+    document.getElementById('krx-box-show-style-v4')?.remove();
+    const css = document.createElement('style');
+    css.id = 'krx-box-show-style-v4';
+    css.textContent = `
+      #krx-main-box {
+        display: block !important;
+        position: fixed !important;
+        right: 12px !important;
+        top: 60px !important;
+        left: auto !important;
+        width: 280px !important;
+        max-height: 80vh !important;
+        overflow-y: auto !important;
+        z-index: 9990 !important;
+      }
+      body.krx-hidden-v4 #krx-main-box {
+        display: none !important;
+      }
+      @media (max-width: 600px) {
+        #krx-main-box {
+          right: 8px !important;
+          top: 56px !important;
+          width: calc(100vw - 16px) !important;
+          max-width: 280px !important;
+        }
+      }
+    `;
+    document.head.appendChild(css);
+  }
+  
+  function getVisible() {
+    const s = localStorage.getItem('krx_box_visible');
+    return s === null ? true : s === 'true';
+  }
+  
+  function setVisible(v) {
+    localStorage.setItem('krx_box_visible', v ? 'true' : 'false');
+    document.body.classList.toggle('krx-hidden-v4', !v);
+    localStorage.removeItem('krx_box_hidden_until');
+    document.querySelectorAll('.st-krx-v4').forEach(s => {
+      s.textContent = v ? '🟢' : '🔴';
+    });
+  }
+  
+  function addMenuToggle() {
+    const section = document.getElementById('sys-section-v2');
+    if (!section) return false;
+    if (section.querySelector('[data-act="krx-v4"]')) return true;
+    
+    const btn = document.createElement('button');
+    btn.className = 'sys-btn';
+    btn.dataset.act = 'krx-v4';
+    btn.style.cssText = 'display:flex;align-items:center;justify-content:space-between;width:100%;padding:10px;margin:4px 0;background:#1a1a1a;border:1px solid #333;border-radius:6px;color:#fff;cursor:pointer;font-size:13px;';
+    btn.innerHTML = `<span>🇰🇷 KRX 박스</span><span class="st-krx-v4">${getVisible() ? '🟢' : '🔴'}</span>`;
+    section.appendChild(btn);
+    return true;
+  }
+  
+  function installInterceptor() {
+    const panel = document.getElementById('menu-panel');
+    if (!panel || panel.dataset.p10v4 === '1') return;
+    
+    panel.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-act="krx-v4"]');
+      if (!btn) return;
+      e.stopImmediatePropagation();
+      e.stopPropagation();
+      e.preventDefault();
+      setVisible(!getVisible());
+    }, true);
+    
+    panel.dataset.p10v4 = '1';
+  }
+  
+  function setupMenuOpenListener() {
+    const menuBtn = document.getElementById('floating-menu-btn');
+    if (!menuBtn || menuBtn.dataset.p10v4Listener === '1') return;
+    
+    menuBtn.addEventListener('click', () => {
+      setTimeout(() => {
+        addMenuToggle();
+        installInterceptor();
+      }, 300);
+    });
+    
+    menuBtn.dataset.p10v4Listener = '1';
+  }
+  
+  function init() {
+    try {
+      injectCss();
+      document.body.classList.toggle('krx-hidden-v4', !getVisible());
+      setupMenuOpenListener();
+      addMenuToggle();
+      installInterceptor();
+      
+      window.__phase10 = {
+        version: '4.1',
+        show: () => setVisible(true),
+        hide: () => setVisible(false),
+        toggle: () => setVisible(!getVisible()),
+        isVisible: getVisible
+      };
+      
+      console.log(TAG, '✅ 설치 완료');
+    } catch(e) {
+      console.error(TAG, '실패:', e.message);
+    }
+  }
+  
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(init, 3000));
+  } else {
+    setTimeout(init, 3000);
+  }
+})();
+</script>
+<!-- ===== /Phase 10 v4.1 ===== -->
 </body>
 </html>
 
