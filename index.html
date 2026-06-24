@@ -25638,6 +25638,327 @@ window.showAddHoldingModal = showAddHoldingModal;
   console.log('✅ 중복 상단 탭 숨김 활성화:', HIDE_TABS.join(', '));
 })();
 </script>
+  <!-- ============================================================ -->
+<!-- Phase 6: 실시간 현재가 + 자동 스냅샷 + 차트 토글 -->
+<!-- ============================================================ -->
+<script>
+(function Phase6Init() {
+  'use strict';
+  if (window.__phase6Loaded) return;
+  window.__phase6Loaded = true;
+
+  const PROXY = 'https://stock-proxy.kgwsw.workers.dev';
+  const POLL_INTERVAL = 7000;
+  const SAVE_HOUR = 16;
+  const SAVE_MINUTE = 30;
+  const DB_NAME = 'StockJournalDB';
+
+  function openDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME);
+      req.onsuccess = e => resolve(e.target.result);
+      req.onerror = e => reject(e.target.error);
+    });
+  }
+  function getAll(db, store) {
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction([store], 'readonly').objectStore(store).getAll();
+      tx.onsuccess = () => resolve(tx.result);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  function nowKST() { return new Date(Date.now() + 9 * 3600000); }
+  function todayKSTStr() { return nowKST().toISOString().slice(0, 10); }
+  function isWeekend() { const d = nowKST().getUTCDay(); return d === 0 || d === 6; }
+
+  const Phase6A = {
+    running: false, timer: null, updateCount: 0, lastPrices: {},
+    async fetchPrices(tickers) {
+      const url = PROXY + '/proxy?url=' + encodeURIComponent(
+        'https://polling.finance.naver.com/api/realtime/domestic/stock/' + tickers.join(','));
+      const r = await fetch(url);
+      const d = await r.json();
+      const result = {};
+      (d?.datas || []).forEach(item => {
+        result[item.itemCode] = {
+          name: item.stockName, price: item.closePrice,
+          change: item.compareToPreviousClosePrice, changeRate: item.fluctuationsRatio,
+        };
+      });
+      return result;
+    },
+    async tick() {
+      try {
+        const db = await openDB();
+        const holdings = await getAll(db, 'holdings');
+        const tickers = holdings.map(h => h.ticker || h.code || h.symbol).filter(Boolean);
+        if (tickers.length === 0) return;
+        const prices = await this.fetchPrices(tickers);
+        this.lastPrices = prices;
+        this.updateCount++;
+        window.__phase6aLastUpdate = new Date();
+        window.__phase6aPrices = prices;
+        Phase6UI.refreshA();
+      } catch (e) { console.warn('[Phase 6-A] tick error:', e.message); }
+    },
+    start() {
+      if (this.running) return;
+      this.running = true;
+      this.tick();
+      this.timer = setInterval(() => this.tick(), POLL_INTERVAL);
+      console.log('✅ Phase 6-A 시작 (7초 폴링)');
+      Phase6UI.refreshA();
+    },
+    stop() {
+      this.running = false;
+      if (this.timer) clearInterval(this.timer);
+      this.timer = null;
+      Phase6UI.refreshA();
+    },
+    toggle() { this.running ? this.stop() : this.start(); },
+  };
+
+  const Phase6B = {
+    running: false, timer: null, lastSaveDate: null, saveCount: 0,
+    async snapshot(force = false) {
+      const today = todayKSTStr();
+      if (!force && isWeekend()) return { skipped: true, reason: 'weekend' };
+      const db = await openDB();
+      const holdings = await getAll(db, 'holdings');
+      const existing = await getAll(db, 'daily_snapshots');
+      const tickers = holdings.map(h => h.ticker || h.code).filter(Boolean);
+      const prices = Object.keys(Phase6A.lastPrices).length > 0
+        ? Phase6A.lastPrices : await Phase6A.fetchPrices(tickers);
+      const tx = db.transaction(['daily_snapshots'], 'readwrite');
+      const store = tx.objectStore('daily_snapshots');
+      let success = 0, skipped = 0;
+      for (const h of holdings) {
+        const ticker = h.ticker || h.code;
+        if (!ticker) continue;
+        const id = 's_' + today.replace(/-/g, '') + '_' + ticker + '_auto';
+        if (existing.find(s => s.id === id)) { skipped++; continue; }
+        const qty = h.currentQuantity ?? h.quantity ?? h.qty ?? 0;
+        const avgPrice = h.avgBuyPriceKRW ?? h.avgPrice ?? h.avgBuyPrice ?? 0;
+        const currentPrice = prices[ticker]?.price ?? avgPrice;
+        await new Promise((resolve, reject) => {
+          const req = store.add({
+            id, date: today, ticker,
+            name: h.name || prices[ticker]?.name || ticker,
+            qty, avgPrice, currentPrice,
+            evalAmount: qty * currentPrice,
+            source: 'auto', createdAt: Date.now(),
+          });
+          req.onsuccess = () => { success++; resolve(); };
+          req.onerror = () => reject(req.error);
+        });
+      }
+      this.lastSaveDate = today;
+      this.saveCount++;
+      localStorage.setItem('phase6b_lastSave', today);
+      console.log('✅ Phase 6-B 스냅샷: ' + success + '건 성공, ' + skipped + '건 스킵');
+      Phase6UI.refreshB();
+      return { success, skipped };
+    },
+    checkSchedule() {
+      const n = nowKST();
+      const h = n.getUTCHours();
+      const m = n.getUTCMinutes();
+      const today = todayKSTStr();
+      const lastSave = localStorage.getItem('phase6b_lastSave');
+      if (lastSave === today) return;
+      if (h > SAVE_HOUR || (h === SAVE_HOUR && m >= SAVE_MINUTE)) this.snapshot();
+    },
+    start() {
+      if (this.running) return;
+      this.running = true;
+      this.lastSaveDate = localStorage.getItem('phase6b_lastSave');
+      this.checkSchedule();
+      this.timer = setInterval(() => this.checkSchedule(), 60000);
+      console.log('✅ Phase 6-B 시작 (매 분 스케줄 체크)');
+      Phase6UI.refreshB();
+    },
+    stop() {
+      this.running = false;
+      if (this.timer) clearInterval(this.timer);
+      this.timer = null;
+      Phase6UI.refreshB();
+    },
+  };
+
+  const Phase6C = {
+    mode: localStorage.getItem('phase6c_mode') || 'corrected',
+    setMode(mode) {
+      this.mode = mode;
+      localStorage.setItem('phase6c_mode', mode);
+      console.log('🔄 차트 데이터 소스: ' + (mode === 'corrected' ? '실제 종가' : '매수가'));
+      this.rebuildCharts();
+      Phase6UI.refreshC();
+    },
+    async rebuildCharts() {
+      try {
+        const db = await openDB();
+        const all = await getAll(db, 'daily_snapshots');
+        const filtered = all.filter(s => {
+          if (this.mode === 'corrected') {
+            return s.id.includes('_corrected') || s.id.includes('_auto') || (!s.id.includes('_backfill'));
+          } else {
+            return s.id.includes('_backfill') || s.id.includes('_auto') || (!s.id.includes('_corrected'));
+          }
+        });
+        const byDate = {};
+        filtered.forEach(s => {
+          if (!byDate[s.date]) byDate[s.date] = 0;
+          const value = s.evalAmount ?? (s.qty * (s.currentPrice ?? s.avgPrice ?? 0));
+          byDate[s.date] += value;
+        });
+        const dates = Object.keys(byDate).sort();
+        const values = dates.map(d => byDate[d]);
+        if (window.Chart && Chart.instances) {
+          Object.values(Chart.instances).forEach(chart => {
+            const id = chart.canvas?.id || '';
+            if (id === 'chart-total') {
+              chart.data.labels = dates;
+              chart.data.datasets[0].data = values;
+              chart.update('none');
+            }
+          });
+        }
+        console.log('📊 차트 재구성: ' + dates.length + '개 데이터 포인트 (' + this.mode + ')');
+      } catch (e) { console.warn('[Phase 6-C] rebuild error:', e.message); }
+    },
+  };
+
+  const Phase6UI = {
+    rootId: 'phase6-root',
+    expanded: { a: false, b: false, c: false },
+    inject() {
+      if (document.getElementById(this.rootId)) return;
+      const style = document.createElement('style');
+      style.id = 'phase6-style';
+      style.textContent = '' +
+        '#phase6-root { position: fixed; left: 12px; bottom: 12px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 12px; pointer-events: none; }' +
+        '#phase6-root > div { pointer-events: auto; }' +
+        '.p6-icon { width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; color: white; font-size: 20px; box-shadow: 0 4px 12px rgba(0,0,0,.25); transition: transform .15s; user-select: none; }' +
+        '.p6-icon:hover { transform: scale(1.05); }' +
+        '.p6-icon.a { background: linear-gradient(135deg, #8b5cf6, #6366f1); }' +
+        '.p6-icon.b { background: linear-gradient(135deg, #10b981, #059669); }' +
+        '.p6-icon.c { background: linear-gradient(135deg, #f59e0b, #ea580c); }' +
+        '.p6-panel { background: white; border-radius: 12px; padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.18); min-width: 220px; max-width: 280px; margin-bottom: 6px; }' +
+        '.p6-panel h4 { font-weight: 700; margin: 0 0 8px; font-size: 13px; }' +
+        '.p6-row { display: flex; justify-content: space-between; padding: 3px 0; color: #475569; }' +
+        '.p6-row b { color: #0f172a; }' +
+        '.p6-btn { background: #f1f5f9; border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 11px; margin-right: 4px; font-weight: 600; }' +
+        '.p6-btn:hover { background: #e2e8f0; }' +
+        '.p6-btn.active { background: #6366f1; color: white; }' +
+        '.p6-btn.green { background: #10b981; color: white; }' +
+        '.p6-btn.red { background: #ef4444; color: white; }' +
+        '.p6-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }' +
+        '.p6-dot.on { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,.6); }' +
+        '.p6-dot.off { background: #94a3b8; }' +
+        '.p6-group { display: flex; flex-direction: column-reverse; gap: 4px; }';
+      document.head.appendChild(style);
+      const root = document.createElement('div');
+      root.id = this.rootId;
+      root.innerHTML =
+        '<div class="p6-group"><div class="p6-icon c" title="차트 데이터 소스" data-toggle="c">📊</div><div id="p6-panel-c" style="display:none"></div></div>' +
+        '<div class="p6-group"><div class="p6-icon b" title="일일 자동 저장" data-toggle="b">💾</div><div id="p6-panel-b" style="display:none"></div></div>' +
+        '<div class="p6-group"><div class="p6-icon a" title="실시간 현재가" data-toggle="a">📡</div><div id="p6-panel-a" style="display:none"></div></div>';
+      document.body.appendChild(root);
+      root.addEventListener('click', e => {
+        const tg = e.target.closest('[data-toggle]');
+        if (tg) { const k = tg.dataset.toggle; this.expanded[k] = !this.expanded[k]; this.refreshAll(); return; }
+        const btn = e.target.closest('[data-action]');
+        if (btn) this.handleAction(btn.dataset.action, btn.dataset.value);
+      });
+      this.refreshAll();
+      console.log('✅ Phase 6 UI 주입 완료 (좌측 하단)');
+    },
+    handleAction(action, value) {
+      if (action === 'a-toggle') Phase6A.toggle();
+      else if (action === 'b-save-now') Phase6B.snapshot(true);
+      else if (action === 'c-mode') Phase6C.setMode(value);
+    },
+    refreshAll() { this.refreshA(); this.refreshB(); this.refreshC(); },
+    refreshA() {
+      const p = document.getElementById('p6-panel-a');
+      if (!p) return;
+      p.style.display = this.expanded.a ? 'block' : 'none';
+      if (!this.expanded.a) return;
+      const last = window.__phase6aLastUpdate;
+      const lastStr = last ? last.toLocaleTimeString('ko-KR') : '대기 중';
+      const prices = Phase6A.lastPrices || {};
+      const items = Object.entries(prices).slice(0, 7).map(([code, d]) =>
+        '<div class="p6-row"><span>' + d.name + '</span><b>' + (d.price?.toLocaleString() || '-') + '원</b></div>'
+      ).join('');
+      p.className = 'p6-panel';
+      p.innerHTML =
+        '<h4><span class="p6-dot ' + (Phase6A.running ? 'on' : 'off') + '"></span>실시간 현재가</h4>' +
+        '<div class="p6-row"><span>상태</span><b>' + (Phase6A.running ? '실행 중' : '중지') + '</b></div>' +
+        '<div class="p6-row"><span>갱신</span><b>' + Phase6A.updateCount + '회</b></div>' +
+        '<div class="p6-row"><span>마지막</span><b>' + lastStr + '</b></div>' +
+        items +
+        '<div style="margin-top:8px"><button class="p6-btn ' + (Phase6A.running ? 'red' : 'green') + '" data-action="a-toggle">' + (Phase6A.running ? '⏸ 중지' : '▶ 시작') + '</button></div>';
+    },
+    refreshB() {
+      const p = document.getElementById('p6-panel-b');
+      if (!p) return;
+      p.style.display = this.expanded.b ? 'block' : 'none';
+      if (!this.expanded.b) return;
+      const last = localStorage.getItem('phase6b_lastSave') || '없음';
+      p.className = 'p6-panel';
+      p.innerHTML =
+        '<h4><span class="p6-dot ' + (Phase6B.running ? 'on' : 'off') + '"></span>일일 자동 저장</h4>' +
+        '<div class="p6-row"><span>상태</span><b>' + (Phase6B.running ? '활성' : '중지') + '</b></div>' +
+        '<div class="p6-row"><span>마지막 저장</span><b>' + last + '</b></div>' +
+        '<div class="p6-row"><span>다음 예정</span><b>16:30 KST</b></div>' +
+        '<div style="margin-top:8px"><button class="p6-btn green" data-action="b-save-now">즉시 저장</button></div>';
+    },
+    refreshC() {
+      const p = document.getElementById('p6-panel-c');
+      if (!p) return;
+      p.style.display = this.expanded.c ? 'block' : 'none';
+      if (!this.expanded.c) return;
+      p.className = 'p6-panel';
+      p.innerHTML =
+        '<h4>📊 차트 데이터 소스</h4>' +
+        '<div style="margin-bottom:8px">' +
+        '<button class="p6-btn ' + (Phase6C.mode === 'corrected' ? 'active' : '') + '" data-action="c-mode" data-value="corrected">실제 종가</button>' +
+        '<button class="p6-btn ' + (Phase6C.mode === 'backfill' ? 'active' : '') + '" data-action="c-mode" data-value="backfill">매수가 기준</button>' +
+        '</div>' +
+        '<div class="p6-row"><span>현재 모드</span><b>' + (Phase6C.mode === 'corrected' ? '실제 종가' : '매수가') + '</b></div>';
+    },
+  };
+
+  async function boot() {
+    try {
+      const db = await openDB();
+      const stores = Array.from(db.objectStoreNames);
+      if (!stores.includes('holdings') || !stores.includes('daily_snapshots')) {
+        console.warn('⚠️ Phase 6: 필수 스토어 없음, 3초 후 재시도');
+        setTimeout(boot, 3000);
+        return;
+      }
+      db.close();
+      Phase6UI.inject();
+      Phase6A.start();
+      Phase6B.start();
+      let attempts = 0;
+      const waitChart = setInterval(() => {
+        attempts++;
+        if (window.Chart && Chart.instances && Object.keys(Chart.instances).length > 0) {
+          clearInterval(waitChart);
+          Phase6C.rebuildCharts();
+        } else if (attempts > 30) clearInterval(waitChart);
+      }, 1000);
+      window.Phase6 = { A: Phase6A, B: Phase6B, C: Phase6C, UI: Phase6UI };
+      console.log('🚀 Phase 6 부팅 완료 — window.Phase6 에서 접근 가능');
+    } catch (e) { console.error('❌ Phase 6 부팅 실패:', e); }
+  }
+
+  if (document.readyState === 'complete') setTimeout(boot, 1500);
+  else window.addEventListener('load', () => setTimeout(boot, 1500));
+})();
+</script>
 </body>
 </html>
 
