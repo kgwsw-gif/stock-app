@@ -26089,6 +26089,264 @@ window.showAddHoldingModal = showAddHoldingModal;
   }
 })();
 </script>
+  <!-- ============================================ -->
+<!-- Phase 7: 매일 종가 자동 일괄입력 시스템      -->
+<!-- - 앱 시작 시 자동 (오늘 데이터 불완전하면)    -->
+<!-- - 16:00~16:30 시간대 자동                    -->
+<!-- - 수동 버튼 (💎 아이콘)                       -->
+<!-- ============================================ -->
+<script>
+(function installPhase7() {
+  if (window.__phase7) return;
+
+  const parsePrice = (s) => {
+    if (typeof s === 'number') return s;
+    if (typeof s !== 'string') return null;
+    const n = parseInt(s.replace(/[^0-9-]/g, ''), 10);
+    return isNaN(n) ? null : n;
+  };
+
+  const todayStr = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  };
+  const todayCmp = () => todayStr().replace(/-/g, '');
+
+  function openDB() {
+    return new Promise((res, rej) => {
+      const req = indexedDB.open('StockJournalDB');
+      req.onsuccess = () => res(req.result);
+      req.onerror = () => rej(req.error);
+    });
+  }
+
+  function getAll(db, store) {
+    return new Promise((res, rej) => {
+      const tx = db.transaction(store, 'readonly');
+      const r = tx.objectStore(store).getAll();
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  }
+
+  function toast(msg, color = '#10b981') {
+    const t = document.createElement('div');
+    t.style.cssText = `position:fixed;bottom:80px;right:20px;background:${color};color:white;padding:12px 20px;border-radius:8px;z-index:99999;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,0.2);max-width:400px;`;
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 5000);
+  }
+
+  // ===== 정상 스냅샷 존재 여부 확인 =====
+  async function isTodayComplete() {
+    const db = await openDB();
+    const snaps = await getAll(db, 'daily_snapshots');
+    const holdings = await getAll(db, 'holdings');
+    const active = holdings.filter(h => (h.currentQuantity ?? h.quantity ?? 0) > 0);
+    const today = todayStr();
+    
+    // 활성 보유 종목별로 정상 스냅샷이 있는지 확인
+    let validCount = 0;
+    for (const h of active) {
+      const snap = snaps.find(s => 
+        s.date === today && 
+        s.ticker === h.ticker && 
+        !s.id.includes('_auto') &&
+        typeof s.currentValueKRW === 'number' &&
+        s.currentValueKRW > 0
+      );
+      if (snap) validCount++;
+    }
+    db.close();
+    return { valid: validCount, total: active.length, complete: validCount === active.length };
+  }
+
+  // ===== 메인 실행 함수 =====
+  async function runPhase7(opts = {}) {
+    const { silent = false, force = false } = opts;
+    
+    try {
+      // 이미 완료된 경우 스킵
+      if (!force) {
+        const status = await isTodayComplete();
+        if (status.complete) {
+          if (!silent) toast(`✅ 오늘 데이터 이미 완료 (${status.valid}/${status.total}종목)`, '#3b82f6');
+          return { skipped: true, reason: 'already_complete', ...status };
+        }
+      }
+
+      const db = await openDB();
+      const holdings = (await getAll(db, 'holdings')).filter(h => (h.currentQuantity ?? h.quantity ?? 0) > 0);
+      
+      // 가격 갱신
+      const tickers = holdings.map(h => h.ticker).filter(Boolean);
+      try {
+        await Phase6.A.fetchPrices(tickers);
+      } catch(e) {
+        console.warn('[Phase 7] fetchPrices 실패, 기존 lastPrices 사용:', e.message);
+      }
+      const prices = Phase6.A.lastPrices || {};
+
+      const today = todayStr();
+      const todayC = todayCmp();
+      const newSnaps = [];
+      const skipped = [];
+
+      for (const h of holdings) {
+        const priceObj = prices[h.ticker];
+        if (!priceObj) { skipped.push(h.ticker); continue; }
+        const cp = parsePrice(priceObj.price);
+        if (cp === null || cp <= 0) { skipped.push(h.ticker); continue; }
+
+        const qty = h.currentQuantity ?? h.quantity ?? 0;
+        const avg = h.avgBuyPriceKRW ?? h.avgBuyPriceOriginal ?? h.avgBuyPrice ?? 0;
+        const ti = avg * qty;
+        const cv = cp * qty;
+        const pl = cv - ti;
+        const pr = ti > 0 ? (pl / ti) * 100 : 0;
+
+        newSnaps.push({
+          id: `s_${todayC}_${h.ticker}`,
+          date: today, ticker: h.ticker, holdingId: h.id, name: h.name,
+          currency: h.currency || 'KRW',
+          avgBuyPriceOriginal: avg, avgBuyPriceKRW: avg, quantity: qty,
+          currentPriceOriginal: cp, currentPriceKRW: cp, exchangeRate: 1,
+          totalInvestOriginal: ti, currentValueOriginal: cv,
+          profitLossOriginal: pl, profitRateOriginal: pr,
+          totalInvestKRW: ti, currentValueKRW: cv,
+          profitLossKRW: pl, profitRateKRW: pr,
+          pureStockProfitKRW: pl, exchangeProfitKRW: 0,
+          alphaSignal: null, notes: 'Phase 7 자동 종가 입력',
+          createdAt: new Date().toISOString()
+        });
+      }
+
+      // _auto 삭제 + 새 데이터 저장
+      const allSnaps = await getAll(db, 'daily_snapshots');
+      const todayAuto = allSnaps.filter(s => s.date === today && s.id.includes('_auto'));
+      
+      await new Promise((res, rej) => {
+        const tx = db.transaction('daily_snapshots', 'readwrite');
+        const store = tx.objectStore('daily_snapshots');
+        todayAuto.forEach(s => store.delete(s.id));
+        newSnaps.forEach(s => store.put(s));
+        tx.oncomplete = () => res();
+        tx.onerror = () => rej(tx.error);
+      });
+
+      // holdings 갱신
+      await new Promise((res, rej) => {
+        const tx = db.transaction('holdings', 'readwrite');
+        const store = tx.objectStore('holdings');
+        newSnaps.forEach(snap => {
+          const h = holdings.find(x => x.ticker === snap.ticker);
+          if (h) {
+            h.currentPrice = snap.currentPriceKRW;
+            h.currentValue = snap.currentValueKRW;
+            h.profitLoss = snap.profitLossKRW;
+            h.profitRate = snap.profitRateKRW;
+            h.lastPriceUpdate = new Date().toISOString();
+            store.put(h);
+          }
+        });
+        tx.oncomplete = () => res();
+        tx.onerror = () => rej(tx.error);
+      });
+
+      db.close();
+
+      const totalValue = newSnaps.reduce((s, x) => s + x.currentValueKRW, 0);
+      const totalInvest = newSnaps.reduce((s, x) => s + x.totalInvestKRW, 0);
+      const totalPL = totalValue - totalInvest;
+      const totalRate = totalInvest > 0 ? (totalPL / totalInvest) * 100 : 0;
+
+      const msg = `✅ Phase 7: ${newSnaps.length}종목 / ₩${totalValue.toLocaleString()} (${totalRate > 0 ? '+' : ''}${totalRate.toFixed(2)}%)`;
+      console.log(msg);
+      if (!silent) toast(msg);
+
+      // V4 캐시 갱신
+      if (window.__periodFilterV4) {
+        setTimeout(() => window.__periodFilterV4.capture(), 500);
+      }
+      
+      // 마지막 실행 시각 저장
+      localStorage.setItem('phase7_lastRun', new Date().toISOString());
+
+      return { success: true, count: newSnaps.length, totalValue, totalPL, totalRate, skipped };
+    } catch(e) {
+      console.error('[Phase 7] 실행 실패:', e);
+      if (!silent) toast(`❌ Phase 7 실패: ${e.message}`, '#ef4444');
+      return { success: false, error: e.message };
+    }
+  }
+
+  // ===== 16:00~16:30 자동 트리거 =====
+  let scheduledTimer = null;
+  function checkSchedule() {
+    const now = new Date();
+    const day = now.getDay(); // 0=일, 6=토
+    if (day === 0 || day === 6) return; // 주말 스킵
+    
+    const h = now.getHours();
+    const m = now.getMinutes();
+    const inWindow = (h === 16 && m >= 0 && m <= 30);
+    
+    if (!inWindow) return;
+    
+    const lastRun = localStorage.getItem('phase7_lastRun');
+    if (lastRun) {
+      const lastDate = new Date(lastRun).toISOString().slice(0,10);
+      if (lastDate === todayStr()) return; // 오늘 이미 실행
+    }
+    
+    console.log('[Phase 7] 16:00~16:30 자동 트리거');
+    runPhase7({ silent: false });
+  }
+
+  // ===== 수동 버튼 (💎 아이콘) =====
+  function injectButton() {
+    if (document.getElementById('phase7-btn')) return;
+    
+    const btn = document.createElement('div');
+    btn.id = 'phase7-btn';
+    btn.title = '오늘 종가 자동 입력 (Phase 7)';
+    btn.style.cssText = `position:fixed;bottom:20px;left:170px;width:48px;height:48px;background:#8b5cf6;color:white;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:24px;box-shadow:0 4px 12px rgba(0,0,0,0.2);z-index:9999;user-select:none;`;
+    btn.textContent = '💎';
+    btn.onclick = () => runPhase7({ force: true });
+    document.body.appendChild(btn);
+  }
+
+  // ===== 초기화 =====
+  window.__phase7 = {
+    run: runPhase7,
+    check: isTodayComplete,
+    status: () => ({
+      lastRun: localStorage.getItem('phase7_lastRun'),
+      scheduled: !!scheduledTimer
+    })
+  };
+
+  // 페이지 로드 후 처리
+  setTimeout(async () => {
+    injectButton();
+    
+    // 1) 앱 시작 시 자동 실행 (오늘 데이터 불완전한 경우만)
+    const status = await isTodayComplete();
+    if (!status.complete && status.total > 0) {
+      // Phase 6-A가 가격을 가져올 시간 확보
+      setTimeout(() => runPhase7({ silent: false }), 5000);
+    } else {
+      console.log(`[Phase 7] 오늘 데이터 완료 상태: ${status.valid}/${status.total}`);
+    }
+    
+    // 2) 5분마다 16:00 윈도우 체크
+    scheduledTimer = setInterval(checkSchedule, 5 * 60 * 1000);
+    checkSchedule(); // 즉시 1회
+  }, 3000);
+
+  console.log('✅ Phase 7: 매일 종가 자동 입력 시스템 설치 완료');
+})();
+</script>
 </body>
 </html>
 
