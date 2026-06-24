@@ -26478,6 +26478,10 @@ window.showAddHoldingModal = showAddHoldingModal;
   // 4) 초기화
   function init() {
     hideFloatingIcons();
+    // Phase 8.1: __phase7.state 별칭 (TypeError 방지)
+    if (window.__phase7 && typeof window.__phase7.status === 'function' && !window.__phase7.state) {
+      window.__phase7.state = window.__phase7.status;
+    }
     buildSystemSection();
     watchMenu();
     // 상태 업데이트 주기적 동기화 (10초)
