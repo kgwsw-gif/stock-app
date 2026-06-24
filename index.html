@@ -25639,12 +25639,12 @@ window.showAddHoldingModal = showAddHoldingModal;
 })();
 </script>
  <!-- ============================================================ -->
-<!-- Phase 6 v2: 실시간 현재가 + 자동 스냅샷 + 차트 토글 -->
-<!-- v2 변경점: 앱 표준 스키마 호환 (quantity, currentValueKRW), -->
-<!--          일괄입력 자동 감지 트리거 추가 -->
+<!-- Phase 6 v3: 실시간 현재가 + 자동 스냅샷 (차트 미개입) -->
+<!-- v3 변경: 차트 토글 제거, 차트 직접 조작 일체 제거, -->
+<!--         앱의 기간 필터 등 원본 동작 완전 보존 -->
 <!-- ============================================================ -->
 <script>
-(function Phase6Init() {
+(function Phase6v3() {
   'use strict';
   if (window.__phase6Loaded) return;
   window.__phase6Loaded = true;
@@ -25673,10 +25673,7 @@ window.showAddHoldingModal = showAddHoldingModal;
   function todayKSTStr() { return nowKST().toISOString().slice(0, 10); }
   function isWeekend() { const d = nowKST().getUTCDay(); return d === 0 || d === 6; }
 
-  // 표준 필드 추출 헬퍼 (앱 스키마 호환)
-  function getQty(s)   { return s.quantity ?? s.qty ?? s.currentQuantity ?? 0; }
-  function getValue(s) { return s.currentValueKRW ?? s.evalAmount ?? (getQty(s) * (s.currentPriceKRW ?? s.currentPrice ?? s.avgBuyPriceKRW ?? s.avgPrice ?? 0)); }
-
+  // === Phase 6-A: 실시간 현재가 폴링 ===
   const Phase6A = {
     running: false, timer: null, updateCount: 0, lastPrices: {},
     async fetchPrices(tickers) {
@@ -25703,7 +25700,6 @@ window.showAddHoldingModal = showAddHoldingModal;
         this.lastPrices = prices;
         this.updateCount++;
         window.__phase6aLastUpdate = new Date();
-        window.__phase6aPrices = prices;
         Phase6UI.refreshA();
       } catch (e) { console.warn('[Phase 6-A] tick error:', e.message); }
     },
@@ -25724,11 +25720,11 @@ window.showAddHoldingModal = showAddHoldingModal;
     toggle() { this.running ? this.stop() : this.start(); },
   };
 
+  // === Phase 6-B: 일일 자동 스냅샷 (앱 표준 스키마 사용) ===
   const Phase6B = {
-    running: false, timer: null, lastSaveDate: null, saveCount: 0,
+    running: false, timer: null,
     
-    // v2: 앱 표준 스키마(quantity, currentValueKRW 등)로 저장
-    async snapshot(force = false, source = 'auto') {
+    async snapshot(force = false) {
       const today = todayKSTStr();
       if (!force && isWeekend()) return { skipped: true, reason: 'weekend' };
       
@@ -25741,7 +25737,7 @@ window.showAddHoldingModal = showAddHoldingModal;
       
       const tx = db.transaction(['daily_snapshots'], 'readwrite');
       const store = tx.objectStore('daily_snapshots');
-      let success = 0, skipped = 0, updated = 0;
+      let success = 0, updated = 0;
       
       for (const h of holdings) {
         const ticker = h.ticker || h.code;
@@ -25773,14 +25769,11 @@ window.showAddHoldingModal = showAddHoldingModal;
           currentValueOriginal: h.currentValueOriginal ?? currentValueKRW,
           profitLossOriginal: h.profitLossOriginal ?? profitLossKRW,
           profitRateOriginal: h.profitRateOriginal ?? profitRateKRW,
-          totalInvestKRW,
-          currentValueKRW,
-          profitLossKRW,
-          profitRateKRW,
+          totalInvestKRW, currentValueKRW, profitLossKRW, profitRateKRW,
           pureStockProfitKRW: profitLossKRW,
           exchangeProfitKRW: 0,
           alphaSignal: h.alphaSignal || null,
-          notes: source === 'manual_bulk' ? '일괄입력 자동기록' : '자동저장',
+          notes: '자동저장',
           isAutoSaved: true,
           createdAt: Date.now(),
         };
@@ -25800,13 +25793,10 @@ window.showAddHoldingModal = showAddHoldingModal;
         }
       }
       
-      this.lastSaveDate = today;
-      this.saveCount++;
       localStorage.setItem('phase6b_lastSave', today);
       console.log('✅ Phase 6-B 스냅샷: 신규 ' + success + '건, 갱신 ' + updated + '건');
       Phase6UI.refreshB();
-      if (window.Phase6?.C) Phase6C.rebuildCharts();
-      return { success, updated, skipped };
+      return { success, updated };
     },
     
     checkSchedule() {
@@ -25822,7 +25812,6 @@ window.showAddHoldingModal = showAddHoldingModal;
     start() {
       if (this.running) return;
       this.running = true;
-      this.lastSaveDate = localStorage.getItem('phase6b_lastSave');
       this.checkSchedule();
       this.timer = setInterval(() => this.checkSchedule(), 60000);
       console.log('✅ Phase 6-B 시작 (매 분 스케줄 체크)');
@@ -25836,113 +25825,10 @@ window.showAddHoldingModal = showAddHoldingModal;
     },
   };
 
-  const Phase6C = {
-    mode: localStorage.getItem('phase6c_mode') || 'corrected',
-    setMode(mode) {
-      this.mode = mode;
-      localStorage.setItem('phase6c_mode', mode);
-      console.log('🔄 차트 데이터 소스: ' + (mode === 'corrected' ? '실제 종가' : '매수가'));
-      this.rebuildCharts();
-      Phase6UI.refreshC();
-    },
-    async rebuildCharts() {
-      try {
-        const db = await openDB();
-        const all = await getAll(db, 'daily_snapshots');
-        
-        // v2: 일괄입력(접미사 없음) + auto + corrected/backfill 모두 인식
-        const filtered = all.filter(s => {
-          const isBackfill = s.id.includes('_backfill');
-          const isCorrected = s.id.includes('_corrected');
-          const isAuto = s.id.includes('_auto');
-          const isManual = !isBackfill && !isCorrected && !isAuto;
-          
-          if (this.mode === 'corrected') {
-            return isCorrected || isAuto || isManual;
-          } else {
-            return isBackfill || isAuto || isManual;
-          }
-        });
-        
-        // 날짜별 + 종목별 중복 제거 (우선순위: manual > auto > corrected/backfill)
-        const dedup = {};
-        filtered.forEach(s => {
-          const key = s.date + '_' + s.ticker;
-          const isBackfill = s.id.includes('_backfill');
-          const isCorrected = s.id.includes('_corrected');
-          const isAuto = s.id.includes('_auto');
-          const priority = (!isBackfill && !isCorrected && !isAuto) ? 3 
-                         : isAuto ? 2 : 1;
-          if (!dedup[key] || dedup[key].priority < priority) {
-            dedup[key] = { snapshot: s, priority };
-          }
-        });
-        
-        const byDate = {};
-        Object.values(dedup).forEach(({ snapshot: s }) => {
-          if (!byDate[s.date]) byDate[s.date] = 0;
-          byDate[s.date] += getValue(s);
-        });
-        
-        const dates = Object.keys(byDate).sort();
-        const values = dates.map(d => byDate[d]);
-        
-        if (window.Chart && Chart.instances) {
-          Object.values(Chart.instances).forEach(chart => {
-            const id = chart.canvas?.id || '';
-            if (id === 'chart-total') {
-              chart.data.labels = dates;
-              chart.data.datasets[0].data = values;
-              chart.update('none');
-            }
-          });
-        }
-        console.log('📊 차트 재구성: ' + dates.length + '개 데이터 포인트 (' + this.mode + ')');
-      } catch (e) { console.warn('[Phase 6-C] rebuild error:', e.message); }
-    },
-  };
-
-  // v2 신규: 일괄입력 자동 감지
-  const Phase6D = {
-    lastSnapshotCount: 0,
-    timer: null,
-    
-    async checkChange() {
-      try {
-        const db = await openDB();
-        const today = todayKSTStr();
-        const all = await getAll(db, 'daily_snapshots');
-        const todayManual = all.filter(s => 
-          s.date === today && 
-          !s.id.includes('_auto') && 
-          !s.id.includes('_backfill') && 
-          !s.id.includes('_corrected')
-        );
-        
-        if (todayManual.length > this.lastSnapshotCount) {
-          console.log('🔔 일괄입력 감지: ' + this.lastSnapshotCount + ' → ' + todayManual.length + '건');
-          this.lastSnapshotCount = todayManual.length;
-          if (window.Phase6?.C) await Phase6C.rebuildCharts();
-        } else {
-          this.lastSnapshotCount = todayManual.length;
-        }
-      } catch (e) {}
-    },
-    
-    start() {
-      this.checkChange();
-      this.timer = setInterval(() => this.checkChange(), 5000);
-      console.log('✅ Phase 6-D 시작 (일괄입력 자동 감지, 5초 간격)');
-    },
-    stop() {
-      if (this.timer) clearInterval(this.timer);
-      this.timer = null;
-    },
-  };
-
+  // === Phase 6 UI (좌측 하단, 차트 토글 제거됨) ===
   const Phase6UI = {
     rootId: 'phase6-root',
-    expanded: { a: false, b: false, c: false },
+    expanded: { a: false, b: false },
     inject() {
       if (document.getElementById(this.rootId)) return;
       const style = document.createElement('style');
@@ -25954,14 +25840,12 @@ window.showAddHoldingModal = showAddHoldingModal;
         '.p6-icon:hover { transform: scale(1.05); }' +
         '.p6-icon.a { background: linear-gradient(135deg, #8b5cf6, #6366f1); }' +
         '.p6-icon.b { background: linear-gradient(135deg, #10b981, #059669); }' +
-        '.p6-icon.c { background: linear-gradient(135deg, #f59e0b, #ea580c); }' +
         '.p6-panel { background: white; border-radius: 12px; padding: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.18); min-width: 220px; max-width: 280px; margin-bottom: 6px; }' +
         '.p6-panel h4 { font-weight: 700; margin: 0 0 8px; font-size: 13px; }' +
         '.p6-row { display: flex; justify-content: space-between; padding: 3px 0; color: #475569; }' +
         '.p6-row b { color: #0f172a; }' +
         '.p6-btn { background: #f1f5f9; border: none; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 11px; margin-right: 4px; font-weight: 600; }' +
         '.p6-btn:hover { background: #e2e8f0; }' +
-        '.p6-btn.active { background: #6366f1; color: white; }' +
         '.p6-btn.green { background: #10b981; color: white; }' +
         '.p6-btn.red { background: #ef4444; color: white; }' +
         '.p6-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }' +
@@ -25972,7 +25856,6 @@ window.showAddHoldingModal = showAddHoldingModal;
       const root = document.createElement('div');
       root.id = this.rootId;
       root.innerHTML =
-        '<div class="p6-group"><div class="p6-icon c" title="차트 데이터 소스" data-toggle="c">📊</div><div id="p6-panel-c" style="display:none"></div></div>' +
         '<div class="p6-group"><div class="p6-icon b" title="일일 자동 저장" data-toggle="b">💾</div><div id="p6-panel-b" style="display:none"></div></div>' +
         '<div class="p6-group"><div class="p6-icon a" title="실시간 현재가" data-toggle="a">📡</div><div id="p6-panel-a" style="display:none"></div></div>';
       document.body.appendChild(root);
@@ -25980,18 +25863,16 @@ window.showAddHoldingModal = showAddHoldingModal;
         const tg = e.target.closest('[data-toggle]');
         if (tg) { const k = tg.dataset.toggle; this.expanded[k] = !this.expanded[k]; this.refreshAll(); return; }
         const btn = e.target.closest('[data-action]');
-        if (btn) this.handleAction(btn.dataset.action, btn.dataset.value);
+        if (btn) this.handleAction(btn.dataset.action);
       });
       this.refreshAll();
-      console.log('✅ Phase 6 UI 주입 완료 (좌측 하단)');
+      console.log('✅ Phase 6 v3 UI 주입 완료 (좌측 하단, 2개 아이콘)');
     },
-    handleAction(action, value) {
+    handleAction(action) {
       if (action === 'a-toggle') Phase6A.toggle();
       else if (action === 'b-save-now') Phase6B.snapshot(true);
-      else if (action === 'c-mode') Phase6C.setMode(value);
-      else if (action === 'c-refresh') Phase6C.rebuildCharts();
     },
-    refreshAll() { this.refreshA(); this.refreshB(); this.refreshC(); },
+    refreshAll() { this.refreshA(); this.refreshB(); },
     refreshA() {
       const p = document.getElementById('p6-panel-a');
       if (!p) return;
@@ -26026,21 +25907,6 @@ window.showAddHoldingModal = showAddHoldingModal;
         '<div class="p6-row"><span>다음 예정</span><b>16:30 KST</b></div>' +
         '<div style="margin-top:8px"><button class="p6-btn green" data-action="b-save-now">즉시 저장</button></div>';
     },
-    refreshC() {
-      const p = document.getElementById('p6-panel-c');
-      if (!p) return;
-      p.style.display = this.expanded.c ? 'block' : 'none';
-      if (!this.expanded.c) return;
-      p.className = 'p6-panel';
-      p.innerHTML =
-        '<h4>📊 차트 데이터 소스</h4>' +
-        '<div style="margin-bottom:8px">' +
-        '<button class="p6-btn ' + (Phase6C.mode === 'corrected' ? 'active' : '') + '" data-action="c-mode" data-value="corrected">실제 종가</button>' +
-        '<button class="p6-btn ' + (Phase6C.mode === 'backfill' ? 'active' : '') + '" data-action="c-mode" data-value="backfill">매수가 기준</button>' +
-        '</div>' +
-        '<div class="p6-row"><span>현재 모드</span><b>' + (Phase6C.mode === 'corrected' ? '실제 종가' : '매수가') + '</b></div>' +
-        '<div style="margin-top:8px"><button class="p6-btn" data-action="c-refresh">🔄 차트 갱신</button></div>';
-    },
   };
 
   async function boot() {
@@ -26048,7 +25914,7 @@ window.showAddHoldingModal = showAddHoldingModal;
       const db = await openDB();
       const stores = Array.from(db.objectStoreNames);
       if (!stores.includes('holdings') || !stores.includes('daily_snapshots')) {
-        console.warn('⚠️ Phase 6: 필수 스토어 없음, 3초 후 재시도');
+        console.warn('⚠️ Phase 6 v3: 필수 스토어 없음, 3초 후 재시도');
         setTimeout(boot, 3000);
         return;
       }
@@ -26056,18 +25922,9 @@ window.showAddHoldingModal = showAddHoldingModal;
       Phase6UI.inject();
       Phase6A.start();
       Phase6B.start();
-      Phase6D.start();
-      let attempts = 0;
-      const waitChart = setInterval(() => {
-        attempts++;
-        if (window.Chart && Chart.instances && Object.keys(Chart.instances).length > 0) {
-          clearInterval(waitChart);
-          Phase6C.rebuildCharts();
-        } else if (attempts > 30) clearInterval(waitChart);
-      }, 1000);
-      window.Phase6 = { A: Phase6A, B: Phase6B, C: Phase6C, D: Phase6D, UI: Phase6UI };
-      console.log('🚀 Phase 6 v2 부팅 완료 — window.Phase6 에서 접근 가능');
-    } catch (e) { console.error('❌ Phase 6 부팅 실패:', e); }
+      window.Phase6 = { A: Phase6A, B: Phase6B, UI: Phase6UI };
+      console.log('🚀 Phase 6 v3 부팅 완료 (차트 미개입, 데이터 관리만 담당)');
+    } catch (e) { console.error('❌ Phase 6 v3 부팅 실패:', e); }
   }
 
   if (document.readyState === 'complete') setTimeout(boot, 1500);
