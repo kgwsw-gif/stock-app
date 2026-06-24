@@ -26626,6 +26626,192 @@ window.showAddHoldingModal = showAddHoldingModal;
 })();
 </script>
 <!-- ===== /Phase 10 v4.1 ===== -->
+  <!-- ===== Phase 11 v1.4: 자동화 모니터링 시스템 ===== -->
+<script>
+(function phase11Init() {
+  const STORAGE_KEY = 'phase11_automation_logs';
+  const MAX_LOGS = 500;
+  
+  function readLogs() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); }
+    catch (e) { return []; }
+  }
+  
+  function saveLogs(logs) {
+    try {
+      if (logs.length > MAX_LOGS) logs = logs.slice(-MAX_LOGS);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(logs));
+      return true;
+    } catch (e) { console.error('Phase11 저장 실패:', e); return false; }
+  }
+  
+  function writeLog(entry) {
+    const logs = readLogs();
+    logs.push({
+      id: Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+      phase: entry.phase || 'unknown',
+      type: entry.type || 'execution',
+      status: entry.status || 'success',
+      timestamp: entry.timestamp || new Date().toISOString(),
+      duration: entry.duration || 0,
+      details: entry.details || '',
+      error: entry.error || null
+    });
+    saveLogs(logs);
+    return Promise.resolve(true);
+  }
+  
+  function getLogs(options = {}) {
+    const { phase, status, days = 7, limit = 100 } = options;
+    let logs = readLogs();
+    const cutoff = Date.now() - days * 86400000;
+    logs = logs.filter(l => new Date(l.timestamp).getTime() >= cutoff);
+    if (phase) logs = logs.filter(l => l.phase === phase);
+    if (status) logs = logs.filter(l => l.status === status);
+    logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    return Promise.resolve(logs.slice(0, limit));
+  }
+  
+  async function healthCheck() {
+    const logs = await getLogs({ days: 7, limit: 1000 });
+    const phases = ['6-A', '6-B', '7'];
+    const result = {};
+    phases.forEach(p => {
+      const pl = logs.filter(l => l.phase === p);
+      const success = pl.filter(l => l.status === 'success').length;
+      const failure = pl.filter(l => l.status === 'failure').length;
+      let consecFail = 0;
+      for (const l of pl) { if (l.status === 'failure') consecFail++; else break; }
+      result[p] = {
+        total: pl.length, success, failure,
+        successRate: pl.length > 0 ? ((success / pl.length) * 100).toFixed(1) + '%' : 'N/A',
+        lastRun: pl[0]?.timestamp || null,
+        consecutiveFailures: consecFail,
+        warning: consecFail >= 3
+      };
+    });
+    const now = new Date();
+    const today16 = new Date(now); today16.setHours(16, 0, 0, 0);
+    const isWeekday = [1,2,3,4,5].includes(now.getDay());
+    const snapshotToday = logs.find(l => l.phase === '6-B' && l.status === 'success' &&
+      new Date(l.timestamp).toDateString() === now.toDateString());
+    result.todaySnapshotMissed = now.getTime() > today16.getTime() && isWeekday && !snapshotToday;
+    return result;
+  }
+  
+  async function showReport() {
+    const h = await healthCheck();
+    const logs = await getLogs({ days: 7, limit: 10 });
+    let msg = '📊 자동화 헬스 리포트 (최근 7일)\n';
+    msg += '═══════════════════════════════\n\n';
+    ['6-A', '6-B', '7'].forEach(p => {
+      const x = h[p];
+      const icon = x.warning ? '⚠️' : (x.total === 0 ? '⚪' : '✅');
+      const name = { '6-A': '실시간 폴링', '6-B': '자동 스냅샷', '7': '종가 입력' }[p];
+      msg += `${icon} Phase ${p} (${name})\n`;
+      msg += `   실행: ${x.total}회 (성공 ${x.success} / 실패 ${x.failure})\n`;
+      msg += `   성공률: ${x.successRate}\n`;
+      msg += `   마지막: ${x.lastRun ? new Date(x.lastRun).toLocaleString('ko-KR') : '없음'}\n`;
+      if (x.consecutiveFailures > 0) msg += `   ⚠️ 연속 실패: ${x.consecutiveFailures}회\n`;
+      msg += '\n';
+    });
+    if (h.todaySnapshotMissed) msg += '🚨 오늘 16시 자동 스냅샷이 실행되지 않았습니다.\n\n';
+    if (logs.length > 0) {
+      msg += `최근 로그 (${logs.length}건):\n`;
+      logs.slice(0, 5).forEach(l => {
+        const t = new Date(l.timestamp).toLocaleString('ko-KR');
+        msg += `${l.status === 'success' ? '✓' : '✗'} [${l.phase}] ${t}\n`;
+      });
+    } else {
+      msg += '아직 로그가 없습니다.\n자동화가 실행되면 자동으로 기록됩니다.';
+    }
+    alert(msg);
+  }
+  
+  function hookAutomation() {
+    if (window.Phase6?.A?.run && !window.Phase6.A.__p11_hooked) {
+      const orig = window.Phase6.A.run;
+      window.Phase6.A.run = async function(...args) {
+        const start = Date.now();
+        try { const r = await orig.apply(this, args); writeLog({phase:'6-A', status:'success', duration:Date.now()-start, details:'폴링'}); return r; }
+        catch (e) { writeLog({phase:'6-A', status:'failure', error:e.message||String(e)}); throw e; }
+      };
+      window.Phase6.A.__p11_hooked = true;
+    }
+    if (window.Phase6?.B?.run && !window.Phase6.B.__p11_hooked) {
+      const orig = window.Phase6.B.run;
+      window.Phase6.B.run = async function(...args) {
+        const start = Date.now();
+        try { const r = await orig.apply(this, args); writeLog({phase:'6-B', status:'success', duration:Date.now()-start, details:'스냅샷'}); return r; }
+        catch (e) { writeLog({phase:'6-B', status:'failure', error:e.message||String(e)}); throw e; }
+      };
+      window.Phase6.B.__p11_hooked = true;
+    }
+    if (window.__phase7?.run && !window.__phase7.__p11_hooked) {
+      const orig = window.__phase7.run;
+      window.__phase7.run = async function(...args) {
+        const start = Date.now();
+        try { const r = await orig.apply(this, args); writeLog({phase:'7', status:'success', duration:Date.now()-start, details:'종가입력'}); return r; }
+        catch (e) { writeLog({phase:'7', status:'failure', error:e.message||String(e)}); throw e; }
+      };
+      window.__phase7.__p11_hooked = true;
+    }
+  }
+  
+  function injectMonitoringButton() {
+    const menuPanel = document.querySelector('#menu-panel') || document.querySelector('[id*="menu"]');
+    if (!menuPanel) return false;
+    if (menuPanel.querySelector('[data-act="monitoring"]')) return true;
+    
+    const krxBtn = menuPanel.querySelector('[data-act="krx-v4"]') || menuPanel.querySelector('[data-act="krx"]');
+    if (!krxBtn) return false;
+    
+    const monBtn = krxBtn.cloneNode(true);
+    monBtn.setAttribute('data-act', 'monitoring');
+    monBtn.innerHTML = krxBtn.innerHTML
+      .replace(/KRX 박스/g, '모니터링')
+      .replace(/KR/g, '📊')
+      .replace(/🇰🇷/g, '📊');
+    
+    // 빨간/초록 상태 점 제거
+    const dots = monBtn.querySelectorAll('[class*="dot"], [style*="border-radius: 50%"], [style*="border-radius:50%"]');
+    dots.forEach(d => d.remove());
+    
+    krxBtn.parentNode.insertBefore(monBtn, krxBtn.nextSibling);
+    
+    if (!menuPanel.__monitoring_intercept) {
+      menuPanel.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-act="monitoring"]');
+        if (btn) {
+          e.stopImmediatePropagation();
+          e.stopPropagation();
+          e.preventDefault();
+          showReport().catch(err => alert('리포트 표시 실패: ' + err.message));
+        }
+      }, true);
+      menuPanel.__monitoring_intercept = true;
+    }
+    return true;
+  }
+  
+  window.__phase11 = {
+    version: '1.4',
+    writeLog, getLogs, healthCheck, showReport, hookAutomation, injectMonitoringButton,
+    clearLogs: () => localStorage.removeItem(STORAGE_KEY),
+    getStorageInfo: () => {
+      const raw = localStorage.getItem(STORAGE_KEY) || '';
+      return { count: readLogs().length, sizeKB: (raw.length/1024).toFixed(2) + ' KB', maxLogs: MAX_LOGS };
+    }
+  };
+  
+  // 지연 초기화 (다른 Phase가 로드된 후)
+  setTimeout(() => { hookAutomation(); injectMonitoringButton(); }, 2000);
+  setTimeout(() => { hookAutomation(); injectMonitoringButton(); }, 5000);
+  
+  console.log('✅ Phase 11 v1.4 로드됨');
+})();
+</script>
+<!-- ===== /Phase 11 v1.4 ===== -->
 </body>
 </html>
 
