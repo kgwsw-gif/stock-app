@@ -25932,99 +25932,161 @@ window.showAddHoldingModal = showAddHoldingModal;
 })();
 </script>
   <!-- ============================================ -->
-<!-- Phase 6-E: 차트 기간 필터 동기화 패치 v1     -->
-<!-- chart-profit, chart-cumreturn을              -->
-<!-- chart-total의 기간 필터에 동기화             -->
+<!-- Phase 6-F: 기간 필터 V4 (StockJournalDB 기반) -->
+<!-- 3개 차트 동시에 날짜 기반 정확한 필터링      -->
 <!-- ============================================ -->
 <script>
-(function installChartSyncPatch() {
-  if (window.__chartSyncPatch) return;
+(async function installPeriodFilterV4() {
+  if (window.__periodFilterV4) return; // 중복 방지
 
-  const TARGET_CHARTS = ['chart-profit', 'chart-cumreturn'];
-  const SOURCE_CHART = 'chart-total';
+  // 기존 패치 비활성화 (충돌 방지)
+  if (window.__chartSyncPatch) window.__chartSyncPatch.uninstall();
+  if (window.__periodFilterV2) window.__periodFilterV2.uninstall();
+  if (window.__periodFilterV3) window.__periodFilterV3.uninstall();
+
+  const ALL_CHARTS = ['chart-total', 'chart-profit', 'chart-cumreturn'];
   let timer = null;
-  const originalData = new Map();
+  let allDates = [];
+  const dataCache = new Map();
 
-  function backupOriginal(chartId) {
-    if (originalData.has(chartId)) return;
-    const canvas = document.getElementById(chartId);
-    if (!canvas) return;
-    const inst = (window.Chart && Chart.getChart) ? Chart.getChart(canvas) : null;
-    if (!inst) return;
-    originalData.set(chartId, {
-      labels: [...inst.data.labels],
-      datasets: inst.data.datasets.map(d => ({ ...d, data: [...d.data] }))
+  async function loadAllDates() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open('StockJournalDB');
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('daily_snapshots')) {
+          resolve([]); db.close(); return;
+        }
+        const tx = db.transaction('daily_snapshots', 'readonly');
+        const store = tx.objectStore('daily_snapshots');
+        const all = store.getAll();
+        all.onsuccess = () => {
+          const dateSet = new Set();
+          all.result.forEach(s => { if (s.date) dateSet.add(s.date); });
+          resolve(Array.from(dateSet).sort());
+          db.close();
+        };
+        all.onerror = () => { reject(all.error); db.close(); };
+      };
+      req.onerror = () => reject(req.error);
     });
   }
 
-  function syncCharts() {
-    const sourceCanvas = document.getElementById(SOURCE_CHART);
-    if (!sourceCanvas || !window.Chart) return;
-    const sourceInst = Chart.getChart(sourceCanvas);
-    if (!sourceInst) return;
+  function indexChart(chartId) {
+    const canvas = document.getElementById(chartId);
+    if (!canvas || !window.Chart) return;
+    const inst = Chart.getChart(canvas);
+    if (!inst) return;
 
-    const sourceLabels = sourceInst.data.labels;
-    if (!sourceLabels || sourceLabels.length === 0) return;
+    let cache = dataCache.get(chartId);
+    if (!cache) {
+      cache = { dateMap: {}, datasetCount: inst.data.datasets.length };
+      dataCache.set(chartId, cache);
+    }
 
-    const firstDate = sourceLabels[0];
-    const lastDate = sourceLabels[sourceLabels.length - 1];
+    inst.data.labels.forEach((label, i) => {
+      if (!cache.dateMap[label]) cache.dateMap[label] = {};
+      inst.data.datasets.forEach((ds, dsIdx) => {
+        cache.dateMap[label][dsIdx] = ds.data[i];
+      });
+    });
+  }
 
-    TARGET_CHARTS.forEach(targetId => {
-      const canvas = document.getElementById(targetId);
+  function captureAll() {
+    ALL_CHARTS.forEach(indexChart);
+  }
+
+  function applyFilter(days) {
+    if (allDates.length === 0) return;
+    const lastDate = allDates[allDates.length - 1];
+    let cutoffStr;
+
+    if (!days || days === 0) {
+      cutoffStr = allDates[0];
+    } else {
+      const cutoff = new Date(lastDate);
+      cutoff.setDate(cutoff.getDate() - days);
+      cutoffStr = cutoff.toISOString().slice(0, 10);
+    }
+
+    const filteredDates = allDates.filter(d => d >= cutoffStr);
+
+    ALL_CHARTS.forEach(chartId => {
+      const canvas = document.getElementById(chartId);
       if (!canvas) return;
       const inst = Chart.getChart(canvas);
       if (!inst) return;
+      const cache = dataCache.get(chartId);
+      if (!cache) return;
 
-      backupOriginal(targetId);
-      const orig = originalData.get(targetId);
-      if (!orig) return;
+      const newLabels = [];
+      const newDatasets = inst.data.datasets.map(() => []);
 
-      const startIdx = orig.labels.findIndex(l => l >= firstDate);
-      let endIdx = -1;
-      for (let i = orig.labels.length - 1; i >= 0; i--) {
-        if (orig.labels[i] <= lastDate) { endIdx = i; break; }
-      }
-      if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) return;
-
-      inst.data.labels = orig.labels.slice(startIdx, endIdx + 1);
-      inst.data.datasets.forEach((ds, dsIdx) => {
-        const origDs = orig.datasets[dsIdx];
-        if (origDs) ds.data = origDs.data.slice(startIdx, endIdx + 1);
+      filteredDates.forEach(date => {
+        if (cache.dateMap[date]) {
+          newLabels.push(date);
+          inst.data.datasets.forEach((ds, dsIdx) => {
+            const val = cache.dateMap[date][dsIdx];
+            newDatasets[dsIdx].push(val !== undefined ? val : null);
+          });
+        }
       });
+
+      if (newLabels.length === 0) return;
+
+      inst.data.labels = newLabels;
+      inst.data.datasets.forEach((ds, i) => { ds.data = newDatasets[i]; });
       inst.update('none');
     });
   }
 
-  function onPeriodClick(e) {
+  function onClick(e) {
+    setTimeout(captureAll, 50);
+
     const btn = e.target.closest('[data-days]');
     if (!btn) return;
+    const days = parseInt(btn.getAttribute('data-days'), 10);
+
     clearTimeout(timer);
-    timer = setTimeout(syncCharts, 150);
+    timer = setTimeout(() => applyFilter(days), 300);
   }
 
-  document.addEventListener('click', onPeriodClick, true);
-  setTimeout(syncCharts, 1000);
-
-  window.__chartSyncPatch = {
-    sync: syncCharts,
-    uninstall: () => {
-      document.removeEventListener('click', onPeriodClick, true);
-      originalData.forEach((orig, chartId) => {
-        const canvas = document.getElementById(chartId);
-        if (!canvas) return;
-        const inst = Chart.getChart(canvas);
-        if (!inst) return;
-        inst.data.labels = orig.labels;
-        inst.data.datasets.forEach((ds, i) => {
-          if (orig.datasets[i]) ds.data = orig.datasets[i].data;
-        });
-        inst.update('none');
-      });
-      delete window.__chartSyncPatch;
+  // 초기화
+  try {
+    allDates = await loadAllDates();
+    if (allDates.length === 0) {
+      console.warn('⚠️ Phase 6-F: daily_snapshots 데이터 없음');
+      return;
     }
-  };
 
-  console.log('✅ Phase 6-E: Chart Sync Patch 설치 완료');
+    // 초기 캡처 + 자동 [전체] 동기화 (페이지 로드 후 1초 뒤)
+    setTimeout(() => {
+      captureAll();
+      // 자동으로 [전체] 버튼 1회 클릭하여 24개 데이터 캐시 확보
+      const allBtn = document.querySelector('[data-days="0"]');
+      if (allBtn) {
+        allBtn.click();
+        setTimeout(captureAll, 400);
+      }
+    }, 1500);
+
+    document.addEventListener('click', onClick, true);
+
+    window.__periodFilterV4 = {
+      apply: applyFilter,
+      capture: captureAll,
+      getCache: () => dataCache,
+      getDates: () => allDates,
+      uninstall: () => {
+        document.removeEventListener('click', onClick, true);
+        delete window.__periodFilterV4;
+      }
+    };
+
+    console.log(`✅ Phase 6-F: Period Filter V4 설치 완료 (${allDates.length}개 날짜)`);
+  } catch (e) {
+    console.error('❌ Phase 6-F 설치 실패:', e);
+  }
 })();
 </script>
 </body>
