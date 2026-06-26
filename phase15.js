@@ -1,8 +1,9 @@
-// phase15.js - 자동 복구 시스템 v1.7.3 (Chart 후킹 + 휴장일 가드 + 상단 통계 정정)
+// phase15.js - 자동 복구 시스템 v1.7.4 (Chart 후킹 + 휴장일 가드 + 상단 통계 자동 정정)
 (function() {
-const VERSION = '1.7.3';
+  const VERSION = '1.7.4';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
   const START_ASSET = 13530000;
+  const MODAL_SELECTORS = '#dashboard-modal, #validation-dashboard, #chart-modal';
 
   // ===== 유틸 =====
   const openDB = () => new Promise((res, rej) => {
@@ -65,11 +66,9 @@ const VERSION = '1.7.3';
     return byDate;
   }
 
-   // ===== 2. 차트 강제 패치 (v1.7: getChart 사용) =====
+  // ===== 2. 차트 강제 패치 =====
   async function refreshAllCharts() {
     if (!window.Chart) return 0;
-    
-    // canvas에서 직접 chart 객체 가져오기 (Chart.instances 대신)
     const canvases = document.querySelectorAll('canvas[id^="chart-"]');
     if (canvases.length === 0) return 0;
     
@@ -104,7 +103,7 @@ const VERSION = '1.7.3';
       if (canvasId === 'chart-total') {
         c.data.datasets[0].data = labels.map(d => byDate[d] || 0);
         patched++;
-            } else if (canvasId === 'chart-profit') {
+      } else if (canvasId === 'chart-profit') {
         const pnl = labels.map((d, i) => {
           if (i === 0) return 0;
           const today = byDate[d] || 0;
@@ -112,7 +111,6 @@ const VERSION = '1.7.3';
           if (today === 0 || yest === 0) return 0;
           return today - yest;
         });
-        // v1.7.1: 데이터와 색상을 명시적으로 동일 길이 배열로 교체
         c.data.datasets[0].data = [...pnl];
         c.data.datasets[0].backgroundColor = pnl.map(v => v >= 0 ? '#e74c3c' : '#3498db');
         c.data.datasets[0].borderColor = pnl.map(v => v >= 0 ? '#e74c3c' : '#3498db');
@@ -129,7 +127,7 @@ const VERSION = '1.7.3';
     return patched;
   }
 
-  // ===== 2-2. v1.6: Chart.js 생성자 후킹 =====
+  // ===== 2-2. Chart.js 생성자 후킹 =====
   let chartConstructorHooked = false;
   let cachedByDate = null;
   let cachedTimestamp = 0;
@@ -179,7 +177,7 @@ const VERSION = '1.7.3';
       }
       return patched;
     } catch (e) {
-      console.warn('[Phase15 v1.6] patchChartInstance 실패:', e.message);
+      console.warn('[Phase15] patchChartInstance 실패:', e.message);
       return false;
     }
   }
@@ -217,8 +215,7 @@ const VERSION = '1.7.3';
   // ===== 2-3. 당일손익 자동 보정 =====
   async function refreshDailyPL() {
     try {
-      const modal = document.querySelector('#dashboard-modal') 
-                  || document.querySelector('#validation-dashboard');
+      const modal = document.querySelector(MODAL_SELECTORS);
       if (!modal) return { ok: false, reason: 'modal_not_found' };
 
       const t = new Date();
@@ -266,20 +263,20 @@ const VERSION = '1.7.3';
       });
 
       if (patched > 0) {
-        console.log('[Phase15 v1.6] 당일손익 보정: ₩' + pl.toLocaleString() + ' (' + rate.toFixed(2) + '%) - ' + patched + '곳');
+        log('당일손익 보정: ₩' + pl.toLocaleString() + ' (' + rate.toFixed(2) + '%) - ' + patched + '곳', 'ok');
       }
       return { ok: true, pl, rate, patched, yTotal, tTotal };
     } catch (e) {
-      console.warn('[Phase15 v1.6] refreshDailyPL 실패:', e.message);
+      console.warn('[Phase15] refreshDailyPL 실패:', e.message);
       return { ok: false, error: e.message };
     }
   }
 
-    // ===== 3. 상단 수치 박스 정정 (v1.7.3: 인라인 스타일 박스 지원) =====
+  // ===== 3. 상단 수치 박스 정정 (v1.7.3: 인라인 스타일 박스 지원) =====
   async function refreshTopStats() {
     const byDate = await calcByDate();
     const dates = Object.keys(byDate).sort();
-    if (dates.length === 0) return;
+    if (dates.length === 0) return 0;
 
     const activeBtn = document.querySelector('button.active, button.selected, [aria-pressed="true"]');
     const filterText = activeBtn?.textContent?.trim() || '1주';
@@ -316,7 +313,7 @@ const VERSION = '1.7.3';
     const losses = pnls.length - wins;
     const winRate = pnls.length > 0 ? (wins / pnls.length * 100) : 0;
 
-    // v1.7.3: 인라인 스타일 박스를 라벨 텍스트로 찾기
+    // 인라인 스타일 박스를 라벨 텍스트로 찾기
     const findBoxByLabel = (labelText) => {
       const all = document.querySelectorAll('div');
       for (const div of all) {
@@ -332,7 +329,7 @@ const VERSION = '1.7.3';
 
     // 1) 기간 수익률
     const periodBox = findBoxByLabel('기간 수익률');
-    if (periodBox && periodBox.children.length >= 2) {
+    if (periodBox && periodBox.children.length >= 2 && isFinite(periodReturn)) {
       const valueDiv = periodBox.children[1];
       const detailDiv = periodBox.children[2];
       const sign = periodReturn >= 0 ? '+' : '';
@@ -377,9 +374,10 @@ const VERSION = '1.7.3';
     }
 
     if (updated > 0) log('상단 수치 ' + updated + '개 정정 (기간 ' + periodReturn.toFixed(2) + '%, 승률 ' + winRate.toFixed(1) + '%)', 'ok');
+    return updated;
   }
 
-  // ===== 4. 대시보드 후킹 =====
+  // ===== 4. 대시보드 후킹 (v1.7.4: refreshTopStats 자동 호출 추가) =====
   function hookFunction(funcName) {
     const orig = window[funcName];
     if (typeof orig !== 'function') return false;
@@ -395,6 +393,7 @@ const VERSION = '1.7.3';
         setTimeout(async () => {
           await refreshAllCharts();
           await refreshDailyPL();
+          await refreshTopStats();
         }, delay);
       });
       return result;
@@ -424,6 +423,28 @@ const VERSION = '1.7.3';
       }
     });
     return ok;
+  }
+
+  // ===== 4-2. 기간 버튼 클릭 감지 (1주/1개월/3개월 전환 시 자동 재계산) =====
+  let periodButtonsHooked = false;
+  function installPeriodButtonHook() {
+    if (periodButtonsHooked) return;
+    document.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      const text = btn.textContent.trim();
+      if (!/^(1주|1개월|3개월|6개월|1년|전체)$/.test(text)) return;
+      // 약간 대기 후 재계산 (active 상태가 갱신되도록)
+      setTimeout(async () => {
+        await refreshTopStats();
+      }, 100);
+      setTimeout(async () => {
+        await refreshAllCharts();
+        await refreshTopStats();
+      }, 500);
+    }, true);
+    periodButtonsHooked = true;
+    log('기간 버튼 클릭 감지 설치 완료', 'ok');
   }
 
   // ===== 5. 네이버 종가 백필 =====
@@ -525,89 +546,82 @@ const VERSION = '1.7.3';
 
   // ===== 8. Phase 7 가드 =====
   function installPhase7Guard() {
-  if (!window.__phase7?.run) {
-    log('Phase 7 미발견 - 가드 설치 보류', 'warn');
-    return false;
-  }
-  // 기존 가드 제거 후 재설치 (v1.7.2 강화 버전)
-  if (window.__phase7.__p15_guarded_v172) return true;
-  
-  const origRun = window.__phase7.run.bind(window.__phase7);
-  
-  // 한국 거래소 휴장일 체크
-  const isMarketClosed = () => {
-    const now = new Date();
-    // 한국 시간 기준으로 변환
-    const kstOffset = 9 * 60;
-    const kst = new Date(now.getTime() + (kstOffset - now.getTimezoneOffset()) * 60000);
-    const day = kst.getDay(); // 0=일, 6=토
-    if (day === 0 || day === 6) return { closed: true, reason: '주말' };
-    
-    // 한국 공휴일 (2026년 주요 공휴일 - 필요시 확장)
-    const md = `${String(kst.getMonth()+1).padStart(2,'0')}-${String(kst.getDate()).padStart(2,'0')}`;
-    const holidays2026 = ['01-01','02-16','02-17','02-18','03-01','03-02','05-05','05-25',
-                          '06-06','08-15','08-17','09-24','09-25','09-26','10-03','10-05',
-                          '10-09','12-25'];
-    if (holidays2026.includes(md)) return { closed: true, reason: '공휴일' };
-    
-    return { closed: false };
-  };
-  
-  window.__phase7.run = async function(...args) {
-    // ✅ 사전 차단: 휴장일이면 실행 자체를 막음
-    const market = isMarketClosed();
-    if (market.closed) {
-      log(`Phase 7 자동 실행 차단: 오늘은 ${market.reason}`, 'warn');
-      return { skipped: true, reason: market.reason };
+    if (!window.__phase7?.run) {
+      log('Phase 7 미발견 - 가드 설치 보류', 'warn');
+      return false;
     }
+    if (window.__phase7.__p15_guarded_v172) return true;
     
-    const result = await origRun(...args);
+    const origRun = window.__phase7.run.bind(window.__phase7);
     
-    // 사후 정리: 미래 날짜 스냅샷 자동 삭제
-    const today = new Date().toISOString().slice(0, 10);
-    const allSnaps = await getAll('daily_snapshots');
-    const futureSnaps = allSnaps.filter(s => s.date > today);
-    if (futureSnaps.length > 0) {
-      log(`미래 날짜 스냅샷 ${futureSnaps.length}건 발견 - 자동 삭제`, 'warn');
-      const db = await openDB();
-      const tx = db.transaction('daily_snapshots', 'readwrite');
-      const store = tx.objectStore('daily_snapshots');
-      futureSnaps.forEach(s => store.delete(s.id));
-      await new Promise(res => { tx.oncomplete = res; });
-    }
+    const isMarketClosed = () => {
+      const now = new Date();
+      const kstOffset = 9 * 60;
+      const kst = new Date(now.getTime() + (kstOffset - now.getTimezoneOffset()) * 60000);
+      const day = kst.getDay();
+      if (day === 0 || day === 6) return { closed: true, reason: '주말' };
+      
+      const md = String(kst.getMonth()+1).padStart(2,'0') + '-' + String(kst.getDate()).padStart(2,'0');
+      const holidays2026 = ['01-01','02-16','02-17','02-18','03-01','03-02','05-05','05-25',
+                            '06-06','08-15','08-17','09-24','09-25','09-26','10-03','10-05',
+                            '10-09','12-25'];
+      if (holidays2026.includes(md)) return { closed: true, reason: '공휴일' };
+      
+      return { closed: false };
+    };
     
-    // 기존 사후 검증 (전일 100% 동일 롤백)도 유지
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    const yesterday = d.toISOString().slice(0, 10);
-    const afterSnaps = await getAll('daily_snapshots');
-    const todayAfter = afterSnaps.filter(s => s.date === today);
-    const yestAfter = afterSnaps.filter(s => s.date === yesterday);
-    if (todayAfter.length >= 3 && todayAfter.length === yestAfter.length) {
-      let identical = 0;
-      todayAfter.forEach(t => {
-        const y = yestAfter.find(x => x.ticker === t.ticker);
-        if (y && getPrice(t) === getPrice(y)) identical++;
-      });
-      if (identical === todayAfter.length) {
-        log('Phase 7 입력값이 전일과 100% 동일 - 롤백', 'warn');
+    window.__phase7.run = async function(...args) {
+      const market = isMarketClosed();
+      if (market.closed) {
+        log('Phase 7 자동 실행 차단: 오늘은 ' + market.reason, 'warn');
+        return { skipped: true, reason: market.reason };
+      }
+      
+      const result = await origRun(...args);
+      
+      const today = new Date().toISOString().slice(0, 10);
+      const allSnaps = await getAll('daily_snapshots');
+      const futureSnaps = allSnaps.filter(s => s.date > today);
+      if (futureSnaps.length > 0) {
+        log('미래 날짜 스냅샷 ' + futureSnaps.length + '건 발견 - 자동 삭제', 'warn');
         const db = await openDB();
         const tx = db.transaction('daily_snapshots', 'readwrite');
         const store = tx.objectStore('daily_snapshots');
-        todayAfter.forEach(s => store.delete(s.id));
+        futureSnaps.forEach(s => store.delete(s.id));
         await new Promise(res => { tx.oncomplete = res; });
-        await repairDate(today);
       }
-    }
+      
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      const yesterday = d.toISOString().slice(0, 10);
+      const afterSnaps = await getAll('daily_snapshots');
+      const todayAfter = afterSnaps.filter(s => s.date === today);
+      const yestAfter = afterSnaps.filter(s => s.date === yesterday);
+      if (todayAfter.length >= 3 && todayAfter.length === yestAfter.length) {
+        let identical = 0;
+        todayAfter.forEach(t => {
+          const y = yestAfter.find(x => x.ticker === t.ticker);
+          if (y && getPrice(t) === getPrice(y)) identical++;
+        });
+        if (identical === todayAfter.length) {
+          log('Phase 7 입력값이 전일과 100% 동일 - 롤백', 'warn');
+          const db = await openDB();
+          const tx = db.transaction('daily_snapshots', 'readwrite');
+          const store = tx.objectStore('daily_snapshots');
+          todayAfter.forEach(s => store.delete(s.id));
+          await new Promise(res => { tx.oncomplete = res; });
+          await repairDate(today);
+        }
+      }
+      
+      return result;
+    };
     
-    return result;
-  };
-  
-  window.__phase7.__p15_guarded = true;
-  window.__phase7.__p15_guarded_v172 = true;
-  log('Phase 7 v1.7.2 가드 설치 완료 (휴장일 차단 + 미래 날짜 자동 삭제)', 'ok');
-  return true;
-}
+    window.__phase7.__p15_guarded = true;
+    window.__phase7.__p15_guarded_v172 = true;
+    log('Phase 7 가드 설치 완료 (휴장일 차단 + 미래 날짜 자동 삭제)', 'ok');
+    return true;
+  }
 
   // ===== 9. 자동 실행 =====
   let lastAutoRun = 0;
@@ -645,26 +659,32 @@ const VERSION = '1.7.3';
     installPhase7Guard,
     installDashboardHook,
     ensureDashboardHook,
+    installPeriodButtonHook,
     hookFunction,
     hookChartConstructor,
     patchChartInstance,
     getByDate
   };
 
+  // ===== 자동 갱신 (모달 열려있을 때) =====
   async function refreshIfDashboardOpen() {
-    const opened = document.getElementById('dashboard-modal') 
-                || document.getElementById('validation-dashboard');
+    const opened = document.querySelector(MODAL_SELECTORS);
     if (opened) {
       const patched = await refreshAllCharts();
       await refreshDailyPL();
-      if (patched > 0) log('초기 자동 갱신: 차트 ' + patched + '개 정정', 'ok');
+      const statsUpdated = await refreshTopStats();
+      if (patched > 0 || statsUpdated > 0) {
+        log('초기 자동 갱신: 차트 ' + patched + '개 / 통계 ' + statsUpdated + '개 정정', 'ok');
+      }
     }
   }
 
+  // ===== 초기화 =====
   setTimeout(() => {
     installPhase7Guard();
     hookChartConstructor();
     ensureDashboardHook();
+    installPeriodButtonHook();
     
     setTimeout(refreshIfDashboardOpen, 2000);
     setTimeout(refreshIfDashboardOpen, 4000);
