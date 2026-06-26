@@ -1,6 +1,6 @@
 // phase15.js - 자동 복구 시스템 v1.2 (대시보드 후킹 + 상단 수치 정정)
 (function() {
-  const VERSION = '1.3';
+const VERSION = '1.3';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
   const START_ASSET = 13530000;
 
@@ -369,19 +369,14 @@
     installDashboardHook
   };
 
-    // ===== 초기화 (v1.3 강화) =====
+      // ===== 초기화 (v1.3 강화) =====
   function ensureDashboardHook() {
     if (!window.showDashboardModal) return false;
-    
-    // 후킹이 풀렸는지 검사 (다른 패치가 덮어쓴 경우)
     const isOurHook = window.showDashboardModal === window.__p15_dashboard_wrapper;
-    
     if (!isOurHook) {
-      // 후킹 다시 설치
       window.__p15_dashboard_hooked = false;
       const orig = window.showDashboardModal;
       window.__p15_dashboard_orig = orig;
-      
       const wrapper = async function(...args) {
         const result = await window.__p15_dashboard_orig(...args);
         setTimeout(() => refreshAllCharts(), 100);
@@ -399,25 +394,36 @@
     return true;
   }
 
-  // 초기 설치 + 주기적 재후킹 (다른 패치가 덮어써도 자동 복구)
+  // 차트가 이미 열려있으면 즉시 갱신
+  async function refreshIfDashboardOpen() {
+    if (document.getElementById('dashboard-modal')) {
+      const patched = await refreshAllCharts();
+      await refreshTopStats();
+      if (patched > 0) log(`초기 자동 갱신: 차트 ${patched}개 정정`, 'ok');
+    }
+  }
+
   setTimeout(() => {
     installPhase7Guard();
     ensureDashboardHook();
+    
+    // 앱 로드 직후 대시보드가 열려있으면 자동 갱신
+    setTimeout(refreshIfDashboardOpen, 2000);
+    setTimeout(refreshIfDashboardOpen, 4000);
+    setTimeout(refreshIfDashboardOpen, 6000);
+    
     setTimeout(autoRun, 5000);
     setInterval(autoRun, 60 * 60 * 1000);
     
-    // 매 2초마다 후킹 상태 점검 (처음 30초 동안만)
+    // 30초 동안 2초마다 후킹 점검 (다른 패치가 덮어쓸 수 있음)
     let checkCount = 0;
     const hookChecker = setInterval(() => {
       ensureDashboardHook();
       checkCount++;
-      if (checkCount >= 15) clearInterval(hookChecker);  // 30초 후 중단
+      if (checkCount >= 15) clearInterval(hookChecker);
     }, 2000);
-    
-    // 그 이후엔 30초마다 점검
     setInterval(ensureDashboardHook, 30000);
     
     log(`Phase 15 v${VERSION} 초기화 완료`, 'ok');
   }, 3000);
 })();
-
