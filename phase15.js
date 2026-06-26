@@ -1,6 +1,6 @@
-// phase15.js - 자동 복구 시스템 v1.2 (대시보드 후킹 + 상단 수치 정정)
+// phase15.js - 자동 복구 시스템 v1.5 (canvas ID 매칭 + ValidationDashboard 후킹 + 보간)
 (function() {
-const VERSION = '1.4';
+  const VERSION = '1.5';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
   const START_ASSET = 13530000;
 
@@ -31,41 +31,89 @@ const VERSION = '1.4';
     }
   };
 
-  // ===== 1. 일자별 자산 계산 (공용) =====
-  async function calcByDate() {
+  // ===== 1. 일자별 자산 계산 (v1.5: 보간 추가) =====
+  async function calcByDate(targetDates = null) {
     const snaps = await getAll('daily_snapshots');
     const holdings = await getAll('holdings');
     const byDate = {};
+    
+    // 종목별 가격 시계열 만들기
+    const priceByTicker = {};
     snaps.forEach(s => {
-      const h = holdings.find(x => x.ticker === s.ticker);
-      if (!h) return;
-      const qty = getQty(h);
-      const price = getPrice(s);
-      if (!byDate[s.date]) byDate[s.date] = 0;
-      byDate[s.date] += price * qty;
+      if (!priceByTicker[s.ticker]) priceByTicker[s.ticker] = {};
+      priceByTicker[s.ticker][s.date] = getPrice(s);
+    });
+    
+    // 대상 날짜: targetDates 지정 시 그것 사용, 아니면 스냅샷의 모든 날짜
+    const allDates = targetDates || [...new Set(snaps.map(s => s.date))].sort();
+    
+    allDates.forEach(date => {
+      let total = 0;
+      holdings.forEach(h => {
+        const qty = getQty(h);
+        if (qty === 0) return;
+        const prices = priceByTicker[h.ticker] || {};
+        let price = prices[date];
+        // 보간: 해당 날짜 가격 없으면 이전 영업일 가격 사용
+        if (!price) {
+          const earlierDates = Object.keys(prices).filter(d => d < date).sort();
+          if (earlierDates.length > 0) {
+            price = prices[earlierDates[earlierDates.length - 1]];
+          }
+        }
+        if (price) total += price * qty;
+      });
+      byDate[date] = total;
     });
     return byDate;
   }
 
-  // ===== 2. 차트 강제 패치 =====
+  // ===== 2. 차트 강제 패치 (v1.5: canvas ID 기반) =====
   async function refreshAllCharts() {
     if (!window.Chart) return 0;
-    const byDate = await calcByDate();
     let patched = 0;
-    Object.values(Chart.instances).forEach(c => {
+    const allCharts = Object.values(Chart.instances);
+    if (allCharts.length === 0) return 0;
+    
+    // 모든 차트의 labels에서 날짜 수집 → calcByDate에 전달
+    const allDateLabels = new Set();
+    allCharts.forEach(c => {
       const labels = c.data?.labels || [];
-      if (!labels[0]?.startsWith?.('2026')) return;
-      const dsLabel = c.data.datasets[0]?.label || '';
-      if (c.config.type === 'line' && dsLabel.includes('자산')) {
+      labels.forEach(l => {
+        if (typeof l === 'string' && /^2\d{3}-\d{2}-\d{2}$/.test(l)) {
+          allDateLabels.add(l);
+        }
+      });
+    });
+    
+    const byDate = await calcByDate([...allDateLabels]);
+    
+    allCharts.forEach(c => {
+      const canvasId = c.canvas?.id || '';
+      const labels = c.data?.labels || [];
+      const isDateChart = labels[0]?.match?.(/^2\d{3}-\d{2}-\d{2}$/);
+      if (!isDateChart) return;  // 종목별 차트는 건드리지 않음
+      
+      // canvas ID 기반 정정
+      if (canvasId === 'chart-total') {
         c.data.datasets[0].data = labels.map(d => byDate[d] || 0);
         patched++;
-      } else if (c.config.type === 'line' && dsLabel.includes('수익률')) {
-        c.data.datasets[0].data = labels.map(d => ((byDate[d] || 0) / START_ASSET - 1) * 100);
-        patched++;
-      } else if (c.config.type === 'bar' && dsLabel.includes('손익')) {
-        const pnl = labels.map((d, i) => i === 0 ? 0 : (byDate[d] || 0) - (byDate[labels[i-1]] || 0));
+      } else if (canvasId === 'chart-profit') {
+        const pnl = labels.map((d, i) => {
+          if (i === 0) return 0;
+          const today = byDate[d] || 0;
+          const yest = byDate[labels[i-1]] || 0;
+          if (today === 0 || yest === 0) return 0;
+          return today - yest;
+        });
         c.data.datasets[0].data = pnl;
         c.data.datasets[0].backgroundColor = pnl.map(v => v >= 0 ? '#e74c3c' : '#3498db');
+        patched++;
+      } else if (canvasId === 'chart-cumreturn') {
+        c.data.datasets[0].data = labels.map(d => {
+          const v = byDate[d] || 0;
+          return v ? ((v / START_ASSET - 1) * 100) : 0;
+        });
         patched++;
       }
       c.update();
@@ -73,98 +121,74 @@ const VERSION = '1.4';
     return patched;
   }
 
-  /**
- * v1.4: 당일손익 자동 보정
- * holdings에 prevClose 필드가 없어 당일손익이 ₩0으로 표시되는 문제를 해결.
- * daily_snapshots의 어제 자산 총액과 holdings의 오늘 총액을 비교하여 정확한 값 표시.
- */
-async function refreshDailyPL() {
-  try {
-    const modal = document.querySelector('#dashboard-modal');
-    if (!modal) return { ok: false, reason: 'modal_not_found' };
+  // ===== 2-1. v1.4: 당일손익 자동 보정 (모달 ID 다중 지원) =====
+  async function refreshDailyPL() {
+    try {
+      // v1.5: validation-dashboard도 지원
+      const modal = document.querySelector('#dashboard-modal') 
+                  || document.querySelector('#validation-dashboard');
+      if (!modal) return { ok: false, reason: 'modal_not_found' };
 
-    // 어제 날짜 (YYYY-MM-DD)
-    const today = new Date();
-    const y = new Date(today.getTime() - 86400000);
-    const ymd = y.getFullYear() + '-' +
-      String(y.getMonth() + 1).padStart(2, '0') + '-' +
-      String(y.getDate()).padStart(2, '0');
+      const t = new Date();
+      const y = new Date(t.getTime() - 86400000);
+      const ymd = y.getFullYear() + '-' +
+        String(y.getMonth() + 1).padStart(2, '0') + '-' +
+        String(y.getDate()).padStart(2, '0');
 
-    // IndexedDB 조회
-    const db = await new Promise((res, rej) => {
-      const r = indexedDB.open('StockJournalDB');
-      r.onsuccess = () => res(r.result);
-      r.onerror = () => rej(r.error);
-    });
+      const snaps = await getAll('daily_snapshots');
+      const holdings = await getAll('holdings');
 
-    const snaps = await new Promise(res => {
-      const r = db.transaction(['daily_snapshots'], 'readonly')
-        .objectStore('daily_snapshots').getAll();
-      r.onsuccess = () => res(r.result);
-    });
-    const holdings = await new Promise(res => {
-      const r = db.transaction(['holdings'], 'readonly')
-        .objectStore('holdings').getAll();
-      r.onsuccess = () => res(r.result);
-    });
+      let yTotal = snaps.filter(s => s.date === ymd)
+        .reduce((a, s) => a + (Number(s.currentValue) || Number(s.totalValue) || 0), 0);
 
-    // 어제 자산이 없으면 가장 가까운 영업일 사용
-    let yTotal = snaps.filter(s => s.date === ymd)
-      .reduce((a, s) => a + (Number(s.currentValue) || Number(s.totalValue) || 0), 0);
-
-    if (yTotal === 0) {
-      // 최근 7일 내 가장 최근 스냅샷 사용
-      const recent = snaps
-        .filter(s => s.date < ymd)
-        .sort((a, b) => b.date.localeCompare(a.date));
-      if (recent.length > 0) {
-        const latestDate = recent[0].date;
-        yTotal = snaps.filter(s => s.date === latestDate)
-          .reduce((a, s) => a + (Number(s.currentValue) || Number(s.totalValue) || 0), 0);
+      if (yTotal === 0) {
+        const recent = snaps.filter(s => s.date < ymd)
+          .sort((a, b) => b.date.localeCompare(a.date));
+        if (recent.length > 0) {
+          const latestDate = recent[0].date;
+          yTotal = snaps.filter(s => s.date === latestDate)
+            .reduce((a, s) => a + (Number(s.currentValue) || Number(s.totalValue) || 0), 0);
+        }
       }
-    }
 
-    const tTotal = holdings.filter(h => h.status !== 'closed')
-      .reduce((a, h) => a + (Number(h.currentValue) || 0), 0);
+      const tTotal = holdings.filter(h => h.status !== 'closed')
+        .reduce((a, h) => a + (Number(h.currentValue) || 0), 0);
 
-    if (yTotal === 0) return { ok: false, reason: 'no_yesterday_data' };
+      if (yTotal === 0) return { ok: false, reason: 'no_yesterday_data' };
 
-    const pl = tTotal - yTotal;
-    const rate = (pl / yTotal * 100);
+      const pl = tTotal - yTotal;
+      const rate = (pl / yTotal * 100);
 
-    // 화면의 '당일손익 ₩0' 찾아서 교체
-    let patched = 0;
-    modal.querySelectorAll('*').forEach(el => {
-      if (el.children.length > 0) return;
-      const txt = el.textContent.trim();
-      // ₩0 또는 +₩0 또는 이미 보정된 값 모두 대상
-      if (!/^[+\-]?₩-?[\d,]+$/.test(txt)) return;
-      const pt = el.parentElement?.textContent || '';
-      if (pt.includes('당일') || pt.includes('금일')) {
-        el.textContent = (pl >= 0 ? '+' : '') + '₩' + pl.toLocaleString();
-        el.style.color = pl >= 0 ? '#e74c3c' : '#3498db';
-        el.style.fontWeight = 'bold';
-        patched++;
+      let patched = 0;
+      modal.querySelectorAll('*').forEach(el => {
+        if (el.children.length > 0) return;
+        const txt = el.textContent.trim();
+        if (!/^[+\-]?₩-?[\d,]+$/.test(txt)) return;
+        const pt = el.parentElement?.textContent || '';
+        if (pt.includes('당일') || pt.includes('금일')) {
+          el.textContent = (pl >= 0 ? '+' : '') + '₩' + pl.toLocaleString();
+          el.style.color = pl >= 0 ? '#e74c3c' : '#3498db';
+          el.style.fontWeight = 'bold';
+          patched++;
+        }
+      });
+
+      if (patched > 0) {
+        console.log(`[Phase15 v1.5] 당일손익 보정: ₩${pl.toLocaleString()} (${rate.toFixed(2)}%) - ${patched}곳`);
       }
-    });
-
-    if (patched > 0) {
-      console.log(`[Phase15 v1.4] 당일손익 보정: ₩${pl.toLocaleString()} (${rate.toFixed(2)}%) - ${patched}곳`);
+      return { ok: true, pl, rate, patched, yTotal, tTotal };
+    } catch (e) {
+      console.warn('[Phase15 v1.5] refreshDailyPL 실패:', e.message);
+      return { ok: false, error: e.message };
     }
-    return { ok: true, pl, rate, patched, yTotal, tTotal };
-  } catch (e) {
-    console.warn('[Phase15 v1.4] refreshDailyPL 실패:', e.message);
-    return { ok: false, error: e.message };
   }
-}
 
-  // ===== 3. 상단 수치 박스 정정 (v1.2 신규) =====
+  // ===== 3. 상단 수치 박스 정정 (기존 v1.2 로직 유지) =====
   async function refreshTopStats() {
     const byDate = await calcByDate();
     const dates = Object.keys(byDate).sort();
     if (dates.length === 0) return;
 
-    // 현재 활성 기간 필터 찾기 (1주/1개월/3개월/6개월/1년/전체)
     const activeBtn = document.querySelector('button.active, button.selected, [aria-pressed="true"]');
     const filterText = activeBtn?.textContent?.trim() || '1주';
     
@@ -178,17 +202,14 @@ async function refreshDailyPL() {
     const lastDate = dates[dates.length - 1];
     const lastAsset = byDate[lastDate];
     
-    // 기간 시작점 찾기
     const cutoff = new Date(lastDate);
     cutoff.setDate(cutoff.getDate() - periodDays);
     const periodDates = dates.filter(d => new Date(d) >= cutoff);
     const startDate = periodDates[0];
     const startAsset = byDate[startDate];
 
-    // 기간 수익률
     const periodReturn = ((lastAsset - startAsset) / startAsset * 100).toFixed(2);
 
-    // 일별 손익 계산
     const pnls = [];
     for (let i = 1; i < periodDates.length; i++) {
       pnls.push({
@@ -203,15 +224,12 @@ async function refreshDailyPL() {
     const losses = pnls.filter(p => p.pnl < 0).length;
     const winRate = pnls.length > 0 ? (wins / pnls.length * 100).toFixed(1) : 0;
 
-    // 누적 수익률 (시작자산 기준)
     const totalReturn = ((lastAsset / START_ASSET - 1) * 100).toFixed(2);
 
-    // DOM에서 박스 찾아 갱신
     const boxes = document.querySelectorAll('[class*="stat"], [class*="card"], [class*="box"]');
     let updated = 0;
     boxes.forEach(box => {
       const text = box.textContent || '';
-      // 기간 수익률 박스
       if (text.includes('기간 수익률') || text.includes('기간수익률')) {
         const valEl = box.querySelector('[class*="value"], [class*="number"], strong, b, h3, h4, .text-2xl, .text-xl, .text-lg');
         if (valEl) {
@@ -219,7 +237,6 @@ async function refreshDailyPL() {
           updated++;
         }
       }
-      // 최고 수익일
       if (text.includes('최고 수익일') || text.includes('최고수익일')) {
         const valEls = box.querySelectorAll('[class*="value"], [class*="number"], strong, b, h3, h4, .text-2xl, .text-xl, .text-lg, span');
         valEls.forEach(el => {
@@ -231,7 +248,6 @@ async function refreshDailyPL() {
         });
         updated++;
       }
-      // 최대 손실일
       if (text.includes('최대 손실일') || text.includes('최대손실일')) {
         const valEls = box.querySelectorAll('[class*="value"], [class*="number"], strong, b, h3, h4, .text-2xl, .text-xl, .text-lg, span');
         valEls.forEach(el => {
@@ -243,7 +259,6 @@ async function refreshDailyPL() {
         });
         updated++;
       }
-      // 승률
       if (text.includes('승률') && text.includes('%')) {
         const valEl = box.querySelector('[class*="value"], [class*="number"], strong, b, h3, h4, .text-2xl, .text-xl, .text-lg');
         if (valEl && valEl.textContent.includes('%')) {
@@ -256,31 +271,47 @@ async function refreshDailyPL() {
     if (updated > 0) log(`상단 수치 ${updated}개 정정 (기간 ${periodReturn}%, 승률 ${winRate}%)`, 'ok');
   }
 
-  // ===== 4. 대시보드 후킹 (v1.2 핵심) =====
-  function installDashboardHook() {
-    if (!window.showDashboardModal) {
-      log('showDashboardModal 미발견 - 후킹 보류', 'warn');
-      return false;
-    }
-    if (window.__p15_dashboard_hooked) {
-      log('이미 후킹됨', 'info');
-      return true;
-    }
-    window.__p15_dashboard_orig = window.showDashboardModal;
-    window.showDashboardModal = async function(...args) {
-      const result = await window.__p15_dashboard_orig(...args);
-      // 100ms, 500ms, 1초, 2초 4회 정정 시도
-    [100, 500, 1000, 2000].forEach(delay => {
-      setTimeout(async () => {
-        await refreshAllCharts();
-        await refreshDailyPL();
-      }, delay);
-    });
+  // ===== 4. 대시보드 후킹 (v1.5: 두 함수 동시 후킹) =====
+  function hookFunction(funcName) {
+    const orig = window[funcName];
+    if (typeof orig !== 'function') return false;
+    if (orig.__p15_hooked) return true;
+    
+    const wrapper = async function(...args) {
+      const result = await orig.apply(this, args);
+      [100, 500, 1000, 2000].forEach(delay => {
+        setTimeout(async () => {
+          await refreshAllCharts();
+          await refreshDailyPL();
+        }, delay);
+      });
       return result;
     };
-    window.__p15_dashboard_hooked = true;
-    log('대시보드 후킹 완료', 'ok');
+    wrapper.__p15_hooked = true;
+    wrapper.__p15_orig = orig;
+    window[funcName] = wrapper;
+    log(`${funcName} 후킹 완료`, 'ok');
     return true;
+  }
+  
+  function installDashboardHook() {
+    let success = 0;
+    if (hookFunction('showDashboardModal')) success++;
+    if (hookFunction('showValidationDashboard')) success++;
+    return success > 0;
+  }
+
+  function ensureDashboardHook() {
+    let ok = false;
+    ['showDashboardModal', 'showValidationDashboard'].forEach(fn => {
+      if (typeof window[fn] === 'function' && !window[fn].__p15_hooked) {
+        hookFunction(fn);
+        ok = true;
+      } else if (window[fn]?.__p15_hooked) {
+        ok = true;
+      }
+    });
+    return ok;
   }
 
   // ===== 5. 네이버 종가 백필 =====
@@ -448,48 +479,24 @@ async function refreshDailyPL() {
     detectDuplicateDays,
     repairDate,
     fetchNaverPrices,
-    refreshAllCharts, 
+    refreshAllCharts,
     refreshTopStats,
     refreshDailyPL,
     calcByDate,
     autoRun,
     installPhase7Guard,
-    installDashboardHook
+    installDashboardHook,
+    ensureDashboardHook,
+    hookFunction
   };
-
-      // ===== 초기화 (v1.3 강화) =====
-  function ensureDashboardHook() {
-    if (!window.showDashboardModal) return false;
-    const isOurHook = window.showDashboardModal === window.__p15_dashboard_wrapper;
-    if (!isOurHook) {
-      window.__p15_dashboard_hooked = false;
-      const orig = window.showDashboardModal;
-      window.__p15_dashboard_orig = orig;
-      const wrapper = async function(...args) {
-        const result = await window.__p15_dashboard_orig(...args);
-            [100, 500, 1000, 2000].forEach(delay => {
-      setTimeout(async () => {
-        await refreshAllCharts();
-        await refreshDailyPL();
-      }, delay);
-    });
-
-       return result;
-      };
-      window.__p15_dashboard_wrapper = wrapper;
-      window.showDashboardModal = wrapper;
-      window.__p15_dashboard_hooked = true;
-      log('대시보드 후킹 (재)설치 완료', 'ok');
-      return true;
-    }
-    return true;
-  }
 
   // 차트가 이미 열려있으면 즉시 갱신
   async function refreshIfDashboardOpen() {
-    if (document.getElementById('dashboard-modal')) {
+    const opened = document.getElementById('dashboard-modal') 
+                || document.getElementById('validation-dashboard');
+    if (opened) {
       const patched = await refreshAllCharts();
-      await refreshTopStats();
+      await refreshDailyPL();
       if (patched > 0) log(`초기 자동 갱신: 차트 ${patched}개 정정`, 'ok');
     }
   }
@@ -498,7 +505,6 @@ async function refreshDailyPL() {
     installPhase7Guard();
     ensureDashboardHook();
     
-    // 앱 로드 직후 대시보드가 열려있으면 자동 갱신
     setTimeout(refreshIfDashboardOpen, 2000);
     setTimeout(refreshIfDashboardOpen, 4000);
     setTimeout(refreshIfDashboardOpen, 6000);
@@ -506,7 +512,6 @@ async function refreshDailyPL() {
     setTimeout(autoRun, 5000);
     setInterval(autoRun, 60 * 60 * 1000);
     
-    // 30초 동안 2초마다 후킹 점검 (다른 패치가 덮어쓸 수 있음)
     let checkCount = 0;
     const hookChecker = setInterval(() => {
       ensureDashboardHook();
