@@ -1,6 +1,6 @@
 // phase15.js - 자동 복구 시스템 v1.5 (canvas ID 매칭 + ValidationDashboard 후킹 + 보간)
 (function() {
-  const VERSION = '1.5';
+  const VERSION = '1.6';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
   const START_ASSET = 13530000;
 
@@ -119,6 +119,95 @@
       c.update();
     });
     return patched;
+  }
+  // ===== 2-2. v1.6: Chart.js 생성자 후킹 (영구 정정) =====
+  let chartConstructorHooked = false;
+  let cachedByDate = null;
+  let cachedTimestamp = 0;
+  
+  async function getByDate(forceRefresh = false) {
+    const now = Date.now();
+    // 10초 캐시
+    if (!forceRefresh && cachedByDate && (now - cachedTimestamp < 10000)) {
+      return cachedByDate;
+    }
+    cachedByDate = await calcByDate();
+    cachedTimestamp = now;
+    return cachedByDate;
+  }
+  
+  function patchChartInstance(chart) {
+    try {
+      const canvasId = chart?.canvas?.id || '';
+      if (!canvasId.startsWith('chart-')) return false;
+      const labels = chart.data?.labels || [];
+      const isDateChart = labels[0] && /^2\d{3}-\d{2}-\d{2}$/.test(labels[0]);
+      if (!isDateChart) return false;
+      
+      const byDate = cachedByDate;
+      if (!byDate) return false;
+      
+      let patched = false;
+      if (canvasId === 'chart-total') {
+        const newData = labels.map(d => byDate[d] || 0);
+        chart.data.datasets[0].data = newData;
+        patched = true;
+      } else if (canvasId === 'chart-profit') {
+        const pnl = labels.map((d, i) => {
+          if (i === 0) return 0;
+          const today = byDate[d] || 0;
+          const yest = byDate[labels[i-1]] || 0;
+          if (today === 0 || yest === 0) return 0;
+          return today - yest;
+        });
+        chart.data.datasets[0].data = pnl;
+        chart.data.datasets[0].backgroundColor = pnl.map(v => v >= 0 ? '#e74c3c' : '#3498db');
+        patched = true;
+      } else if (canvasId === 'chart-cumreturn') {
+        chart.data.datasets[0].data = labels.map(d => {
+          const v = byDate[d] || 0;
+          return v ? ((v / START_ASSET - 1) * 100) : 0;
+        });
+        patched = true;
+      }
+      return patched;
+    } catch (e) {
+      console.warn('[Phase15 v1.6] patchChartInstance 실패:', e.message);
+      return false;
+    }
+  }
+  
+  function hookChartConstructor() {
+    if (chartConstructorHooked) return true;
+    if (!window.Chart) return false;
+    
+    const OrigChart = window.Chart;
+    
+    // Chart 생성자 후킹
+    function HookedChart(ctx, config) {
+      const instance = new OrigChart(ctx, config);
+      // 캐시 데이터 미리 준비
+      getByDate().then(() => {
+        if (patchChartInstance(instance)) {
+          instance.update('none');
+          log(`Chart 생성 직후 정정: #${instance.canvas?.id}`, 'ok');
+        }
+      });
+      return instance;
+    }
+    
+    // 정적 속성 복사 (Chart.instances, Chart.register 등)
+    Object.setPrototypeOf(HookedChart, OrigChart);
+    Object.keys(OrigChart).forEach(key => {
+      try { HookedChart[key] = OrigChart[key]; } catch(e) {}
+    });
+    HookedChart.prototype = OrigChart.prototype;
+    HookedChart.__p15_orig = OrigChart;
+    
+    window.Chart = HookedChart;
+    chartConstructorHooked = true;
+    log('Chart.js 생성자 후킹 완료', 'ok');
+    return true;
   }
 
   // ===== 2-1. v1.4: 당일손익 자동 보정 (모달 ID 다중 지원) =====
@@ -277,9 +366,16 @@
     if (typeof orig !== 'function') return false;
     if (orig.__p15_hooked) return true;
     
-    const wrapper = async function(...args) {
+        const wrapper = async function(...args) {
+      // 호출 직전에 Chart 생성자 후킹 보장
+      hookChartConstructor();
+      // 데이터 미리 캐시
+      await getByDate(true);
+      
       const result = await orig.apply(this, args);
-      [100, 500, 1000, 2000].forEach(delay => {
+      
+      // 후킹이 모든 차트를 잡지 못한 경우 대비 백업 정정
+      [50, 200, 500, 1000, 2000, 3000].forEach(delay => {
         setTimeout(async () => {
           await refreshAllCharts();
           await refreshDailyPL();
@@ -287,6 +383,7 @@
       });
       return result;
     };
+
     wrapper.__p15_hooked = true;
     wrapper.__p15_orig = orig;
     window[funcName] = wrapper;
@@ -488,6 +585,9 @@
     installDashboardHook,
     ensureDashboardHook,
     hookFunction
+    hookChartConstructor,
+    patchChartInstance,
+    getByDate
   };
 
   // 차트가 이미 열려있으면 즉시 갱신
@@ -503,6 +603,7 @@
 
   setTimeout(() => {
     installPhase7Guard();
+    hookChartConstructor();
     ensureDashboardHook();
     
     setTimeout(refreshIfDashboardOpen, 2000);
