@@ -1,6 +1,6 @@
-// phase15.js - 자동 복구 시스템 v1.6 (Chart 생성자 후킹 + 영구 정정)
+// phase15.js - 자동 복구 시스템 v1.7.1 (Chart 생성자 후킹 + 영구 정정)
 (function() {
-  VERSION을 '1.7.1
+const VERSION = '1.7.1';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
   const START_ASSET = 13530000;
 
