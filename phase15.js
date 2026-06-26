@@ -1,7 +1,8 @@
-// phase15.js - 자동 복구 시스템 (전일 복사본 탐지 + 자동 백필)
+// phase15.js - 자동 복구 시스템 v1.1 (차트 자동 갱신 추가)
 (function() {
-  const VERSION = '1.0';
+  const VERSION = '1.1';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
+  const START_ASSET = 13530000;
 
   // ===== 유틸 =====
   const openDB = () => new Promise((res, rej) => {
@@ -81,6 +82,7 @@
     return collected;
   }
 
+  // ===== 3. 특정 날짜 복구 =====
   async function repairDate(targetDate) {
     log(`${targetDate} 복구 시작...`);
     const holdings = await getAll('holdings');
@@ -128,10 +130,52 @@
         log(`Firestore Push 실패: ${e.message}`, 'error');
       }
     }
+
+    // 차트 자동 갱신 (v1.1 신규)
+    await refreshAllCharts();
+
     return { success: true, updated };
   }
 
-  // ===== 3. Phase 7 가드 (자동 종가 입력 직전 검증) =====
+  // ===== 4. 차트 강제 갱신 (v1.1 신규) =====
+  async function refreshAllCharts() {
+    if (!window.Chart) return;
+    const snaps = await getAll('daily_snapshots');
+    const holdings = await getAll('holdings');
+    const byDate = {};
+    snaps.forEach(s => {
+      const h = holdings.find(x => x.ticker === s.ticker);
+      if (!h) return;
+      const qty = getQty(h);
+      const price = getPrice(s);
+      if (!byDate[s.date]) byDate[s.date] = 0;
+      byDate[s.date] += price * qty;
+    });
+
+    let updated = 0;
+    Object.values(Chart.instances).forEach(c => {
+      const labels = c.data?.labels || [];
+      if (!labels[0]?.startsWith?.('2026')) return;
+      const dsLabel = c.data.datasets[0]?.label || '';
+
+      if (c.config.type === 'line' && dsLabel.includes('자산')) {
+        c.data.datasets[0].data = labels.map(d => byDate[d] || 0);
+        updated++;
+      } else if (c.config.type === 'line' && dsLabel.includes('수익률')) {
+        c.data.datasets[0].data = labels.map(d => ((byDate[d] || 0) / START_ASSET - 1) * 100);
+        updated++;
+      } else if (c.config.type === 'bar' && dsLabel.includes('손익')) {
+        const pnl = labels.map((d, i) => i === 0 ? 0 : (byDate[d] || 0) - (byDate[labels[i-1]] || 0));
+        c.data.datasets[0].data = pnl;
+        c.data.datasets[0].backgroundColor = pnl.map(v => v >= 0 ? '#e74c3c' : '#3498db');
+        updated++;
+      }
+      c.update();
+    });
+    if (updated > 0) log(`차트 ${updated}개 갱신 완료`, 'ok');
+  }
+
+  // ===== 5. Phase 7 가드 =====
   function installPhase7Guard() {
     if (!window.__phase7?.run) {
       log('Phase 7 미발견 - 가드 설치 보류', 'warn');
@@ -141,16 +185,12 @@
 
     const origRun = window.__phase7.run.bind(window.__phase7);
     window.__phase7.run = async function(...args) {
-      const beforeSnaps = await getAll('daily_snapshots');
       const result = await origRun(...args);
 
-      // 실행 후 오늘 데이터가 전일과 100% 동일한지 검사
       const today = new Date().toISOString().slice(0, 10);
-      const yesterday = (() => {
-        const d = new Date();
-        d.setDate(d.getDate() - 1);
-        return d.toISOString().slice(0, 10);
-      })();
+      const d = new Date();
+      d.setDate(d.getDate() - 1);
+      const yesterday = d.toISOString().slice(0, 10);
 
       const afterSnaps = await getAll('daily_snapshots');
       const todayAfter = afterSnaps.filter(s => s.date === today);
@@ -164,13 +204,11 @@
         });
         if (identical === todayAfter.length) {
           log(`Phase 7 입력값이 전일과 100% 동일 - 롤백 및 백필 트리거`, 'warn');
-          // 오늘 스냅샷 삭제
           const db = await openDB();
           const tx = db.transaction('daily_snapshots', 'readwrite');
           const store = tx.objectStore('daily_snapshots');
           todayAfter.forEach(s => store.delete(s.id));
           await new Promise(res => { tx.oncomplete = res; });
-          // 네이버 백필 시도
           await repairDate(today);
         }
       }
@@ -181,7 +219,7 @@
     return true;
   }
 
-  // ===== 4. 자동 실행 (앱 로드 시 + 1시간마다) =====
+  // ===== 6. 자동 실행 =====
   let lastAutoRun = 0;
   async function autoRun() {
     const now = Date.now();
@@ -195,6 +233,8 @@
     const issues = await detectDuplicateDays();
     if (issues.length === 0) {
       log('전일 복사본 없음 - 데이터 정상', 'ok');
+      // 그래도 차트는 갱신 (DB와 동기화)
+      await refreshAllCharts();
       return;
     }
 
@@ -211,6 +251,7 @@
     detectDuplicateDays,
     repairDate,
     fetchNaverPrices,
+    refreshAllCharts,
     autoRun,
     installPhase7Guard
   };
@@ -218,8 +259,8 @@
   // ===== 초기화 =====
   setTimeout(() => {
     installPhase7Guard();
-    setTimeout(autoRun, 5000); // 앱 로드 5초 후 1회 자동 점검
-    setInterval(autoRun, 60 * 60 * 1000); // 이후 1시간마다
+    setTimeout(autoRun, 5000);
+    setInterval(autoRun, 60 * 60 * 1000);
     log(`Phase 15 v${VERSION} 초기화 완료`, 'ok');
   }, 3000);
 })();
