@@ -1,6 +1,6 @@
 // phase15.js - 자동 복구 시스템 v1.2 (대시보드 후킹 + 상단 수치 정정)
 (function() {
-  const VERSION = '1.2';
+  const VERSION = '1.3';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
   const START_ASSET = 13530000;
 
