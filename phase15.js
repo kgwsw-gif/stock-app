@@ -1,6 +1,6 @@
-// phase15.js - 자동 복구 시스템 v1.7.4 (Chart 후킹 + 휴장일 가드 + 상단 통계 자동 정정)
+// phase15.js - 자동 복구 시스템 v1.7.5 (Chart 후킹 + 휴장일 가드 + run 함수 봉인 + 상단 통계 자동 정정)
 (function() {
-  const VERSION = '1.7.4';
+  const VERSION = '1.7.5';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
   const START_ASSET = 13530000;
   const MODAL_SELECTORS = '#dashboard-modal, #validation-dashboard, #chart-modal';
@@ -617,8 +617,23 @@
       return result;
     };
     
-    window.__phase7.__p15_guarded = true;
+        window.__phase7.__p15_guarded = true;
     window.__phase7.__p15_guarded_v172 = true;
+    
+    // v1.7.5: run 함수 봉인 (다른 스크립트가 덮어쓰지 못하게)
+    try {
+      const guardedRun = window.__phase7.run;
+      Object.defineProperty(window.__phase7, 'run', {
+        value: guardedRun,
+        writable: false,
+        configurable: false,
+        enumerable: true
+      });
+      log('Phase 7 run 함수 봉인 완료 (불변)', 'ok');
+    } catch (e) {
+      log('run 함수 봉인 실패: ' + e.message, 'warn');
+    }
+    
     log('Phase 7 가드 설치 완료 (휴장일 차단 + 미래 날짜 자동 삭제)', 'ok');
     return true;
   }
