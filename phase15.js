@@ -369,12 +369,55 @@
     installDashboardHook
   };
 
-  // ===== 초기화 =====
+    // ===== 초기화 (v1.3 강화) =====
+  function ensureDashboardHook() {
+    if (!window.showDashboardModal) return false;
+    
+    // 후킹이 풀렸는지 검사 (다른 패치가 덮어쓴 경우)
+    const isOurHook = window.showDashboardModal === window.__p15_dashboard_wrapper;
+    
+    if (!isOurHook) {
+      // 후킹 다시 설치
+      window.__p15_dashboard_hooked = false;
+      const orig = window.showDashboardModal;
+      window.__p15_dashboard_orig = orig;
+      
+      const wrapper = async function(...args) {
+        const result = await window.__p15_dashboard_orig(...args);
+        setTimeout(() => refreshAllCharts(), 100);
+        setTimeout(() => refreshAllCharts(), 500);
+        setTimeout(() => { refreshAllCharts(); refreshTopStats(); }, 1000);
+        setTimeout(() => { refreshAllCharts(); refreshTopStats(); }, 2000);
+        return result;
+      };
+      window.__p15_dashboard_wrapper = wrapper;
+      window.showDashboardModal = wrapper;
+      window.__p15_dashboard_hooked = true;
+      log('대시보드 후킹 (재)설치 완료', 'ok');
+      return true;
+    }
+    return true;
+  }
+
+  // 초기 설치 + 주기적 재후킹 (다른 패치가 덮어써도 자동 복구)
   setTimeout(() => {
     installPhase7Guard();
-    installDashboardHook();   // v1.2 핵심: 대시보드 후킹 자동 설치
+    ensureDashboardHook();
     setTimeout(autoRun, 5000);
     setInterval(autoRun, 60 * 60 * 1000);
+    
+    // 매 2초마다 후킹 상태 점검 (처음 30초 동안만)
+    let checkCount = 0;
+    const hookChecker = setInterval(() => {
+      ensureDashboardHook();
+      checkCount++;
+      if (checkCount >= 15) clearInterval(hookChecker);  // 30초 후 중단
+    }, 2000);
+    
+    // 그 이후엔 30초마다 점검
+    setInterval(ensureDashboardHook, 30000);
+    
     log(`Phase 15 v${VERSION} 초기화 완료`, 'ok');
   }, 3000);
 })();
+
