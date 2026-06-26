@@ -1,4 +1,4 @@
-// phase15.js - 자동 복구 시스템 v1.5 (canvas ID 매칭 + ValidationDashboard 후킹 + 보간)
+// phase15.js - 자동 복구 시스템 v1.6 (Chart 생성자 후킹 + 영구 정정)
 (function() {
   const VERSION = '1.6';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
@@ -25,26 +25,24 @@
 
   const log = (msg, level = 'info') => {
     const tag = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : level === 'ok' ? '✅' : 'ℹ️';
-    console.log(`[Phase15] ${tag} ${msg}`);
+    console.log('[Phase15] ' + tag + ' ' + msg);
     if (window.__phase11?.writeLog) {
       window.__phase11.writeLog({ phase: 'phase15', level, message: msg });
     }
   };
 
-  // ===== 1. 일자별 자산 계산 (v1.5: 보간 추가) =====
+  // ===== 1. 일자별 자산 계산 (보간 포함) =====
   async function calcByDate(targetDates = null) {
     const snaps = await getAll('daily_snapshots');
     const holdings = await getAll('holdings');
     const byDate = {};
     
-    // 종목별 가격 시계열 만들기
     const priceByTicker = {};
     snaps.forEach(s => {
       if (!priceByTicker[s.ticker]) priceByTicker[s.ticker] = {};
       priceByTicker[s.ticker][s.date] = getPrice(s);
     });
     
-    // 대상 날짜: targetDates 지정 시 그것 사용, 아니면 스냅샷의 모든 날짜
     const allDates = targetDates || [...new Set(snaps.map(s => s.date))].sort();
     
     allDates.forEach(date => {
@@ -54,7 +52,6 @@
         if (qty === 0) return;
         const prices = priceByTicker[h.ticker] || {};
         let price = prices[date];
-        // 보간: 해당 날짜 가격 없으면 이전 영업일 가격 사용
         if (!price) {
           const earlierDates = Object.keys(prices).filter(d => d < date).sort();
           if (earlierDates.length > 0) {
@@ -68,14 +65,13 @@
     return byDate;
   }
 
-  // ===== 2. 차트 강제 패치 (v1.5: canvas ID 기반) =====
+  // ===== 2. 차트 강제 패치 =====
   async function refreshAllCharts() {
     if (!window.Chart) return 0;
     let patched = 0;
     const allCharts = Object.values(Chart.instances);
     if (allCharts.length === 0) return 0;
     
-    // 모든 차트의 labels에서 날짜 수집 → calcByDate에 전달
     const allDateLabels = new Set();
     allCharts.forEach(c => {
       const labels = c.data?.labels || [];
@@ -87,14 +83,15 @@
     });
     
     const byDate = await calcByDate([...allDateLabels]);
+    cachedByDate = byDate;
+    cachedTimestamp = Date.now();
     
     allCharts.forEach(c => {
       const canvasId = c.canvas?.id || '';
       const labels = c.data?.labels || [];
       const isDateChart = labels[0]?.match?.(/^2\d{3}-\d{2}-\d{2}$/);
-      if (!isDateChart) return;  // 종목별 차트는 건드리지 않음
+      if (!isDateChart) return;
       
-      // canvas ID 기반 정정
       if (canvasId === 'chart-total') {
         c.data.datasets[0].data = labels.map(d => byDate[d] || 0);
         patched++;
@@ -120,14 +117,14 @@
     });
     return patched;
   }
-  // ===== 2-2. v1.6: Chart.js 생성자 후킹 (영구 정정) =====
+
+  // ===== 2-2. v1.6: Chart.js 생성자 후킹 =====
   let chartConstructorHooked = false;
   let cachedByDate = null;
   let cachedTimestamp = 0;
   
   async function getByDate(forceRefresh = false) {
     const now = Date.now();
-    // 10초 캐시
     if (!forceRefresh && cachedByDate && (now - cachedTimestamp < 10000)) {
       return cachedByDate;
     }
@@ -149,8 +146,7 @@
       
       let patched = false;
       if (canvasId === 'chart-total') {
-        const newData = labels.map(d => byDate[d] || 0);
-        chart.data.datasets[0].data = newData;
+        chart.data.datasets[0].data = labels.map(d => byDate[d] || 0);
         patched = true;
       } else if (canvasId === 'chart-profit') {
         const pnl = labels.map((d, i) => {
@@ -183,20 +179,17 @@
     
     const OrigChart = window.Chart;
     
-    // Chart 생성자 후킹
     function HookedChart(ctx, config) {
       const instance = new OrigChart(ctx, config);
-      // 캐시 데이터 미리 준비
       getByDate().then(() => {
         if (patchChartInstance(instance)) {
           instance.update('none');
-          log(`Chart 생성 직후 정정: #${instance.canvas?.id}`, 'ok');
+          log('Chart 생성 직후 정정: #' + (instance.canvas?.id || '?'), 'ok');
         }
       });
       return instance;
     }
     
-    // 정적 속성 복사 (Chart.instances, Chart.register 등)
     Object.setPrototypeOf(HookedChart, OrigChart);
     Object.keys(OrigChart).forEach(key => {
       try { HookedChart[key] = OrigChart[key]; } catch(e) {}
@@ -210,10 +203,9 @@
     return true;
   }
 
-  // ===== 2-1. v1.4: 당일손익 자동 보정 (모달 ID 다중 지원) =====
+  // ===== 2-3. 당일손익 자동 보정 =====
   async function refreshDailyPL() {
     try {
-      // v1.5: validation-dashboard도 지원
       const modal = document.querySelector('#dashboard-modal') 
                   || document.querySelector('#validation-dashboard');
       if (!modal) return { ok: false, reason: 'modal_not_found' };
@@ -263,16 +255,16 @@
       });
 
       if (patched > 0) {
-        console.log(`[Phase15 v1.5] 당일손익 보정: ₩${pl.toLocaleString()} (${rate.toFixed(2)}%) - ${patched}곳`);
+        console.log('[Phase15 v1.6] 당일손익 보정: ₩' + pl.toLocaleString() + ' (' + rate.toFixed(2) + '%) - ' + patched + '곳');
       }
       return { ok: true, pl, rate, patched, yTotal, tTotal };
     } catch (e) {
-      console.warn('[Phase15 v1.5] refreshDailyPL 실패:', e.message);
+      console.warn('[Phase15 v1.6] refreshDailyPL 실패:', e.message);
       return { ok: false, error: e.message };
     }
   }
 
-  // ===== 3. 상단 수치 박스 정정 (기존 v1.2 로직 유지) =====
+  // ===== 3. 상단 수치 박스 정정 =====
   async function refreshTopStats() {
     const byDate = await calcByDate();
     const dates = Object.keys(byDate).sort();
@@ -310,10 +302,7 @@
     const maxGain = pnls.reduce((a, b) => b.pnl > a.pnl ? b : a, { pnl: -Infinity, date: '' });
     const maxLoss = pnls.reduce((a, b) => b.pnl < a.pnl ? b : a, { pnl: Infinity, date: '' });
     const wins = pnls.filter(p => p.pnl > 0).length;
-    const losses = pnls.filter(p => p.pnl < 0).length;
     const winRate = pnls.length > 0 ? (wins / pnls.length * 100).toFixed(1) : 0;
-
-    const totalReturn = ((lastAsset / START_ASSET - 1) * 100).toFixed(2);
 
     const boxes = document.querySelectorAll('[class*="stat"], [class*="card"], [class*="box"]');
     let updated = 0;
@@ -322,7 +311,7 @@
       if (text.includes('기간 수익률') || text.includes('기간수익률')) {
         const valEl = box.querySelector('[class*="value"], [class*="number"], strong, b, h3, h4, .text-2xl, .text-xl, .text-lg');
         if (valEl) {
-          valEl.textContent = `${periodReturn >= 0 ? '+' : ''}${periodReturn}%`;
+          valEl.textContent = (periodReturn >= 0 ? '+' : '') + periodReturn + '%';
           updated++;
         }
       }
@@ -330,7 +319,7 @@
         const valEls = box.querySelectorAll('[class*="value"], [class*="number"], strong, b, h3, h4, .text-2xl, .text-xl, .text-lg, span');
         valEls.forEach(el => {
           if (el.textContent.includes('₩')) {
-            el.textContent = `+₩${maxGain.pnl.toLocaleString()}`;
+            el.textContent = '+₩' + maxGain.pnl.toLocaleString();
           } else if (el.textContent.match(/\d{4}-\d{2}-\d{2}/)) {
             el.textContent = maxGain.date;
           }
@@ -341,7 +330,7 @@
         const valEls = box.querySelectorAll('[class*="value"], [class*="number"], strong, b, h3, h4, .text-2xl, .text-xl, .text-lg, span');
         valEls.forEach(el => {
           if (el.textContent.includes('₩')) {
-            el.textContent = `₩${maxLoss.pnl.toLocaleString()}`;
+            el.textContent = '₩' + maxLoss.pnl.toLocaleString();
           } else if (el.textContent.match(/\d{4}-\d{2}-\d{2}/)) {
             el.textContent = maxLoss.date;
           }
@@ -351,30 +340,27 @@
       if (text.includes('승률') && text.includes('%')) {
         const valEl = box.querySelector('[class*="value"], [class*="number"], strong, b, h3, h4, .text-2xl, .text-xl, .text-lg');
         if (valEl && valEl.textContent.includes('%')) {
-          valEl.textContent = `${winRate}%`;
+          valEl.textContent = winRate + '%';
           updated++;
         }
       }
     });
 
-    if (updated > 0) log(`상단 수치 ${updated}개 정정 (기간 ${periodReturn}%, 승률 ${winRate}%)`, 'ok');
+    if (updated > 0) log('상단 수치 ' + updated + '개 정정 (기간 ' + periodReturn + '%, 승률 ' + winRate + '%)', 'ok');
   }
 
-  // ===== 4. 대시보드 후킹 (v1.5: 두 함수 동시 후킹) =====
+  // ===== 4. 대시보드 후킹 =====
   function hookFunction(funcName) {
     const orig = window[funcName];
     if (typeof orig !== 'function') return false;
     if (orig.__p15_hooked) return true;
     
-        const wrapper = async function(...args) {
-      // 호출 직전에 Chart 생성자 후킹 보장
+    const wrapper = async function(...args) {
       hookChartConstructor();
-      // 데이터 미리 캐시
       await getByDate(true);
       
       const result = await orig.apply(this, args);
       
-      // 후킹이 모든 차트를 잡지 못한 경우 대비 백업 정정
       [50, 200, 500, 1000, 2000, 3000].forEach(delay => {
         setTimeout(async () => {
           await refreshAllCharts();
@@ -383,11 +369,10 @@
       });
       return result;
     };
-
     wrapper.__p15_hooked = true;
     wrapper.__p15_orig = orig;
     window[funcName] = wrapper;
-    log(`${funcName} 후킹 완료`, 'ok');
+    log(funcName + ' 후킹 완료', 'ok');
     return true;
   }
   
@@ -416,7 +401,7 @@
     const collected = {};
     for (const ticker of tickers) {
       try {
-        const url = `https://finance.naver.com/item/sise_day.naver?code=${ticker}&page=1`;
+        const url = 'https://finance.naver.com/item/sise_day.naver?code=' + ticker + '&page=1';
         const res = await fetch(url);
         const buf = await res.arrayBuffer();
         const html = new TextDecoder('euc-kr').decode(buf);
@@ -430,7 +415,7 @@
         }
         await new Promise(r => setTimeout(r, 300));
       } catch (e) {
-        log(`네이버 수집 실패 ${ticker}: ${e.message}`, 'error');
+        log('네이버 수집 실패 ' + ticker + ': ' + e.message, 'error');
       }
     }
     return collected;
@@ -453,7 +438,7 @@
       });
       if (identical === todaySnaps.length && todaySnaps.length >= 3) {
         issues.push({ date: today, prevDate: yest, count: identical });
-        log(`전일 복사본 의심: ${today} (${yest}와 ${identical}종목 100% 동일)`, 'warn');
+        log('전일 복사본 의심: ' + today + ' (' + yest + '와 ' + identical + '종목 100% 동일)', 'warn');
       }
     }
     return issues;
@@ -461,12 +446,12 @@
 
   // ===== 7. 특정 날짜 복구 =====
   async function repairDate(targetDate) {
-    log(`${targetDate} 복구 시작...`);
+    log(targetDate + ' 복구 시작...');
     const holdings = await getAll('holdings');
     const tickers = holdings.map(h => h.ticker);
     const collected = await fetchNaverPrices(tickers);
     if (!collected[targetDate]) {
-      log(`${targetDate} 네이버 데이터 없음 (휴장일 가능)`, 'warn');
+      log(targetDate + ' 네이버 데이터 없음 (휴장일 가능)', 'warn');
       return { success: false, reason: 'no_data' };
     }
     const db = await openDB();
@@ -480,7 +465,7 @@
       const qty = getQty(h);
       const ymd = targetDate.replace(/-/g, '');
       store.put({
-        id: `s_${ymd}_${ticker}`,
+        id: 's_' + ymd + '_' + ticker,
         date: targetDate, ticker, name: h.name,
         currentPriceKRW: price, closePrice: price, currentPrice: price,
         quantity: qty, currentQuantity: qty,
@@ -493,14 +478,14 @@
       updated++;
     }
     await new Promise(res => { tx.oncomplete = res; });
-    log(`${targetDate} ${updated}건 복구 완료`, 'ok');
+    log(targetDate + ' ' + updated + '건 복구 완료', 'ok');
 
     if (window.__phase12?.push && window.__phase12?.auth?.currentUser) {
       try {
         await window.__phase12.push();
         log('Firestore Push 완료', 'ok');
       } catch (e) {
-        log(`Firestore Push 실패: ${e.message}`, 'error');
+        log('Firestore Push 실패: ' + e.message, 'error');
       }
     }
     await refreshAllCharts();
@@ -532,7 +517,7 @@
           if (y && getPrice(t) === getPrice(y)) identical++;
         });
         if (identical === todayAfter.length) {
-          log(`Phase 7 입력값이 전일과 100% 동일 - 롤백 및 백필 트리거`, 'warn');
+          log('Phase 7 입력값이 전일과 100% 동일 - 롤백 및 백필 트리거', 'warn');
           const db = await openDB();
           const tx = db.transaction('daily_snapshots', 'readwrite');
           const store = tx.objectStore('daily_snapshots');
@@ -564,10 +549,10 @@
       return;
     }
     for (const issue of issues) {
-      log(`${issue.date} 자동 복구 시도...`);
+      log(issue.date + ' 자동 복구 시도...');
       await repairDate(issue.date);
     }
-    log(`총 ${issues.length}일 복구 완료`, 'ok');
+    log('총 ' + issues.length + '일 복구 완료', 'ok');
   }
 
   // ===== 공개 API =====
@@ -584,20 +569,19 @@
     installPhase7Guard,
     installDashboardHook,
     ensureDashboardHook,
-    hookFunction
+    hookFunction,
     hookChartConstructor,
     patchChartInstance,
     getByDate
   };
 
-  // 차트가 이미 열려있으면 즉시 갱신
   async function refreshIfDashboardOpen() {
     const opened = document.getElementById('dashboard-modal') 
                 || document.getElementById('validation-dashboard');
     if (opened) {
       const patched = await refreshAllCharts();
       await refreshDailyPL();
-      if (patched > 0) log(`초기 자동 갱신: 차트 ${patched}개 정정`, 'ok');
+      if (patched > 0) log('초기 자동 갱신: 차트 ' + patched + '개 정정', 'ok');
     }
   }
 
@@ -621,6 +605,6 @@
     }, 2000);
     setInterval(ensureDashboardHook, 30000);
     
-    log(`Phase 15 v${VERSION} 초기화 완료`, 'ok');
+    log('Phase 15 v' + VERSION + ' 초기화 완료', 'ok');
   }, 3000);
 })();
