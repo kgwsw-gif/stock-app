@@ -1,6 +1,6 @@
 // phase15.js - 자동 복구 시스템 v1.6 (Chart 생성자 후킹 + 영구 정정)
 (function() {
-  const VERSION = '1.7';
+  VERSION을 '1.7.1
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
   const START_ASSET = 13530000;
 
@@ -104,7 +104,7 @@
       if (canvasId === 'chart-total') {
         c.data.datasets[0].data = labels.map(d => byDate[d] || 0);
         patched++;
-      } else if (canvasId === 'chart-profit') {
+            } else if (canvasId === 'chart-profit') {
         const pnl = labels.map((d, i) => {
           if (i === 0) return 0;
           const today = byDate[d] || 0;
@@ -112,8 +112,10 @@
           if (today === 0 || yest === 0) return 0;
           return today - yest;
         });
-        c.data.datasets[0].data = pnl;
+        // v1.7.1: 데이터와 색상을 명시적으로 동일 길이 배열로 교체
+        c.data.datasets[0].data = [...pnl];
         c.data.datasets[0].backgroundColor = pnl.map(v => v >= 0 ? '#e74c3c' : '#3498db');
+        c.data.datasets[0].borderColor = pnl.map(v => v >= 0 ? '#e74c3c' : '#3498db');
         patched++;
       } else if (canvasId === 'chart-cumreturn') {
         c.data.datasets[0].data = labels.map(d => {
