@@ -1,6 +1,6 @@
 // phase15.js - 자동 복구 시스템 v1.6 (Chart 생성자 후킹 + 영구 정정)
 (function() {
-  const VERSION = '1.6';
+  const VERSION = '1.7';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
   const START_ASSET = 13530000;
 
@@ -65,11 +65,19 @@
     return byDate;
   }
 
-  // ===== 2. 차트 강제 패치 =====
+   // ===== 2. 차트 강제 패치 (v1.7: getChart 사용) =====
   async function refreshAllCharts() {
     if (!window.Chart) return 0;
-    let patched = 0;
-    const allCharts = Object.values(Chart.instances);
+    
+    // canvas에서 직접 chart 객체 가져오기 (Chart.instances 대신)
+    const canvases = document.querySelectorAll('canvas[id^="chart-"]');
+    if (canvases.length === 0) return 0;
+    
+    const allCharts = [];
+    canvases.forEach(canvas => {
+      const chart = Chart.getChart?.(canvas);
+      if (chart) allCharts.push(chart);
+    });
     if (allCharts.length === 0) return 0;
     
     const allDateLabels = new Set();
@@ -86,6 +94,7 @@
     cachedByDate = byDate;
     cachedTimestamp = Date.now();
     
+    let patched = 0;
     allCharts.forEach(c => {
       const canvasId = c.canvas?.id || '';
       const labels = c.data?.labels || [];
