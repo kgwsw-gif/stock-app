@@ -1,6 +1,6 @@
 // phase15.js - 자동 복구 시스템 v1.2 (대시보드 후킹 + 상단 수치 정정)
 (function() {
-const VERSION = '1.3';
+const VERSION = '1.4';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
   const START_ASSET = 13530000;
 
@@ -72,6 +72,91 @@ const VERSION = '1.3';
     });
     return patched;
   }
+
+  /**
+ * v1.4: 당일손익 자동 보정
+ * holdings에 prevClose 필드가 없어 당일손익이 ₩0으로 표시되는 문제를 해결.
+ * daily_snapshots의 어제 자산 총액과 holdings의 오늘 총액을 비교하여 정확한 값 표시.
+ */
+async function refreshDailyPL() {
+  try {
+    const modal = document.querySelector('#dashboard-modal');
+    if (!modal) return { ok: false, reason: 'modal_not_found' };
+
+    // 어제 날짜 (YYYY-MM-DD)
+    const today = new Date();
+    const y = new Date(today.getTime() - 86400000);
+    const ymd = y.getFullYear() + '-' +
+      String(y.getMonth() + 1).padStart(2, '0') + '-' +
+      String(y.getDate()).padStart(2, '0');
+
+    // IndexedDB 조회
+    const db = await new Promise((res, rej) => {
+      const r = indexedDB.open('StockJournalDB');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+
+    const snaps = await new Promise(res => {
+      const r = db.transaction(['daily_snapshots'], 'readonly')
+        .objectStore('daily_snapshots').getAll();
+      r.onsuccess = () => res(r.result);
+    });
+    const holdings = await new Promise(res => {
+      const r = db.transaction(['holdings'], 'readonly')
+        .objectStore('holdings').getAll();
+      r.onsuccess = () => res(r.result);
+    });
+
+    // 어제 자산이 없으면 가장 가까운 영업일 사용
+    let yTotal = snaps.filter(s => s.date === ymd)
+      .reduce((a, s) => a + (Number(s.currentValue) || Number(s.totalValue) || 0), 0);
+
+    if (yTotal === 0) {
+      // 최근 7일 내 가장 최근 스냅샷 사용
+      const recent = snaps
+        .filter(s => s.date < ymd)
+        .sort((a, b) => b.date.localeCompare(a.date));
+      if (recent.length > 0) {
+        const latestDate = recent[0].date;
+        yTotal = snaps.filter(s => s.date === latestDate)
+          .reduce((a, s) => a + (Number(s.currentValue) || Number(s.totalValue) || 0), 0);
+      }
+    }
+
+    const tTotal = holdings.filter(h => h.status !== 'closed')
+      .reduce((a, h) => a + (Number(h.currentValue) || 0), 0);
+
+    if (yTotal === 0) return { ok: false, reason: 'no_yesterday_data' };
+
+    const pl = tTotal - yTotal;
+    const rate = (pl / yTotal * 100);
+
+    // 화면의 '당일손익 ₩0' 찾아서 교체
+    let patched = 0;
+    modal.querySelectorAll('*').forEach(el => {
+      if (el.children.length > 0) return;
+      const txt = el.textContent.trim();
+      // ₩0 또는 +₩0 또는 이미 보정된 값 모두 대상
+      if (!/^[+\-]?₩-?[\d,]+$/.test(txt)) return;
+      const pt = el.parentElement?.textContent || '';
+      if (pt.includes('당일') || pt.includes('금일')) {
+        el.textContent = (pl >= 0 ? '+' : '') + '₩' + pl.toLocaleString();
+        el.style.color = pl >= 0 ? '#e74c3c' : '#3498db';
+        el.style.fontWeight = 'bold';
+        patched++;
+      }
+    });
+
+    if (patched > 0) {
+      console.log(`[Phase15 v1.4] 당일손익 보정: ₩${pl.toLocaleString()} (${rate.toFixed(2)}%) - ${patched}곳`);
+    }
+    return { ok: true, pl, rate, patched, yTotal, tTotal };
+  } catch (e) {
+    console.warn('[Phase15 v1.4] refreshDailyPL 실패:', e.message);
+    return { ok: false, error: e.message };
+  }
+}
 
   // ===== 3. 상단 수치 박스 정정 (v1.2 신규) =====
   async function refreshTopStats() {
@@ -185,10 +270,12 @@ const VERSION = '1.3';
     window.showDashboardModal = async function(...args) {
       const result = await window.__p15_dashboard_orig(...args);
       // 100ms, 500ms, 1초, 2초 4회 정정 시도
-      setTimeout(() => refreshAllCharts(), 100);
-      setTimeout(() => refreshAllCharts(), 500);
-      setTimeout(() => { refreshAllCharts(); refreshTopStats(); }, 1000);
-      setTimeout(() => { refreshAllCharts(); refreshTopStats(); }, 2000);
+    [100, 500, 1000, 2000].forEach(delay => {
+      setTimeout(async () => {
+        await refreshAllCharts();
+        await refreshDailyPL();
+      }, delay);
+    });
       return result;
     };
     window.__p15_dashboard_hooked = true;
@@ -379,11 +466,14 @@ const VERSION = '1.3';
       window.__p15_dashboard_orig = orig;
       const wrapper = async function(...args) {
         const result = await window.__p15_dashboard_orig(...args);
-        setTimeout(() => refreshAllCharts(), 100);
-        setTimeout(() => refreshAllCharts(), 500);
-        setTimeout(() => { refreshAllCharts(); refreshTopStats(); }, 1000);
-        setTimeout(() => { refreshAllCharts(); refreshTopStats(); }, 2000);
-        return result;
+            [100, 500, 1000, 2000].forEach(delay => {
+      setTimeout(async () => {
+        await refreshAllCharts();
+        await refreshDailyPL();
+      }, delay);
+    });
+
+       return result;
       };
       window.__p15_dashboard_wrapper = wrapper;
       window.showDashboardModal = wrapper;
