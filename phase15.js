@@ -506,43 +506,89 @@ const VERSION = '1.7.1';
 
   // ===== 8. Phase 7 가드 =====
   function installPhase7Guard() {
-    if (!window.__phase7?.run) {
-      log('Phase 7 미발견 - 가드 설치 보류', 'warn');
-      return false;
-    }
-    if (window.__phase7.__p15_guarded) return true;
-    const origRun = window.__phase7.run.bind(window.__phase7);
-    window.__phase7.run = async function(...args) {
-      const result = await origRun(...args);
-      const today = new Date().toISOString().slice(0, 10);
-      const d = new Date();
-      d.setDate(d.getDate() - 1);
-      const yesterday = d.toISOString().slice(0, 10);
-      const afterSnaps = await getAll('daily_snapshots');
-      const todayAfter = afterSnaps.filter(s => s.date === today);
-      const yestAfter = afterSnaps.filter(s => s.date === yesterday);
-      if (todayAfter.length >= 3 && todayAfter.length === yestAfter.length) {
-        let identical = 0;
-        todayAfter.forEach(t => {
-          const y = yestAfter.find(x => x.ticker === t.ticker);
-          if (y && getPrice(t) === getPrice(y)) identical++;
-        });
-        if (identical === todayAfter.length) {
-          log('Phase 7 입력값이 전일과 100% 동일 - 롤백 및 백필 트리거', 'warn');
-          const db = await openDB();
-          const tx = db.transaction('daily_snapshots', 'readwrite');
-          const store = tx.objectStore('daily_snapshots');
-          todayAfter.forEach(s => store.delete(s.id));
-          await new Promise(res => { tx.oncomplete = res; });
-          await repairDate(today);
-        }
-      }
-      return result;
-    };
-    window.__phase7.__p15_guarded = true;
-    log('Phase 7 가드 설치 완료', 'ok');
-    return true;
+  if (!window.__phase7?.run) {
+    log('Phase 7 미발견 - 가드 설치 보류', 'warn');
+    return false;
   }
+  // 기존 가드 제거 후 재설치 (v1.7.2 강화 버전)
+  if (window.__phase7.__p15_guarded_v172) return true;
+  
+  const origRun = window.__phase7.run.bind(window.__phase7);
+  
+  // 한국 거래소 휴장일 체크
+  const isMarketClosed = () => {
+    const now = new Date();
+    // 한국 시간 기준으로 변환
+    const kstOffset = 9 * 60;
+    const kst = new Date(now.getTime() + (kstOffset - now.getTimezoneOffset()) * 60000);
+    const day = kst.getDay(); // 0=일, 6=토
+    if (day === 0 || day === 6) return { closed: true, reason: '주말' };
+    
+    // 한국 공휴일 (2026년 주요 공휴일 - 필요시 확장)
+    const md = `${String(kst.getMonth()+1).padStart(2,'0')}-${String(kst.getDate()).padStart(2,'0')}`;
+    const holidays2026 = ['01-01','02-16','02-17','02-18','03-01','03-02','05-05','05-25',
+                          '06-06','08-15','08-17','09-24','09-25','09-26','10-03','10-05',
+                          '10-09','12-25'];
+    if (holidays2026.includes(md)) return { closed: true, reason: '공휴일' };
+    
+    return { closed: false };
+  };
+  
+  window.__phase7.run = async function(...args) {
+    // ✅ 사전 차단: 휴장일이면 실행 자체를 막음
+    const market = isMarketClosed();
+    if (market.closed) {
+      log(`Phase 7 자동 실행 차단: 오늘은 ${market.reason}`, 'warn');
+      return { skipped: true, reason: market.reason };
+    }
+    
+    const result = await origRun(...args);
+    
+    // 사후 정리: 미래 날짜 스냅샷 자동 삭제
+    const today = new Date().toISOString().slice(0, 10);
+    const allSnaps = await getAll('daily_snapshots');
+    const futureSnaps = allSnaps.filter(s => s.date > today);
+    if (futureSnaps.length > 0) {
+      log(`미래 날짜 스냅샷 ${futureSnaps.length}건 발견 - 자동 삭제`, 'warn');
+      const db = await openDB();
+      const tx = db.transaction('daily_snapshots', 'readwrite');
+      const store = tx.objectStore('daily_snapshots');
+      futureSnaps.forEach(s => store.delete(s.id));
+      await new Promise(res => { tx.oncomplete = res; });
+    }
+    
+    // 기존 사후 검증 (전일 100% 동일 롤백)도 유지
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    const yesterday = d.toISOString().slice(0, 10);
+    const afterSnaps = await getAll('daily_snapshots');
+    const todayAfter = afterSnaps.filter(s => s.date === today);
+    const yestAfter = afterSnaps.filter(s => s.date === yesterday);
+    if (todayAfter.length >= 3 && todayAfter.length === yestAfter.length) {
+      let identical = 0;
+      todayAfter.forEach(t => {
+        const y = yestAfter.find(x => x.ticker === t.ticker);
+        if (y && getPrice(t) === getPrice(y)) identical++;
+      });
+      if (identical === todayAfter.length) {
+        log('Phase 7 입력값이 전일과 100% 동일 - 롤백', 'warn');
+        const db = await openDB();
+        const tx = db.transaction('daily_snapshots', 'readwrite');
+        const store = tx.objectStore('daily_snapshots');
+        todayAfter.forEach(s => store.delete(s.id));
+        await new Promise(res => { tx.oncomplete = res; });
+        await repairDate(today);
+      }
+    }
+    
+    return result;
+  };
+  
+  window.__phase7.__p15_guarded = true;
+  window.__phase7.__p15_guarded_v172 = true;
+  log('Phase 7 v1.7.2 가드 설치 완료 (휴장일 차단 + 미래 날짜 자동 삭제)', 'ok');
+  return true;
+}
 
   // ===== 9. 자동 실행 =====
   let lastAutoRun = 0;
