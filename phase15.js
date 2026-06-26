@@ -696,6 +696,7 @@
 
   // ===== 초기화 =====
   setTimeout(() => {
+    cleanupFutureSnapshots();
     installPhase7Guard();
     hookChartConstructor();
     ensureDashboardHook();
@@ -719,3 +720,35 @@
     log('Phase 15 v' + VERSION + ' 초기화 완료', 'ok');
   }, 3000);
 })();
+async function cleanupFutureSnapshots() {
+  try {
+    const TODAY = new Date().toISOString().slice(0, 10);
+    const db = await new Promise((res, rej) => {
+      const r = indexedDB.open('StockJournalDB');
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    const all = await new Promise(res => {
+      const r = db.transaction('daily_snapshots').objectStore('daily_snapshots').getAll();
+      r.onsuccess = () => res(r.result);
+    });
+    const targets = all.filter(x => {
+      if (!x.date) return false;
+      if (x.date > TODAY) return true;
+      const day = new Date(x.date).getDay();
+      if (x.date === TODAY && (day === 0 || day === 6)) return true;
+      return false;
+    });
+    if (targets.length === 0) {
+      console.log('[Phase15 v1.7.6] 청소 대상 없음');
+      return;
+    }
+    const tx = db.transaction('daily_snapshots', 'readwrite');
+    const store = tx.objectStore('daily_snapshots');
+    for (const r of targets) store.delete(r.id);
+    await new Promise(res => tx.oncomplete = res);
+    console.log(`[Phase15 v1.7.6] 미래/휴장일 ${targets.length}건 청소`);
+  } catch (e) {
+    console.warn('[Phase15 v1.7.6] cleanup 실패:', e);
+  }
+}
