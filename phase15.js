@@ -1,6 +1,6 @@
-// phase15.js - 자동 복구 시스템 v1.7.1 (Chart 생성자 후킹 + 영구 정정)
+// phase15.js - 자동 복구 시스템 v1.7.3 (Chart 후킹 + 휴장일 가드 + 상단 통계 정정)
 (function() {
-const VERSION = '1.7.1';
+const VERSION = '1.7.3';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
   const START_ASSET = 13530000;
 
@@ -275,7 +275,7 @@ const VERSION = '1.7.1';
     }
   }
 
-  // ===== 3. 상단 수치 박스 정정 =====
+    // ===== 3. 상단 수치 박스 정정 (v1.7.3: 인라인 스타일 박스 지원) =====
   async function refreshTopStats() {
     const byDate = await calcByDate();
     const dates = Object.keys(byDate).sort();
@@ -300,7 +300,7 @@ const VERSION = '1.7.1';
     const startDate = periodDates[0];
     const startAsset = byDate[startDate];
 
-    const periodReturn = ((lastAsset - startAsset) / startAsset * 100).toFixed(2);
+    const periodReturn = ((lastAsset - startAsset) / startAsset * 100);
 
     const pnls = [];
     for (let i = 1; i < periodDates.length; i++) {
@@ -313,51 +313,70 @@ const VERSION = '1.7.1';
     const maxGain = pnls.reduce((a, b) => b.pnl > a.pnl ? b : a, { pnl: -Infinity, date: '' });
     const maxLoss = pnls.reduce((a, b) => b.pnl < a.pnl ? b : a, { pnl: Infinity, date: '' });
     const wins = pnls.filter(p => p.pnl > 0).length;
-    const winRate = pnls.length > 0 ? (wins / pnls.length * 100).toFixed(1) : 0;
+    const losses = pnls.length - wins;
+    const winRate = pnls.length > 0 ? (wins / pnls.length * 100) : 0;
 
-    const boxes = document.querySelectorAll('[class*="stat"], [class*="card"], [class*="box"]');
+    // v1.7.3: 인라인 스타일 박스를 라벨 텍스트로 찾기
+    const findBoxByLabel = (labelText) => {
+      const all = document.querySelectorAll('div');
+      for (const div of all) {
+        const labelChild = Array.from(div.children).find(c => 
+          c.tagName === 'DIV' && c.textContent.includes(labelText) && c.textContent.length < 50
+        );
+        if (labelChild) return div;
+      }
+      return null;
+    };
+
     let updated = 0;
-    boxes.forEach(box => {
-      const text = box.textContent || '';
-      if (text.includes('기간 수익률') || text.includes('기간수익률')) {
-        const valEl = box.querySelector('[class*="value"], [class*="number"], strong, b, h3, h4, .text-2xl, .text-xl, .text-lg');
-        if (valEl) {
-          valEl.textContent = (periodReturn >= 0 ? '+' : '') + periodReturn + '%';
-          updated++;
-        }
-      }
-      if (text.includes('최고 수익일') || text.includes('최고수익일')) {
-        const valEls = box.querySelectorAll('[class*="value"], [class*="number"], strong, b, h3, h4, .text-2xl, .text-xl, .text-lg, span');
-        valEls.forEach(el => {
-          if (el.textContent.includes('₩')) {
-            el.textContent = '+₩' + maxGain.pnl.toLocaleString();
-          } else if (el.textContent.match(/\d{4}-\d{2}-\d{2}/)) {
-            el.textContent = maxGain.date;
-          }
-        });
-        updated++;
-      }
-      if (text.includes('최대 손실일') || text.includes('최대손실일')) {
-        const valEls = box.querySelectorAll('[class*="value"], [class*="number"], strong, b, h3, h4, .text-2xl, .text-xl, .text-lg, span');
-        valEls.forEach(el => {
-          if (el.textContent.includes('₩')) {
-            el.textContent = '₩' + maxLoss.pnl.toLocaleString();
-          } else if (el.textContent.match(/\d{4}-\d{2}-\d{2}/)) {
-            el.textContent = maxLoss.date;
-          }
-        });
-        updated++;
-      }
-      if (text.includes('승률') && text.includes('%')) {
-        const valEl = box.querySelector('[class*="value"], [class*="number"], strong, b, h3, h4, .text-2xl, .text-xl, .text-lg');
-        if (valEl && valEl.textContent.includes('%')) {
-          valEl.textContent = winRate + '%';
-          updated++;
-        }
-      }
-    });
 
-    if (updated > 0) log('상단 수치 ' + updated + '개 정정 (기간 ' + periodReturn + '%, 승률 ' + winRate + '%)', 'ok');
+    // 1) 기간 수익률
+    const periodBox = findBoxByLabel('기간 수익률');
+    if (periodBox && periodBox.children.length >= 2) {
+      const valueDiv = periodBox.children[1];
+      const detailDiv = periodBox.children[2];
+      const sign = periodReturn >= 0 ? '+' : '';
+      valueDiv.textContent = sign + periodReturn.toFixed(2) + '%';
+      valueDiv.style.color = periodReturn >= 0 ? '#e74c3c' : '#3498db';
+      if (detailDiv) {
+        detailDiv.textContent = '₩' + startAsset.toLocaleString() + ' → ₩' + lastAsset.toLocaleString();
+      }
+      updated++;
+    }
+
+    // 2) 최고 수익일
+    const maxGainBox = findBoxByLabel('최고 수익일');
+    if (maxGainBox && maxGainBox.children.length >= 2 && isFinite(maxGain.pnl)) {
+      const valueDiv = maxGainBox.children[1];
+      const detailDiv = maxGainBox.children[2];
+      valueDiv.textContent = '+₩' + maxGain.pnl.toLocaleString();
+      valueDiv.style.color = '#e74c3c';
+      if (detailDiv) detailDiv.textContent = maxGain.date;
+      updated++;
+    }
+
+    // 3) 최대 손실일
+    const maxLossBox = findBoxByLabel('최대 손실일');
+    if (maxLossBox && maxLossBox.children.length >= 2 && isFinite(maxLoss.pnl)) {
+      const valueDiv = maxLossBox.children[1];
+      const detailDiv = maxLossBox.children[2];
+      valueDiv.textContent = '₩' + maxLoss.pnl.toLocaleString();
+      valueDiv.style.color = '#3498db';
+      if (detailDiv) detailDiv.textContent = maxLoss.date;
+      updated++;
+    }
+
+    // 4) 승률
+    const winBox = findBoxByLabel('승률');
+    if (winBox && winBox.children.length >= 2 && pnls.length > 0) {
+      const valueDiv = winBox.children[1];
+      const detailDiv = winBox.children[2];
+      valueDiv.textContent = winRate.toFixed(1) + '%';
+      if (detailDiv) detailDiv.textContent = '수익 ' + wins + '일 / 손실 ' + losses + '일';
+      updated++;
+    }
+
+    if (updated > 0) log('상단 수치 ' + updated + '개 정정 (기간 ' + periodReturn.toFixed(2) + '%, 승률 ' + winRate.toFixed(1) + '%)', 'ok');
   }
 
   // ===== 4. 대시보드 후킹 =====
