@@ -2,7 +2,7 @@
 // 평가일 알림: 영상/리포트의 1m/3m/6m 평가 대기 항목 자동 감지 + 메뉴 배지 + 통계 배너
 (function() {
   'use strict';
-  const VERSION = '0.1.0';
+  const VERSION = '0.1.1';
   const PERIODS = [
     { key: '1m', days: 30, label: '1개월' },
     { key: '3m', days: 90, label: '3개월' },
@@ -114,13 +114,16 @@
 
   // ============ 알림 배너 (통계 대시보드 상단) ============
   async function injectStatsBanner() {
-    // 통계 모달이 열려있는 동안 상단에 배너 표시
-    const statsModal = document.querySelector('[id*="phase16-stats"], [id*="p16-stats"]');
+    // ✅ 정확한 ID로 통계 모달 찾기
+    const statsModal = document.getElementById('p16-stats-modal');
     if (!statsModal) return;
-    if (statsModal.querySelector('.p16-notif-banner')) return; // 중복 방지
 
     const pending = await getPendingEvaluations();
-    if (pending.total === 0) return;
+    
+    // 기존 배너 제거 (갱신 + 0건일 때 제거를 위해)
+    statsModal.querySelectorAll('.p16-notif-banner').forEach(b => b.remove());
+    
+    if (pending.total === 0) return; // 대기 항목 없으면 배너 표시 안 함
 
     const banner = document.createElement('div');
     banner.className = 'p16-notif-banner';
@@ -152,14 +155,14 @@
     banner.onmouseleave = () => banner.style.transform = 'translateY(0)';
     banner.onclick = () => openPendingList();
 
-    // 모달 내부의 첫 번째 자식 앞에 삽입
-    const content = statsModal.querySelector('div[style*="background:white"], div[style*="background: white"]');
-    if (content) {
-      // 헤더 다음에 삽입
-      const header = content.querySelector('h2, h3')?.parentElement;
-      if (header) header.insertAdjacentElement('afterend', banner);
-      else content.insertBefore(banner, content.firstChild);
-    }
+    // ✅ "전체 적중률" 텍스트가 있는 컨테이너 찾기 (진단으로 확인된 구조)
+    const candidates = Array.from(statsModal.querySelectorAll('div')).filter(d => {
+      return d.textContent?.includes('전체 적중률') && d.offsetParent !== null;
+    });
+    const target = candidates[candidates.length - 1] || statsModal;
+    
+    // target 최상단에 삽입
+    target.insertBefore(banner, target.firstChild);
   }
 
   // ============ 평가 대기 항목 목록 모달 ============
