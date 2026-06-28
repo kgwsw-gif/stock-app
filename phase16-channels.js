@@ -2,7 +2,7 @@
 // 채널 관리: 등록/수정/삭제 + 영상 입력 자동완성 + 채널별 통계
 (function() {
   'use strict';
-  const VERSION = '0.1.2';
+  const VERSION = '0.1.3';
   const INSIGHT_DB = 'StockJournalInsightsDB';
   const CHANNEL_STORE = 'youtube_channels';
   const VIDEO_STORE = 'video_insights';
@@ -306,7 +306,7 @@
   }
 
   // ============ 영상 입력 모달 자동완성 ============
-  async function attachAutocomplete(input) {
+    async function attachAutocomplete(input) {
     if (!input || input.dataset.p16ChAttached) return;
     input.dataset.p16ChAttached = '1';
 
@@ -318,31 +318,36 @@
       dropdown = null;
     }
 
-    function showDropdown() {
+    async function showDropdown() {
       closeDropdown();
+      // 매번 최신 채널 목록 가져오기
+      channels = await getAllChannels();
       const query = input.value.trim().toLowerCase();
       const filtered = query
         ? channels.filter(c => c.name.toLowerCase().includes(query))
         : channels;
+      console.log('[자동완성] 검색어:', query || '(빈값)', '결과:', filtered.length, '/', channels.length);
       if (filtered.length === 0) return;
 
       const rect = input.getBoundingClientRect();
       dropdown = document.createElement('div');
+      dropdown.className = 'p16-ch-dropdown';
       dropdown.style.cssText = `
         position:fixed;left:${rect.left}px;top:${rect.bottom + 2}px;width:${rect.width}px;
         max-height:200px;overflow-y:auto;background:white;border:1px solid #d1d5db;
-        border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.1);z-index:100002;
+        border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:100002;
       `;
       filtered.slice(0, 20).forEach(c => {
         const item = document.createElement('div');
-        item.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid #f3f4f6;';
+        item.style.cssText = 'padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f3f4f6;';
         item.innerHTML = `<b>${escapeHtml(c.name)}</b>${c.category ? ` <span style="color:#9ca3af;font-size:11px;">${escapeHtml(c.category)}</span>` : ''}`;
-        item.onmouseenter = () => item.style.background = '#f3f4f6';
+        item.onmouseenter = () => item.style.background = '#eff6ff';
         item.onmouseleave = () => item.style.background = 'white';
         item.onmousedown = (e) => {
           e.preventDefault();
           input.value = c.name;
           input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
           closeDropdown();
         };
         dropdown.appendChild(item);
@@ -350,12 +355,14 @@
       document.body.appendChild(dropdown);
     }
 
-    input.addEventListener('focus', async () => {
-      channels = await getAllChannels();
-      showDropdown();
-    });
+    input.addEventListener('focus', showDropdown);
+    input.addEventListener('click', showDropdown);
     input.addEventListener('input', showDropdown);
-    input.addEventListener('blur', () => setTimeout(closeDropdown, 200));
+    input.addEventListener('keyup', (e) => {
+      if (e.key === 'Escape') closeDropdown();
+    });
+    input.addEventListener('blur', () => setTimeout(closeDropdown, 250));
+    console.log('[자동완성] 부착 완료:', input.id || input.placeholder);
   }
 
   function watchVideoInputModal() {
@@ -379,44 +386,42 @@
   }
 
   // ============ 메뉴 통합 (메뉴 모달에 "채널 관리" 버튼 추가) ============
-    function injectMenuButton() {
+      function injectMenuButton() {
     const tryInject = () => {
-      // "📝정보 노트" 버튼을 찾아서 그 옆에 "📺 채널 관리" 버튼 추가
+      // "📝정보 노트" 버튼을 찾기
       const allButtons = document.querySelectorAll('button');
       const refBtn = Array.from(allButtons).find(b => {
         if (b.offsetParent === null) return false;
-        const txt = b.textContent.trim();
-        // "📝정보 노트" 또는 "📝 정보 노트" 모두 매칭
-        return /📝\s*정보\s*노트/.test(txt);
+        return /📝\s*정보\s*노트/.test(b.textContent.trim());
       });
       if (!refBtn) return;
       // 이미 추가된 경우 스킵
       if (refBtn.parentNode.querySelector('.p16-channel-menu-btn')) return;
-      // 정보 노트 버튼 복제 → 채널 관리 버튼 생성
-      const newBtn = refBtn.cloneNode(true);
-      newBtn.classList.add('p16-channel-menu-btn');
+
+      // 새 버튼 생성 (복제 대신 새로 만들어서 외부 onclick 영향 차단)
+      const newBtn = document.createElement('button');
+      newBtn.className = (refBtn.className || '') + ' p16-channel-menu-btn';
+      newBtn.style.cssText = refBtn.style.cssText; // inline 스타일만 복사
       newBtn.textContent = '📺 채널 관리';
-      // 기존 이벤트 리스너 제거를 위해 onclick 직접 설정
+      newBtn.type = 'button';
       newBtn.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        // 메뉴 닫기 시도 (메뉴가 토글 형식인 경우)
-        const menu = refBtn.closest('[id*="menu"], [class*="menu"]');
-        if (menu && menu.style) {
-          menu.style.display = 'none';
+        // 메뉴 닫기 시도 (전체 메뉴 모달 닫기)
+        const menuModal = document.querySelector('[id*="menu-modal"], [class*="menu-modal"], [id*="full-menu"]');
+        if (menuModal) {
+          const closeBtn = menuModal.querySelector('button[class*="close"], button[aria-label*="close"]');
+          if (closeBtn) closeBtn.click();
+          else menuModal.style.display = 'none';
         }
         openChannelManager();
       };
-      // 모든 이벤트 리스너 제거 (cloneNode는 이벤트를 복사하지 않지만 만약을 위해)
-      const cleanBtn = newBtn.cloneNode(true);
-      cleanBtn.onclick = newBtn.onclick;
-      refBtn.parentNode.insertBefore(cleanBtn, refBtn.nextSibling);
+      refBtn.parentNode.insertBefore(newBtn, refBtn.nextSibling);
       console.log('[phase16-channels] 메뉴 버튼 추가됨');
     };
     const observer = new MutationObserver(tryInject);
     observer.observe(document.body, { childList: true, subtree: true });
     setInterval(tryInject, 2000);
-    // 즉시 한 번 시도
     setTimeout(tryInject, 500);
   }
 
