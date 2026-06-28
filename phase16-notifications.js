@@ -2,7 +2,7 @@
 // 평가일 알림: 영상/리포트의 1m/3m/6m 평가 대기 항목 자동 감지 + 메뉴 배지 + 통계 배너
 (function() {
   'use strict';
-  const VERSION = '0.1.1';
+  const VERSION = '0.1.3';
   const PERIODS = [
     { key: '1m', days: 30, label: '1개월' },
     { key: '3m', days: 90, label: '3개월' },
@@ -127,17 +127,19 @@
 
     const banner = document.createElement('div');
     banner.className = 'p16-notif-banner';
-    banner.style.cssText = `
+        banner.style.cssText = `
       background: linear-gradient(90deg, #fef3c7, #fde68a);
       border: 1px solid #f59e0b;
       border-radius: 8px;
       padding: 12px 16px;
-      margin-bottom: 14px;
+      margin: 0 0 14px 0;
       cursor: pointer;
       display: flex;
       align-items: center;
       gap: 10px;
       transition: 0.15s;
+      width: 100%;
+      box-sizing: border-box;
     `;
     banner.innerHTML = `
       <span style="font-size:22px;">🔔</span>
@@ -155,14 +157,25 @@
     banner.onmouseleave = () => banner.style.transform = 'translateY(0)';
     banner.onclick = () => openPendingList();
 
-    // ✅ "전체 적중률" 텍스트가 있는 컨테이너 찾기 (진단으로 확인된 구조)
-    const candidates = Array.from(statsModal.querySelectorAll('div')).filter(d => {
-      return d.textContent?.includes('전체 적중률') && d.offsetParent !== null;
+        // ✅ "영상", "리포트", "평가 완료" 카드 그리드 찾아서 그 위에 배치
+    const allDivs = Array.from(statsModal.querySelectorAll('div'));
+    const cardGrid = allDivs.find(d => {
+      if (d.offsetParent === null) return false;
+      const style = getComputedStyle(d);
+      if (style.display !== 'grid') return false;
+      const children = d.children.length;
+      if (children < 2 || children > 5) return false;
+      const text = d.textContent || '';
+      return text.includes('영상') && text.includes('리포트') && text.includes('평가 완료');
     });
-    const target = candidates[candidates.length - 1] || statsModal;
     
-    // target 최상단에 삽입
-    target.insertBefore(banner, target.firstChild);
+    if (cardGrid?.parentElement) {
+      // 카드 그리드 바로 위에 삽입
+      cardGrid.parentElement.insertBefore(banner, cardGrid);
+    } else {
+      // 폴백: 모달 최상단
+      statsModal.insertBefore(banner, statsModal.firstChild);
+    }
   }
 
   // ============ 평가 대기 항목 목록 모달 ============
