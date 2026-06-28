@@ -386,38 +386,34 @@
   }
 
   // ============ 메뉴 통합 (메뉴 모달에 "채널 관리" 버튼 추가) ============
-      function injectMenuButton() {
+        function injectMenuButton() {
+    // 전역 함수 등록 - 메뉴 시스템의 data-fn 처리 방식 활용
+    window.p16OpenChannelManager = function() {
+      openChannelManager();
+    };
+
     const tryInject = () => {
-      // "📝정보 노트" 버튼을 찾기
-      const allButtons = document.querySelectorAll('button');
-      const refBtn = Array.from(allButtons).find(b => {
-        if (b.offsetParent === null) return false;
-        return /📝\s*정보\s*노트/.test(b.textContent.trim());
-      });
+      // 정보 노트 버튼 찾기 (data-fn 또는 텍스트로)
+      const refBtn = document.querySelector('button[data-fn="p16InfoNote"]') ||
+        Array.from(document.querySelectorAll('button')).find(b => {
+          if (b.offsetParent === null) return false;
+          return /📝\s*정보\s*노트/.test(b.textContent.trim());
+        });
       if (!refBtn) return;
       // 이미 추가된 경우 스킵
       if (refBtn.parentNode.querySelector('.p16-channel-menu-btn')) return;
 
-      // 새 버튼 생성 (복제 대신 새로 만들어서 외부 onclick 영향 차단)
+      // 정보 노트 버튼과 동일한 구조로 새 버튼 생성
       const newBtn = document.createElement('button');
-      newBtn.className = (refBtn.className || '') + ' p16-channel-menu-btn';
-      newBtn.style.cssText = refBtn.style.cssText; // inline 스타일만 복사
-      newBtn.textContent = '📺 채널 관리';
-      newBtn.type = 'button';
-      newBtn.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        // 메뉴 닫기 시도 (전체 메뉴 모달 닫기)
-        const menuModal = document.querySelector('[id*="menu-modal"], [class*="menu-modal"], [id*="full-menu"]');
-        if (menuModal) {
-          const closeBtn = menuModal.querySelector('button[class*="close"], button[aria-label*="close"]');
-          if (closeBtn) closeBtn.click();
-          else menuModal.style.display = 'none';
-        }
-        openChannelManager();
-      };
+      newBtn.className = refBtn.className; // "menu-item"
+      newBtn.style.cssText = refBtn.style.cssText;
+      newBtn.id = 'p16-menu-channels';
+      newBtn.setAttribute('data-fn', 'p16OpenChannelManager'); // 메뉴 시스템이 이걸 읽음
+      newBtn.innerHTML = '<span style="font-size:18px;">📺</span><span>채널 관리</span>';
+      // onclick은 설정하지 않음 - 메뉴 시스템의 위임 이벤트가 data-fn으로 처리
+
       refBtn.parentNode.insertBefore(newBtn, refBtn.nextSibling);
-      console.log('[phase16-channels] 메뉴 버튼 추가됨');
+      console.log('[phase16-channels] 메뉴 버튼 추가됨 (data-fn 방식)');
     };
     const observer = new MutationObserver(tryInject);
     observer.observe(document.body, { childList: true, subtree: true });
