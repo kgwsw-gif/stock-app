@@ -1,4 +1,4 @@
-// phase16-channels.js v0.1.0
+// phase16-channels.js v0.1.1
 // 채널 관리: 등록/수정/삭제 + 영상 입력 자동완성 + 채널별 통계
 (function() {
   'use strict';
