@@ -2,7 +2,7 @@
 // 채널 관리: 등록/수정/삭제 + 영상 입력 자동완성 + 채널별 통계
 (function() {
   'use strict';
-  const VERSION = '0.1.0';
+  const VERSION = '0.1.1';
   const INSIGHT_DB = 'StockJournalInsightsDB';
   const CHANNEL_STORE = 'youtube_channels';
   const VIDEO_STORE = 'video_insights';
@@ -88,7 +88,7 @@
     const videos = await getAllVideos();
     const stats = {};
     videos.forEach(v => {
-      const ch = v.channel || '(미지정)';
+      const ch = v.channelName || v.channel || '(미지정)';
       if (!stats[ch]) stats[ch] = { count: 0, lastDate: null, hits: 0, total: 0 };
       stats[ch].count++;
       const d = v.createdAt || v.date;
