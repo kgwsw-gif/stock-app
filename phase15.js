@@ -713,8 +713,11 @@
   }
 
   // ===== 초기화 =====
-  setTimeout(() => {
-    cleanupFutureSnapshots();
+      // 즉시 한 번 청소 (페이지 로드 직후)
+  cleanupFutureSnapshots().catch(e => console.warn('초기 cleanup 실패:', e));
+  
+  setTimeout(async () => {
+    await cleanupFutureSnapshots();
     installPhase7Guard();
     hookChartConstructor();
     ensureDashboardHook();
