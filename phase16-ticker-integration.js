@@ -2,7 +2,7 @@
 // 종목별 정보 노트 통합 - TOP 종목 클릭 → 종목 전용 모달
 (function() {
   'use strict';
-  const VERSION = '0.1.0';
+  const VERSION = '0.1.1';
 
   // ===== 종목 데이터 조회 =====
   async function getTickerData(code) {
@@ -115,7 +115,7 @@
     }[c]));
   }
 
-  // ===== TOP 종목 클릭 이벤트 부착 =====
+    // ===== TOP 종목 클릭 이벤트 부착 (이벤트 위임 방식) =====
   function attachTopTickerClicks() {
     const statsModal = document.getElementById('p16-stats-modal');
     if (!statsModal) return;
@@ -126,30 +126,41 @@
     
     if (!topSection) return;
     
-    // 종목 행들 찾기 (코드 포함)
-    const rows = topSection.querySelectorAll('div');
-    rows.forEach(row => {
-      if (row.dataset.p16TickerAttached === '1') return;
-      const txt = row.textContent || '';
-      const match = txt.match(/^(.+?)\s*\((\d{6})\)/);
-      if (!match) return;
+    // 이벤트 위임 부착 (한 번만)
+    if (topSection.dataset.p16DelegationAttached !== '1') {
+      topSection.dataset.p16DelegationAttached = '1';
       
-      // 직접 코드를 가진 행만 처리 (자식 div는 제외)
-      const childWithCode = Array.from(row.children).find(c => 
-        /\(\d{6}\)/.test(c.textContent || '')
-      );
-      if (childWithCode) return; // 부모 행은 스킵
-      
-      const name = match[1].trim();
-      const code = match[2];
-      
-      row.style.cursor = 'pointer';
-      row.style.transition = '0.15s';
-      row.dataset.p16TickerAttached = '1';
-      
-      row.onmouseenter = () => row.style.background = '#f3f4f6';
-      row.onmouseleave = () => row.style.background = '';
-      row.onclick = () => openTickerModal(code, name);
+      // capture 단계로 등록 → 다른 핸들러보다 먼저 실행
+      topSection.addEventListener('click', (e) => {
+        let target = e.target;
+        while (target && target !== topSection) {
+          const txt = target.textContent || '';
+          const match = txt.match(/^([^(]+?)\s*\((\d{6})\)/);
+          if (match && txt.length < 100) {
+            const name = match[1].trim();
+            const code = match[2];
+            e.preventDefault();
+            e.stopPropagation();
+            openTickerModal(code, name);
+            return;
+          }
+          target = target.parentElement;
+        }
+      }, true);
+    }
+    
+    // 시각적 힌트: 코드 행에 커서 스타일 적용
+    const allDivs = Array.from(topSection.querySelectorAll('div'));
+    allDivs.forEach(d => {
+      if (d.dataset.p16CursorApplied === '1') return;
+      const txt = d.textContent || '';
+      if (/\(\d{6}\)/.test(txt) && txt.length < 100) {
+        d.style.cursor = 'pointer';
+        d.style.transition = '0.15s';
+        d.dataset.p16CursorApplied = '1';
+        d.addEventListener('mouseenter', () => d.style.background = '#f3f4f6');
+        d.addEventListener('mouseleave', () => d.style.background = '');
+      }
     });
   }
 
