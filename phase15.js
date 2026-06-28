@@ -1,9 +1,17 @@
-// phase15.js - 자동 복구 시스템 v1.7.6 (휴장일 자동 청소 + 기간 버튼 active 감지 강화)
+// phase15.js - 자동 복구 시스템 v1.7.7 (근본 원인 통합 해결)
+// - calcByDate 미래/휴장일 보간값 차단
+// - 차트 라벨 자동 정리
+// - 기간 버튼 active 감지 재작성 (#chart-period 기준)
+// - 상단 통계 박스 셀렉터 #chart-modal 한정
+// - cleanupFutureSnapshots IIFE 내부 이동 (호이스팅 안정화)
 (function() {
-  const VERSION = '1.7.6';
+  const VERSION = '1.7.7';
   const NAVER_DATE_RE = /<span[^>]*class="tah[^"]*"[^>]*>(\d{4}\.\d{2}\.\d{2})<\/span>[\s\S]{0,500}?<span[^>]*class="tah[^"]*"[^>]*>([\d,]+)<\/span>/g;
   const START_ASSET = 13530000;
   const MODAL_SELECTORS = '#dashboard-modal, #validation-dashboard, #chart-modal';
+  const HOLIDAYS_2026 = ['2026-01-01','2026-02-16','2026-02-17','2026-02-18','2026-03-01','2026-03-02',
+    '2026-05-05','2026-05-25','2026-06-06','2026-08-15','2026-08-17','2026-09-24','2026-09-25',
+    '2026-09-26','2026-10-03','2026-10-05','2026-10-09','2026-12-25'];
 
   // ===== 유틸 =====
   const openDB = () => new Promise((res, rej) => {
@@ -24,6 +32,21 @@
   const getQty = (h) => Number(h?.currentQuantity ?? h?.quantity ?? 0);
   const getPrice = (s) => Number(s?.currentPriceKRW ?? s?.closePrice ?? s?.currentPrice ?? 0);
 
+  const todayKST = () => {
+    const n = new Date();
+    const k = new Date(n.getTime() + (9 * 60 + n.getTimezoneOffset()) * 60000);
+    return k.getFullYear() + '-' + String(k.getMonth() + 1).padStart(2, '0') + '-' + String(k.getDate()).padStart(2, '0');
+  };
+
+  const isClosedDate = (ds) => {
+    if (!ds || typeof ds !== 'string') return false;
+    const [y, m, d] = ds.split('-').map(Number);
+    if (!y || !m || !d) return false;
+    const day = new Date(y, m - 1, d).getDay();
+    if (day === 0 || day === 6) return true;
+    return HOLIDAYS_2026.includes(ds);
+  };
+
   const log = (msg, level = 'info') => {
     const tag = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : level === 'ok' ? '✅' : 'ℹ️';
     console.log('[Phase15] ' + tag + ' ' + msg);
@@ -32,11 +55,46 @@
     }
   };
 
-  // ===== 1. 일자별 자산 계산 (보간 포함) =====
+  // ===== 0. 미래/휴장일 데이터 자동 청소 =====
+  async function cleanupFutureSnapshots() {
+    try {
+      const TODAY = todayKST();
+      const all = await getAll('daily_snapshots');
+      
+      const targets = all.filter(x => {
+        if (!x.date) return true; // 손상 데이터
+        if (x.date > TODAY) return true; // 미래
+        if (isClosedDate(x.date)) return true; // 휴장일
+        return false;
+      });
+      
+      if (targets.length === 0) {
+        console.log('[Phase15 v1.7.7] 청소 대상 없음 (오늘=' + TODAY + ')');
+        return 0;
+      }
+      
+      const db = await openDB();
+      const tx = db.transaction('daily_snapshots', 'readwrite');
+      const store = tx.objectStore('daily_snapshots');
+      for (const r of targets) store.delete(r.id);
+      await new Promise(res => { tx.oncomplete = res; });
+      
+      const futureCnt = targets.filter(x => x.date && x.date > TODAY).length;
+      const closedCnt = targets.filter(x => x.date && isClosedDate(x.date)).length;
+      console.log(`[Phase15 v1.7.7] 청소 완료: 미래 ${futureCnt}건, 휴장일 ${closedCnt}건 (총 ${targets.length}건)`);
+      return targets.length;
+    } catch (e) {
+      console.warn('[Phase15 v1.7.7] cleanup 실패:', e);
+      return -1;
+    }
+  }
+
+  // ===== 1. 일자별 자산 계산 (보간 포함, 단 미래/휴장일은 제외) =====
   async function calcByDate(targetDates = null) {
     const snaps = await getAll('daily_snapshots');
     const holdings = await getAll('holdings');
     const byDate = {};
+    const TODAY = todayKST();
     
     const priceByTicker = {};
     snaps.forEach(s => {
@@ -44,7 +102,9 @@
       priceByTicker[s.ticker][s.date] = getPrice(s);
     });
     
-    const allDates = targetDates || [...new Set(snaps.map(s => s.date))].sort();
+    let allDates = targetDates || [...new Set(snaps.map(s => s.date))].sort();
+    // v1.7.7: 미래/휴장일 사전 제거
+    allDates = allDates.filter(d => d && d <= TODAY && !isClosedDate(d));
     
     allDates.forEach(date => {
       let total = 0;
@@ -66,7 +126,7 @@
     return byDate;
   }
 
-  // ===== 2. 차트 강제 패치 =====
+  // ===== 2. 차트 강제 패치 (라벨에서 미래/휴장일 제거) =====
   async function refreshAllCharts() {
     if (!window.Chart) return 0;
     const canvases = document.querySelectorAll('canvas[id^="chart-"]');
@@ -78,6 +138,30 @@
       if (chart) allCharts.push(chart);
     });
     if (allCharts.length === 0) return 0;
+    
+    const TODAY = todayKST();
+    
+    // v1.7.7: 차트 라벨에서 미래/휴장일 제거
+    allCharts.forEach(c => {
+      const labels = c.data?.labels || [];
+      const validIndices = [];
+      labels.forEach((l, i) => {
+        if (typeof l !== 'string' || !/^2\d{3}-\d{2}-\d{2}$/.test(l)) {
+          validIndices.push(i);
+          return;
+        }
+        if (l > TODAY || isClosedDate(l)) return; // skip
+        validIndices.push(i);
+      });
+      if (validIndices.length < labels.length) {
+        c.data.labels = validIndices.map(i => labels[i]);
+        c.data.datasets.forEach(ds => {
+          ds.data = validIndices.map(i => ds.data[i]);
+          if (Array.isArray(ds.backgroundColor)) ds.backgroundColor = validIndices.map(i => ds.backgroundColor[i]);
+          if (Array.isArray(ds.borderColor)) ds.borderColor = validIndices.map(i => ds.borderColor[i]);
+        });
+      }
+    });
     
     const allDateLabels = new Set();
     allCharts.forEach(c => {
@@ -146,9 +230,26 @@
     try {
       const canvasId = chart?.canvas?.id || '';
       if (!canvasId.startsWith('chart-')) return false;
-      const labels = chart.data?.labels || [];
+      let labels = chart.data?.labels || [];
       const isDateChart = labels[0] && /^2\d{3}-\d{2}-\d{2}$/.test(labels[0]);
       if (!isDateChart) return false;
+      
+      // v1.7.7: 라벨에서 미래/휴장일 제거
+      const TODAY = todayKST();
+      const validIndices = [];
+      labels.forEach((l, i) => {
+        if (typeof l === 'string' && /^2\d{3}-\d{2}-\d{2}$/.test(l) && (l > TODAY || isClosedDate(l))) return;
+        validIndices.push(i);
+      });
+      if (validIndices.length < labels.length) {
+        chart.data.labels = validIndices.map(i => labels[i]);
+        chart.data.datasets.forEach(ds => {
+          ds.data = validIndices.map(i => ds.data[i]);
+          if (Array.isArray(ds.backgroundColor)) ds.backgroundColor = validIndices.map(i => ds.backgroundColor[i]);
+          if (Array.isArray(ds.borderColor)) ds.borderColor = validIndices.map(i => ds.borderColor[i]);
+        });
+        labels = chart.data.labels;
+      }
       
       const byDate = cachedByDate;
       if (!byDate) return false;
@@ -272,28 +373,27 @@
     }
   }
 
-  // ===== 3. 상단 수치 박스 정정 (v1.7.3: 인라인 스타일 박스 지원) =====
+  // ===== 3. 상단 수치 박스 정정 (v1.7.7: active 감지 + 박스 셀렉터 재작성) =====
   async function refreshTopStats() {
     const byDate = await calcByDate();
     const dates = Object.keys(byDate).sort();
     if (dates.length === 0) return 0;
 
-        // v1.7.6: active 버튼 감지 강화 (인라인 스타일 + class + aria 모두 지원)
+    // v1.7.7: #chart-period 컨테이너에서 active 버튼 찾기
     const periodLabels = ['1주', '1개월', '3개월', '6개월', '1년', '전체'];
     let filterText = '1주';
     
-    // 우선순위 1: chart-modal 내 버튼 중 인라인 스타일이 active처럼 보이는 것
-    const modalButtons = document.querySelectorAll('#chart-modal button, #dashboard-modal button');
-    for (const btn of modalButtons) {
+    const periodBtns = document.querySelectorAll('#chart-period button, .period-btn');
+    for (const btn of periodBtns) {
       const txt = btn.textContent.trim();
       if (!periodLabels.includes(txt)) continue;
-      const style = btn.getAttribute('style') || '';
-      const cls = btn.className || '';
-      // active 판정: background에 색상 지정 or active/selected class or aria-pressed
-      const hasActiveBg = /background[^;]*:\s*(?!transparent|none|white|#fff|rgb\(255)/i.test(style);
-      const hasActiveClass = /active|selected|on\b/i.test(cls);
-      const hasAriaPressed = btn.getAttribute('aria-pressed') === 'true';
-      if (hasActiveBg || hasActiveClass || hasAriaPressed) {
+      const bg = (btn.style.background || btn.style.backgroundColor || '').trim().toLowerCase();
+      const isActive = bg && 
+        bg !== 'white' && 
+        bg !== 'transparent' &&
+        !/^#fff/i.test(bg) &&
+        !/^rgb\(\s*255\s*,\s*255\s*,\s*255/.test(bg);
+      if (isActive) {
         filterText = txt;
         break;
       }
@@ -328,17 +428,28 @@
     const maxGain = pnls.reduce((a, b) => b.pnl > a.pnl ? b : a, { pnl: -Infinity, date: '' });
     const maxLoss = pnls.reduce((a, b) => b.pnl < a.pnl ? b : a, { pnl: Infinity, date: '' });
     const wins = pnls.filter(p => p.pnl > 0).length;
-    const losses = pnls.length - wins;
-    const winRate = pnls.length > 0 ? (wins / pnls.length * 100) : 0;
+    const losses = pnls.filter(p => p.pnl < 0).length;
+    const winRate = (wins + losses) > 0 ? (wins / (wins + losses) * 100) : 0;
 
-    // 인라인 스타일 박스를 라벨 텍스트로 찾기
+    // v1.7.7: #chart-modal 한정, border-left 박스 우선
     const findBoxByLabel = (labelText) => {
-      const all = document.querySelectorAll('div');
+      const modal = document.querySelector('#chart-modal') || document;
+      const styledBoxes = modal.querySelectorAll('[style*="border-left"]');
+      for (const box of styledBoxes) {
+        if (box.children.length < 2) continue;
+        const firstChild = box.children[0];
+        if (firstChild && firstChild.textContent.includes(labelText) && firstChild.textContent.length < 80) {
+          return box;
+        }
+      }
+      // 백업
+      const all = modal.querySelectorAll('div');
       for (const div of all) {
-        const labelChild = Array.from(div.children).find(c => 
-          c.tagName === 'DIV' && c.textContent.includes(labelText) && c.textContent.length < 50
-        );
-        if (labelChild) return div;
+        if (div.children.length < 2) continue;
+        const firstChild = div.children[0];
+        if (firstChild && firstChild.textContent.trim().includes(labelText) && firstChild.textContent.length < 80) {
+          return div;
+        }
       }
       return null;
     };
@@ -391,11 +502,11 @@
       updated++;
     }
 
-    if (updated > 0) log('상단 수치 ' + updated + '개 정정 (기간 ' + periodReturn.toFixed(2) + '%, 승률 ' + winRate.toFixed(1) + '%)', 'ok');
+    if (updated > 0) log('상단 수치 ' + updated + '개 정정 (활성=' + filterText + ', 기간 ' + periodReturn.toFixed(2) + '%, 승률 ' + winRate.toFixed(1) + '%)', 'ok');
     return updated;
   }
 
-  // ===== 4. 대시보드 후킹 (v1.7.4: refreshTopStats 자동 호출 추가) =====
+  // ===== 4. 대시보드 후킹 =====
   function hookFunction(funcName) {
     const orig = window[funcName];
     if (typeof orig !== 'function') return false;
@@ -443,7 +554,7 @@
     return ok;
   }
 
-  // ===== 4-2. 기간 버튼 클릭 감지 (1주/1개월/3개월 전환 시 자동 재계산) =====
+  // ===== 4-2. 기간 버튼 클릭 감지 =====
   let periodButtonsHooked = false;
   function installPeriodButtonHook() {
     if (periodButtonsHooked) return;
@@ -455,11 +566,14 @@
       // 약간 대기 후 재계산 (active 상태가 갱신되도록)
       setTimeout(async () => {
         await refreshTopStats();
-      }, 100);
+      }, 150);
       setTimeout(async () => {
         await refreshAllCharts();
         await refreshTopStats();
-      }, 500);
+      }, 600);
+      setTimeout(async () => {
+        await refreshTopStats();
+      }, 1200);
     }, true);
     periodButtonsHooked = true;
     log('기간 버튼 클릭 감지 설치 완료', 'ok');
@@ -580,10 +694,8 @@
       if (day === 0 || day === 6) return { closed: true, reason: '주말' };
       
       const md = String(kst.getMonth()+1).padStart(2,'0') + '-' + String(kst.getDate()).padStart(2,'0');
-      const holidays2026 = ['01-01','02-16','02-17','02-18','03-01','03-02','05-05','05-25',
-                            '06-06','08-15','08-17','09-24','09-25','09-26','10-03','10-05',
-                            '10-09','12-25'];
-      if (holidays2026.includes(md)) return { closed: true, reason: '공휴일' };
+      const holidaysMD = HOLIDAYS_2026.map(h => h.slice(5));
+      if (holidaysMD.includes(md)) return { closed: true, reason: '공휴일' };
       
       return { closed: false };
     };
@@ -597,11 +709,11 @@
       
       const result = await origRun(...args);
       
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayKST();
       const allSnaps = await getAll('daily_snapshots');
-      const futureSnaps = allSnaps.filter(s => s.date > today);
+      const futureSnaps = allSnaps.filter(s => s.date > today || isClosedDate(s.date));
       if (futureSnaps.length > 0) {
-        log('미래 날짜 스냅샷 ' + futureSnaps.length + '건 발견 - 자동 삭제', 'warn');
+        log('미래/휴장일 스냅샷 ' + futureSnaps.length + '건 발견 - 자동 삭제', 'warn');
         const db = await openDB();
         const tx = db.transaction('daily_snapshots', 'readwrite');
         const store = tx.objectStore('daily_snapshots');
@@ -635,10 +747,10 @@
       return result;
     };
     
-        window.__phase7.__p15_guarded = true;
+    window.__phase7.__p15_guarded = true;
     window.__phase7.__p15_guarded_v172 = true;
     
-    // v1.7.5: run 함수 봉인 (다른 스크립트가 덮어쓰지 못하게)
+    // run 함수 봉인
     try {
       const guardedRun = window.__phase7.run;
       Object.defineProperty(window.__phase7, 'run', {
@@ -652,7 +764,7 @@
       log('run 함수 봉인 실패: ' + e.message, 'warn');
     }
     
-    log('Phase 7 가드 설치 완료 (휴장일 차단 + 미래 날짜 자동 삭제)', 'ok');
+    log('Phase 7 가드 설치 완료', 'ok');
     return true;
   }
 
@@ -696,10 +808,11 @@
     hookFunction,
     hookChartConstructor,
     patchChartInstance,
-    getByDate
+    getByDate,
+    cleanupFutureSnapshots
   };
 
-  // ===== 자동 갱신 (모달 열려있을 때) =====
+  // ===== 자동 갱신 =====
   async function refreshIfDashboardOpen() {
     const opened = document.querySelector(MODAL_SELECTORS);
     if (opened) {
@@ -713,7 +826,7 @@
   }
 
   // ===== 초기화 =====
-      // 즉시 한 번 청소 (페이지 로드 직후)
+  // 즉시 한 번 청소 (페이지 로드 직후)
   cleanupFutureSnapshots().catch(e => console.warn('초기 cleanup 실패:', e));
   
   setTimeout(async () => {
@@ -741,66 +854,3 @@
     log('Phase 15 v' + VERSION + ' 초기화 완료', 'ok');
   }, 3000);
 })();
-async function cleanupFutureSnapshots() {
-  try {
-    // KST 기준 오늘 날짜
-    const now = new Date();
-    const kst = new Date(now.getTime() + (9 * 60 + now.getTimezoneOffset()) * 60000);
-    const TODAY = kst.getFullYear() + '-' +
-      String(kst.getMonth() + 1).padStart(2, '0') + '-' +
-      String(kst.getDate()).padStart(2, '0');
-    
-    const HOLIDAYS_2026 = ['2026-01-01','2026-02-16','2026-02-17','2026-02-18',
-      '2026-03-01','2026-03-02','2026-05-05','2026-05-25','2026-06-06',
-      '2026-08-15','2026-08-17','2026-09-24','2026-09-25','2026-09-26',
-      '2026-10-03','2026-10-05','2026-10-09','2026-12-25'];
-    
-    const isMarketClosedDate = (dateStr) => {
-      // 'YYYY-MM-DD'를 직접 파싱 (타임존 무관)
-      const [y, m, d] = dateStr.split('-').map(Number);
-      const dt = new Date(y, m - 1, d);
-      const day = dt.getDay();
-      if (day === 0 || day === 6) return true; // 일/토
-      if (HOLIDAYS_2026.includes(dateStr)) return true;
-      return false;
-    };
-    
-    const db = await new Promise((res, rej) => {
-      const r = indexedDB.open('StockJournalDB');
-      r.onsuccess = () => res(r.result);
-      r.onerror = () => rej(r.error);
-    });
-    const all = await new Promise(res => {
-      const r = db.transaction('daily_snapshots').objectStore('daily_snapshots').getAll();
-      r.onsuccess = () => res(r.result);
-    });
-    
-    // 청소 대상: 미래 날짜 OR 휴장일(주말/공휴일)
-    const targets = all.filter(x => {
-      if (!x.date) return true; // 날짜 없는 손상 데이터도 제거
-      if (x.date > TODAY) return true; // 미래
-      if (isMarketClosedDate(x.date)) return true; // 휴장일
-      return false;
-    });
-    
-    if (targets.length === 0) {
-      console.log('[Phase15 v1.7.6] 청소 대상 없음 (오늘=' + TODAY + ')');
-      return 0;
-    }
-    
-    const tx = db.transaction('daily_snapshots', 'readwrite');
-    const store = tx.objectStore('daily_snapshots');
-    for (const r of targets) store.delete(r.id);
-    await new Promise(res => tx.oncomplete = res);
-    
-    // 청소 사유별 통계
-    const futureCnt = targets.filter(x => x.date && x.date > TODAY).length;
-    const closedCnt = targets.filter(x => x.date && isMarketClosedDate(x.date)).length;
-    console.log(`[Phase15 v1.7.6] 청소 완료: 미래 ${futureCnt}건, 휴장일 ${closedCnt}건 (총 ${targets.length}건)`);
-    return targets.length;
-  } catch (e) {
-    console.warn('[Phase15 v1.7.6] cleanup 실패:', e);
-    return -1;
-  }
-}
-
