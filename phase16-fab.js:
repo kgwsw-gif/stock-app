@@ -1,0 +1,134 @@
+// phase16-fab.js - 인사이트 플로팅 버튼 v0.1.0
+(function() {
+  const VERSION = '0.1.0';
+
+  function waitForPhase16(maxWait = 10000) {
+    return new Promise((resolve, reject) => {
+      const start = Date.now();
+      const check = () => {
+        if (window.__phase16List?.open) return resolve();
+        if (Date.now() - start > maxWait) return reject(new Error('timeout'));
+        setTimeout(check, 100);
+      };
+      check();
+    });
+  }
+
+  function createFAB() {
+    if (document.getElementById('phase16-fab')) return;
+
+    const fab = document.createElement('div');
+    fab.id = 'phase16-fab';
+    fab.style.cssText = `
+      position:fixed;
+      bottom:24px;
+      right:24px;
+      z-index:99990;
+      background:linear-gradient(135deg,#4a7eff,#6366f1);
+      color:white;
+      padding:14px 20px;
+      border-radius:28px;
+      box-shadow:0 4px 14px rgba(74,126,255,0.4);
+      cursor:pointer;
+      font-size:14px;
+      font-weight:600;
+      display:flex;
+      align-items:center;
+      gap:8px;
+      transition:transform 0.15s, box-shadow 0.15s;
+      user-select:none;
+    `;
+    fab.innerHTML = `<span style="font-size:18px;">📰</span><span>인사이트</span>`;
+
+    fab.onmouseover = () => {
+      fab.style.transform = 'translateY(-2px) scale(1.03)';
+      fab.style.boxShadow = '0 6px 20px rgba(74,126,255,0.5)';
+    };
+    fab.onmouseout = () => {
+      fab.style.transform = 'translateY(0) scale(1)';
+      fab.style.boxShadow = '0 4px 14px rgba(74,126,255,0.4)';
+    };
+    fab.onclick = (e) => {
+      e.stopPropagation();
+      window.__phase16List.open();
+    };
+
+    // 드래그로 위치 이동 가능 (선택 사항)
+    let isDragging = false, dragOffset = { x: 0, y: 0 }, hasDragged = false;
+    fab.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      hasDragged = false;
+      const rect = fab.getBoundingClientRect();
+      dragOffset.x = e.clientX - rect.left;
+      dragOffset.y = e.clientY - rect.top;
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      hasDragged = true;
+      const x = e.clientX - dragOffset.x;
+      const y = e.clientY - dragOffset.y;
+      fab.style.left = Math.max(0, Math.min(window.innerWidth - fab.offsetWidth, x)) + 'px';
+      fab.style.top = Math.max(0, Math.min(window.innerHeight - fab.offsetHeight, y)) + 'px';
+      fab.style.right = 'auto';
+      fab.style.bottom = 'auto';
+    });
+    document.addEventListener('mouseup', () => {
+      if (isDragging && hasDragged) {
+        // 드래그한 경우 클릭 무효화
+        const orig = fab.onclick;
+        fab.onclick = null;
+        setTimeout(() => { fab.onclick = orig; }, 50);
+        // 위치 저장
+        localStorage.setItem('p16_fab_pos', JSON.stringify({ left: fab.style.left, top: fab.style.top }));
+      }
+      isDragging = false;
+    });
+
+    // 저장된 위치 복원
+    try {
+      const saved = JSON.parse(localStorage.getItem('p16_fab_pos') || 'null');
+      if (saved?.left && saved?.top) {
+        fab.style.left = saved.left;
+        fab.style.top = saved.top;
+        fab.style.right = 'auto';
+        fab.style.bottom = 'auto';
+      }
+    } catch(e) {}
+
+    document.body.appendChild(fab);
+    console.log(`[Phase16-FAB v${VERSION}] ✅ 플로팅 버튼 추가 (우측 하단)`);
+  }
+
+  async function init() {
+    try {
+      await waitForPhase16();
+      createFAB();
+    } catch (e) {
+      console.warn('[Phase16-FAB] 초기화 실패:', e.message);
+    }
+  }
+
+  window.__phase16FAB = {
+    version: VERSION,
+    show: () => {
+      const el = document.getElementById('phase16-fab');
+      if (el) el.style.display = 'flex';
+    },
+    hide: () => {
+      const el = document.getElementById('phase16-fab');
+      if (el) el.style.display = 'none';
+    },
+    resetPosition: () => {
+      localStorage.removeItem('p16_fab_pos');
+      const el = document.getElementById('phase16-fab');
+      if (el) {
+        el.style.left = 'auto';
+        el.style.top = 'auto';
+        el.style.right = '24px';
+        el.style.bottom = '24px';
+      }
+    }
+  };
+
+  setTimeout(init, 4500);  // 다른 phase16 파일 이후
+})();
