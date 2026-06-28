@@ -2,7 +2,7 @@
 // 채널 관리: 등록/수정/삭제 + 영상 입력 자동완성 + 채널별 통계
 (function() {
   'use strict';
-  const VERSION = '0.1.3';
+  const VERSION = '0.1.4';
   const INSIGHT_DB = 'StockJournalInsightsDB';
   const CHANNEL_STORE = 'youtube_channels';
   const VIDEO_STORE = 'video_insights';
@@ -364,61 +364,69 @@
     input.addEventListener('blur', () => setTimeout(closeDropdown, 250));
     console.log('[자동완성] 부착 완료:', input.id || input.placeholder);
   }
-
-  function watchVideoInputModal() {
-    // 영상 입력 모달이 열릴 때마다 채널명 input에 자동완성 부착
-    const observer = new MutationObserver(() => {
-      // 다양한 가능성 - "채널" 텍스트 근처 input
-      document.querySelectorAll('input').forEach(input => {
-        if (input.dataset.p16ChAttached) return;
-        const placeholder = (input.placeholder || '').toLowerCase();
-        const name = (input.name || '').toLowerCase();
-        const id = (input.id || '').toLowerCase();
-        const label = input.closest('label')?.textContent || '';
-        const prevLabel = input.previousElementSibling?.textContent || '';
-        const combined = (placeholder + ' ' + name + ' ' + id + ' ' + label + ' ' + prevLabel).toLowerCase();
-        if (combined.includes('채널') || combined.includes('channel')) {
-          attachAutocomplete(input);
-        }
-      });
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
+  
+    function watchVideoInputModal() {
+    // setInterval로 1초마다 채널 input 탐색 (MutationObserver는 성능 부담 큼)
+    setInterval(() => {
+      // p16-channel ID 우선
+      const input = document.getElementById('p16-channel');
+      if (input && !input.dataset.p16ChAttached && input.offsetParent !== null) {
+        attachAutocomplete(input);
+      }
+    }, 1000);
   }
 
   // ============ 메뉴 통합 (메뉴 모달에 "채널 관리" 버튼 추가) ============
-        function injectMenuButton() {
+          function injectMenuButton() {
     // 전역 함수 등록 - 메뉴 시스템의 data-fn 처리 방식 활용
     window.p16OpenChannelManager = function() {
       openChannelManager();
     };
 
-    const tryInject = () => {
-      // 정보 노트 버튼 찾기 (data-fn 또는 텍스트로)
-      const refBtn = document.querySelector('button[data-fn="p16InfoNote"]') ||
-        Array.from(document.querySelectorAll('button')).find(b => {
-          if (b.offsetParent === null) return false;
-          return /📝\s*정보\s*노트/.test(b.textContent.trim());
-        });
-      if (!refBtn) return;
-      // 이미 추가된 경우 스킵
-      if (refBtn.parentNode.querySelector('.p16-channel-menu-btn')) return;
+    let injected = false;     // 한 번만 삽입
+    let attempts = 0;         // 최대 시도 횟수 제한
 
-      // 정보 노트 버튼과 동일한 구조로 새 버튼 생성
+    const tryInject = () => {
+      if (injected) return true;
+      if (attempts++ > 100) return true; // 100회 시도 후 포기 (보호 장치)
+
+      const refBtn = document.querySelector('button[data-fn="p16InfoNote"]');
+      if (!refBtn) return false;
+      if (refBtn.parentNode.querySelector('.p16-channel-menu-btn')) {
+        injected = true;
+        return true;
+      }
+
       const newBtn = document.createElement('button');
-      newBtn.className = refBtn.className; // "menu-item"
+      newBtn.className = refBtn.className;
       newBtn.style.cssText = refBtn.style.cssText;
       newBtn.id = 'p16-menu-channels';
-      newBtn.setAttribute('data-fn', 'p16OpenChannelManager'); // 메뉴 시스템이 이걸 읽음
+      newBtn.classList.add('p16-channel-menu-btn');
+      newBtn.setAttribute('data-fn', 'p16OpenChannelManager');
       newBtn.innerHTML = '<span style="font-size:18px;">📺</span><span>채널 관리</span>';
-      // onclick은 설정하지 않음 - 메뉴 시스템의 위임 이벤트가 data-fn으로 처리
-
       refBtn.parentNode.insertBefore(newBtn, refBtn.nextSibling);
-      console.log('[phase16-channels] 메뉴 버튼 추가됨 (data-fn 방식)');
+
+      injected = true;
+      console.log('[phase16-channels] 메뉴 버튼 추가됨');
+      return true;
     };
-    const observer = new MutationObserver(tryInject);
-    observer.observe(document.body, { childList: true, subtree: true });
-    setInterval(tryInject, 2000);
-    setTimeout(tryInject, 500);
+
+    // MutationObserver 사용 안 함 (무한 루프 위험)
+    // setInterval로 5초마다 1회만 확인 (메뉴 열릴 때마다 정보 노트 버튼이 새로 생기는 경우 대비)
+    const intervalId = setInterval(() => {
+      // 정보 노트 버튼이 다시 생기면 채널 관리 버튼도 다시 추가
+      const refBtn = document.querySelector('button[data-fn="p16InfoNote"]');
+      if (refBtn && !refBtn.parentNode.querySelector('.p16-channel-menu-btn')) {
+        injected = false;
+        tryInject();
+      }
+      // 한 시간 후 자동 정지 (안전장치)
+      if (attempts > 1000) clearInterval(intervalId);
+    }, 5000);
+
+    // 초기 1회 시도
+    setTimeout(tryInject, 1000);
+    setTimeout(tryInject, 3000);
   }
 
   // ============ 초기화 ============
