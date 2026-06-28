@@ -1,7 +1,6 @@
 // phase16-stats.js - 통계 대시보드 v0.1.0
 (function() {
-  const VERSION = '0.1.0';
-
+  const VERSION = '0.1.1';
   const PERIODS = [
     { key: '1m', label: '1개월', days: 30 },
     { key: '3m', label: '3개월', days: 90 },
@@ -530,7 +529,53 @@
       console.error('[Phase16-stats] 초기화 실패:', e);
     }
   }
+// ===== 메뉴 버튼 추가 (v0.1.1) =====
+window.p16OpenStatsDashboard = function() {
+  // 열려있는 메뉴 모달 닫기
+  document.querySelectorAll('[id*="menu-modal"],[id*="menu-panel"]').forEach(m => {
+    if (m.style.display !== 'none') m.style.display = 'none';
+  });
+  // 통계 모달 열기
+  if (window.__phase16Stats?.openModal) {
+    window.__phase16Stats.openModal();
+  } else {
+    console.warn('[phase16-stats] openModal 함수를 찾을 수 없음');
+  }
+};
 
+let p16StatsBtnInjected = false;
+let p16StatsBtnTries = 0;
+
+function injectStatsMenuButton() {
+  if (p16StatsBtnInjected || p16StatsBtnTries++ > 100) return;
+  
+  // "정보 노트" 메뉴 버튼을 기준으로 그 옆에 추가
+  const infoBtn = document.getElementById('p16-menu-info-note');
+  if (!infoBtn) return;
+  
+  // 이미 추가됐는지 체크
+  if (document.querySelector('.p16-stats-menu-btn')) {
+    p16StatsBtnInjected = true;
+    return;
+  }
+  
+  const btn = document.createElement('button');
+  btn.className = (infoBtn.className || '') + ' p16-stats-menu-btn';
+  btn.type = 'button';
+  btn.id = 'p16-menu-stats';
+  btn.style.cssText = infoBtn.style.cssText;
+  btn.innerHTML = '<span style="font-size:18px;">📊</span><span>인사이트 통계</span>';
+  btn.onclick = () => window.p16OpenStatsDashboard();
+  
+  infoBtn.parentElement.appendChild(btn);
+  p16StatsBtnInjected = true;
+  console.log('[phase16-stats v0.1.1] ✅ 메뉴 버튼 추가됨');
+}
+
+// 자동 감지 (메뉴가 동적으로 생성되므로 주기적 확인)
+setInterval(injectStatsMenuButton, 2000);
+[500, 1500, 3000, 5000].forEach(t => setTimeout(injectStatsMenuButton, t));
+  
   window.__phase16Stats = {
     version: VERSION,
     openModal: openStatsModal,
