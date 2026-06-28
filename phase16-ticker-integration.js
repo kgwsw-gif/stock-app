@@ -2,8 +2,7 @@
 // 종목별 정보 노트 통합 - TOP 종목 클릭 → 종목 전용 모달
 (function() {
   'use strict';
-  const VERSION = '0.1.1';
-
+  const VERSION =  '0.2.0'
   // ===== 종목 데이터 조회 =====
   async function getTickerData(code) {
     const allVideos = await window.__phase16.getAllVideos();
@@ -18,6 +17,84 @@
     
     return { videos, reports, code };
   }
+
+  // ===== 채널/분석가 클릭 이벤트 부착 =====
+function attachChannelAnalystClicks() {
+  const statsModal = document.getElementById('p16-stats-modal');
+  if (!statsModal) return;
+  
+  // 채널별 적중률 섹션
+  const channelSection = Array.from(statsModal.querySelectorAll('h3')).find(h =>
+    h.textContent?.includes('채널별 적중률')
+  )?.parentElement;
+  
+  if (channelSection && channelSection.dataset.p16ChannelDelegationAttached !== '1') {
+    channelSection.dataset.p16ChannelDelegationAttached = '1';
+    channelSection.addEventListener('click', e => {
+      let t = e.target;
+      while (t && t !== channelSection) {
+        const txt = (t.textContent || '').trim();
+        // 채널명 패턴: "815머니톡" 으로 시작하고 "n/m (xx%)" 형식 포함
+        const m = txt.match(/^([^\d\n]+?)\s*\d+\/\d+\s*\(\d+%\)/);
+        if (m && txt.length < 100 && !/적중률|TOP/.test(txt)) {
+          e.preventDefault(); e.stopPropagation();
+          openChannelModal(m[1].trim());
+          return;
+        }
+        t = t.parentElement;
+      }
+    }, true);
+  }
+  
+  // 채널 행에 cursor:pointer
+  channelSection?.querySelectorAll('div').forEach(d => {
+    if (d.dataset.p16ChannelCursor === '1') return;
+    const txt = (d.textContent || '').trim();
+    if (/^[^\d\n]+?\s*\d+\/\d+\s*\(\d+%\)/.test(txt) && txt.length < 100 && !/적중률|TOP/.test(txt)) {
+      d.style.cursor = 'pointer';
+      d.style.transition = '0.15s';
+      d.dataset.p16ChannelCursor = '1';
+      d.addEventListener('mouseenter', () => d.style.background = '#f3f4f6');
+      d.addEventListener('mouseleave', () => d.style.background = '');
+    }
+  });
+  
+  // 애널리스트별 적중률 섹션
+  const analystSection = Array.from(statsModal.querySelectorAll('h3')).find(h =>
+    h.textContent?.includes('애널리스트별 적중률')
+  )?.parentElement;
+  
+  if (analystSection && analystSection.dataset.p16AnalystDelegationAttached !== '1') {
+    analystSection.dataset.p16AnalystDelegationAttached = '1';
+    analystSection.addEventListener('click', e => {
+      let t = e.target;
+      while (t && t !== analystSection) {
+        const txt = (t.textContent || '').trim();
+        // 분석가 패턴: "김선우 | 메리츠증권" 형식
+        const m = txt.match(/^([^|]+?)\s*\|\s*([^\d\n]+?)\s*\d+\/\d+/);
+        if (m && txt.length < 100) {
+          e.preventDefault(); e.stopPropagation();
+          openAnalystModal(m[1].trim(), m[2].trim());
+          return;
+        }
+        t = t.parentElement;
+      }
+    }, true);
+  }
+  
+  // 분석가 행에 cursor:pointer
+  analystSection?.querySelectorAll('div').forEach(d => {
+    if (d.dataset.p16AnalystCursor === '1') return;
+    const txt = (d.textContent || '').trim();
+    if (/^[^|]+?\s*\|\s*[^\d\n]+?\s*\d+\/\d+/.test(txt) && txt.length < 100) {
+      d.style.cursor = 'pointer';
+      d.style.transition = '0.15s';
+      d.dataset.p16AnalystCursor = '1';
+      d.addEventListener('mouseenter', () => d.style.background = '#f3f4f6');
+      d.addEventListener('mouseleave', () => d.style.background = '');
+    }
+  });
+}
 
   // ===== 종목 모달 열기 =====
   async function openTickerModal(code, name) {
@@ -166,16 +243,21 @@
 
   // ===== 자동 감지 =====
   setInterval(() => {
-    if (document.getElementById('p16-stats-modal')) {
-      attachTopTickerClicks();
-    }
-  }, 1500);
+  if (document.getElementById('p16-stats-modal')) {
+    attachTopTickerClicks();
+    attachChannelAnalystClicks();  // C-2 추가
+  }
+}, 1500);
 
   window.__phase16Ticker = {
-    version: VERSION,
-    openTicker: openTickerModal,
-    getTickerData
-  };
+  version: VERSION,
+  openTicker: openTickerModal,
+  openChannel: openChannelModal,    // C-2 추가
+  openAnalyst: openAnalystModal,    // C-2 추가
+  getTickerData,
+  getChannelData,
+  getAnalystData
+};
   
   console.log(`[phase16-ticker-integration ${VERSION}] ✅ 로드됨`);
 })();
