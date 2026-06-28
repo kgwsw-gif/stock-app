@@ -1,6 +1,6 @@
 // phase16-stats.js - 통계 대시보드 v0.1.0
 (function() {
-  const VERSION = '0.1.1';
+  const VERSION = '0.1.2'
   const PERIODS = [
     { key: '1m', label: '1개월', days: 30 },
     { key: '3m', label: '3개월', days: 90 },
@@ -564,10 +564,14 @@ function injectStatsMenuButton() {
   btn.type = 'button';
   btn.id = 'p16-menu-stats';
   btn.style.cssText = infoBtn.style.cssText;
-  btn.innerHTML = '<span style="font-size:18px;">📊</span><span>인사이트 통계</span>';
-  btn.onclick = () => window.p16OpenStatsDashboard();
-  
-  infoBtn.parentElement.appendChild(btn);
+      btn.innerHTML = '<span style="font-size:18px;">📊</span><span>인사이트 통계</span>';
+    btn.dataset.fn = 'p16OpenStatsDashboard';
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      window.p16OpenStatsDashboard();
+    }, true);  // capture phase로 메뉴 시스템보다 먼저 실행
+    infoBtn.parentElement.appendChild(btn);
   p16StatsBtnInjected = true;
   console.log('[phase16-stats v0.1.1] ✅ 메뉴 버튼 추가됨');
 }
