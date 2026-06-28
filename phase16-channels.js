@@ -2,7 +2,7 @@
 // 채널 관리: 등록/수정/삭제 + 영상 입력 자동완성 + 채널별 통계
 (function() {
   'use strict';
-  const VERSION = '0.1.1';
+  const VERSION = '0.1.2';
   const INSIGHT_DB = 'StockJournalInsightsDB';
   const CHANNEL_STORE = 'youtube_channels';
   const VIDEO_STORE = 'video_insights';
@@ -84,31 +84,31 @@
   }
 
   // ============ 채널별 통계 계산 ============
-  async function getChannelStats() {
+    async function getChannelStats() {
     const videos = await getAllVideos();
     const stats = {};
+    // 기본 통계 (영상 개수 + 최근 등록일)
     videos.forEach(v => {
       const ch = v.channelName || v.channel || '(미지정)';
       if (!stats[ch]) stats[ch] = { count: 0, lastDate: null, hits: 0, total: 0 };
       stats[ch].count++;
       const d = v.createdAt || v.date;
       if (d && (!stats[ch].lastDate || d > stats[ch].lastDate)) stats[ch].lastDate = d;
-      // outcomes 적중률
-      const outcomes = v.outcomes;
-      if (outcomes && typeof outcomes === 'object' && !Array.isArray(outcomes)) {
-        ['1m', '3m', '6m'].forEach(p => {
-          const o = outcomes[p];
-          if (o && Array.isArray(o.tickers)) {
-            o.tickers.forEach(t => {
-              if (t.toneHit === '적중' || t.toneHit === '미적중') {
-                stats[ch].total++;
-                if (t.toneHit === '적중') stats[ch].hits++;
-              }
-            });
+    });
+    // 적중률은 phase16-outcomes의 calculateTrustScores 재사용
+    if (window.__phase16Outcomes?.calculateTrustScores) {
+      try {
+        const trust = await window.__phase16Outcomes.calculateTrustScores();
+        Object.entries(trust.channelScores || {}).forEach(([ch, score]) => {
+          if (stats[ch]) {
+            stats[ch].hits = score.hits || 0;
+            stats[ch].total = score.total || 0;
           }
         });
+      } catch (e) {
+        console.warn('[phase16-channels] 적중률 계산 실패', e);
       }
-    });
+    }
     return stats;
   }
 
@@ -379,33 +379,45 @@
   }
 
   // ============ 메뉴 통합 (메뉴 모달에 "채널 관리" 버튼 추가) ============
-  function injectMenuButton() {
+    function injectMenuButton() {
     const tryInject = () => {
-      // phase16-menu가 생성하는 모달을 찾음
-      const menuModals = document.querySelectorAll('[id*="phase16-menu"], [id*="p16-menu"]');
-      menuModals.forEach(modal => {
-        if (modal.dataset.p16ChInjected) return;
-        // 모달이 보이는 경우만
-        if (modal.offsetParent === null) return;
-        // 기존 버튼 중 하나를 찾아 복제해 채널 관리 버튼 생성
-        const buttons = modal.querySelectorAll('button');
-        const refBtn = Array.from(buttons).find(b => 
-          /정보 노트|📝|영상 목록/.test(b.textContent)
-        );
-        if (!refBtn) return;
-        modal.dataset.p16ChInjected = '1';
-        const newBtn = refBtn.cloneNode(true);
-        newBtn.textContent = '📺 채널 관리';
-        newBtn.onclick = () => {
-          modal.remove();
-          openChannelManager();
-        };
-        refBtn.parentNode.insertBefore(newBtn, refBtn.nextSibling);
+      // "📝정보 노트" 버튼을 찾아서 그 옆에 "📺 채널 관리" 버튼 추가
+      const allButtons = document.querySelectorAll('button');
+      const refBtn = Array.from(allButtons).find(b => {
+        if (b.offsetParent === null) return false;
+        const txt = b.textContent.trim();
+        // "📝정보 노트" 또는 "📝 정보 노트" 모두 매칭
+        return /📝\s*정보\s*노트/.test(txt);
       });
+      if (!refBtn) return;
+      // 이미 추가된 경우 스킵
+      if (refBtn.parentNode.querySelector('.p16-channel-menu-btn')) return;
+      // 정보 노트 버튼 복제 → 채널 관리 버튼 생성
+      const newBtn = refBtn.cloneNode(true);
+      newBtn.classList.add('p16-channel-menu-btn');
+      newBtn.textContent = '📺 채널 관리';
+      // 기존 이벤트 리스너 제거를 위해 onclick 직접 설정
+      newBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // 메뉴 닫기 시도 (메뉴가 토글 형식인 경우)
+        const menu = refBtn.closest('[id*="menu"], [class*="menu"]');
+        if (menu && menu.style) {
+          menu.style.display = 'none';
+        }
+        openChannelManager();
+      };
+      // 모든 이벤트 리스너 제거 (cloneNode는 이벤트를 복사하지 않지만 만약을 위해)
+      const cleanBtn = newBtn.cloneNode(true);
+      cleanBtn.onclick = newBtn.onclick;
+      refBtn.parentNode.insertBefore(cleanBtn, refBtn.nextSibling);
+      console.log('[phase16-channels] 메뉴 버튼 추가됨');
     };
     const observer = new MutationObserver(tryInject);
     observer.observe(document.body, { childList: true, subtree: true });
     setInterval(tryInject, 2000);
+    // 즉시 한 번 시도
+    setTimeout(tryInject, 500);
   }
 
   // ============ 초기화 ============
