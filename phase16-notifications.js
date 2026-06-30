@@ -2,7 +2,7 @@
 // 평가일 알림: 영상/리포트의 1m/3m/6m 평가 대기 항목 자동 감지 + 메뉴 배지 + 통계 배너
 (function() {
   'use strict';
-  const VERSION = '0.1.3';
+  const VERSION =  '0.1.5'
   const PERIODS = [
     { key: '1m', days: 30, label: '1개월' },
     { key: '3m', days: 90, label: '3개월' },
@@ -275,9 +275,12 @@
     });
   }
 
-  // ============ 메뉴 배지 (📋 메뉴 버튼에 빨간 점) ============
+    // ============ 메뉴 배지 (📋 메뉴 버튼에 빨간 점) ============
   async function updateMenuBadge() {
-    const pending = await getPendingEvaluations();
+    try {
+      const getFn = window.__phase16Notif?.getPendingEvaluations;
+      if (!getFn) return;
+      const pending = await getFn();
     // 페이지의 메뉴 버튼 찾기 (텍스트 "메뉴" 포함)
     const menuBtns = Array.from(document.querySelectorAll('button')).filter(b => {
       if (b.offsetParent === null) return false;
