@@ -2,7 +2,7 @@
 // 평가일 알림: 영상/리포트의 1m/3m/6m 평가 대기 항목 자동 감지 + 메뉴 배지 + 통계 배너
 (function() {
   'use strict';
-  const VERSION =  '0.1.5'
+  const VERSION = '0.1.6'
   const PERIODS = [
     { key: '1m', days: 30, label: '1개월' },
     { key: '3m', days: 90, label: '3개월' },
@@ -301,10 +301,10 @@
         }
         badge = document.createElement('span');
         badge.className = 'p16-notif-badge';
-        badge.style.cssText = `
+                badge.style.cssText = `
           position: absolute;
-          top: -4px;
-          right: -4px;
+          top: 4px;
+          right: 4px;
           background: #dc2626;
           color: white;
           border-radius: 10px;
@@ -314,8 +314,8 @@
           min-width: 18px;
           text-align: center;
           line-height: 1.2;
-          z-index: 10;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+          z-index: 999;
+          box-shadow: 0 0 0 2px white, 0 1px 3px rgba(0,0,0,0.3);
           pointer-events: none;
         `;
         btn.appendChild(badge);
