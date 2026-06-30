@@ -4,7 +4,7 @@
  */
 (function(){
   'use strict';
-  const VERSION = '0.1.0';
+  const VERSION = '0.1.1';
   const DB_NAME = 'StockJournalInsightsDB';
   const MODAL_ID = 'p17-ai-draft-modal';
   const MENU_BTN_ID = 'p17-menu-ai-draft';
@@ -401,20 +401,31 @@ ${content}
 
   // ===== 메뉴 버튼 주입 =====
   let menuInjectFlag = false;
-  function injectMenuButton(){
+    function injectMenuButton(){
     if(document.getElementById(MENU_BTN_ID)) return true;
-    const menuGrid = document.querySelector('.p16-menu-grid') || document.querySelector('[class*="menu-grid"]');
+
+    // phase16 기존 버튼을 앵커로 사용해서 같은 그리드를 찾음
+    const anchor = document.getElementById('p16-menu-stats')
+                || document.getElementById('p16-menu-channels')
+                || document.getElementById('p16-menu-info-note');
+    if(!anchor) return false;
+
+    const menuGrid = anchor.parentElement;
     if(!menuGrid) return false;
 
-    // 다른 phase16 버튼의 스타일을 참고하여 동일한 모양으로 생성
-    const sampleBtn = menuGrid.querySelector('button');
-    if(!sampleBtn) return false;
+    // 이미 같은 그리드에 추가되었는지 재확인
+    if(menuGrid.querySelector('#' + MENU_BTN_ID)) return true;
 
-    const btn = document.createElement('button');
+    // 앵커 버튼의 스타일·클래스를 그대로 복제하여 UI 일관성 유지
+    const btn = anchor.cloneNode(false); // 자식 없이 복제
     btn.id = MENU_BTN_ID;
-    btn.className = sampleBtn.className;
-    btn.style.cssText = sampleBtn.style.cssText;
     btn.dataset.fn = 'p17OpenDraftModal';
+    btn.removeAttribute('onclick');
+    btn.innerHTML = anchor.innerHTML
+      ? anchor.innerHTML.replace(/[^<]*$/, '') // 기존 텍스트 제거 시도
+      : '';
+    // 안전하게 라벨 직접 설정
+    btn.textContent = '';
     btn.innerHTML = '🤖<br><span style="font-size:12px;">AI 초안</span>';
 
     btn.addEventListener('click', (e) => {
@@ -424,18 +435,17 @@ ${content}
     }, true);
 
     menuGrid.appendChild(btn);
-    menuInjectFlag = true;
-    console.log('[Phase17] 메뉴 버튼 주입 완료');
+    console.log('[Phase17] 메뉴 버튼 주입 완료 (앵커: #' + anchor.id + ')');
     return true;
   }
 
   // 메뉴 모달이 열릴 때마다 버튼 존재 확인
-  setInterval(() => {
-    const menuModal = document.querySelector('.p16-menu-modal, [id*="menu-modal"]');
-    if(menuModal && menuModal.offsetParent !== null){
+    setInterval(() => {
+    // 메뉴가 열려있을 때만 phase16 버튼이 DOM에 존재함
+    if(document.getElementById('p16-menu-stats')){
       injectMenuButton();
     }
-  }, 1500);
+  }, 1200);
 
   // ===== 전역 노출 =====
   window.p17OpenDraftModal = openDraftModal;
