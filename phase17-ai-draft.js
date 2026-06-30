@@ -4,7 +4,7 @@
  */
 (function(){
   'use strict';
-  const VERSION = '0.1.1';
+  const VERSION = '0.1.2';
   const DB_NAME = 'StockJournalInsightsDB';
   const MODAL_ID = 'p17-ai-draft-modal';
   const MENU_BTN_ID = 'p17-menu-ai-draft';
@@ -267,28 +267,92 @@ ${content}
     overlay.addEventListener('click', (e) => { if(e.target === overlay) overlay.remove(); });
 
     // 프롬프트 생성
-    overlay.querySelector('#p17-gen-prompt').addEventListener('click', async () => {
+        overlay.querySelector('#p17-gen-prompt').addEventListener('click', async () => {
       const content = overlay.querySelector('#p17-content').value.trim();
       if(!content || content.length < 50){
-        setStatus('⚠️ 자막/본문을 50자 이상 입력해주세요.', '#dc2626');
+        setStatus('⚠️ 자막/본문을 50자 이상 입력해주세요. (현재 ' + content.length + '자)', '#dc2626');
         return;
       }
       const meta = getMeta();
       const prompt = buildPrompt(currentType, meta, content);
+
+      // 3중 안전장치: clipboard API → execCommand → 수동 복사 UI
+      let copied = false;
+      let errorMsg = '';
+
+      // 시도 1: 모던 Clipboard API
       try {
-        await navigator.clipboard.writeText(prompt);
-        setStatus('✅ 프롬프트가 클립보드에 복사되었습니다! ChatGPT/Claude에 붙여넣으세요.', '#059669');
+        if(navigator.clipboard?.writeText && window.isSecureContext){
+          await navigator.clipboard.writeText(prompt);
+          copied = true;
+        }
       } catch(e){
-        // 폴백: textarea로 복사
-        const ta = document.createElement('textarea');
-        ta.value = prompt;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        ta.remove();
-        setStatus('✅ 프롬프트 복사 완료 (폴백 방식)', '#059669');
+        errorMsg = 'Clipboard API: ' + e.message;
+        console.warn('[Phase17] Clipboard API 실패:', e);
+      }
+
+      // 시도 2: 레거시 execCommand
+      if(!copied){
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = prompt;
+          ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          ta.setSelectionRange(0, prompt.length);
+          const ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+          if(ok) copied = true;
+          else errorMsg += ' | execCommand 반환 false';
+        } catch(e){
+          errorMsg += ' | execCommand: ' + e.message;
+          console.warn('[Phase17] execCommand 실패:', e);
+        }
+      }
+
+      // 시도 3 (폴백): 프롬프트 textarea를 모달에 직접 표시 + 사용자가 수동 복사
+      // 항상 표시함 → 사용자가 결과를 검증 가능
+      showManualCopyArea(prompt, copied, errorMsg);
+
+      if(copied){
+        setStatus('✅ 프롬프트 복사 완료! 아래 ChatGPT/Claude 버튼 클릭 후 붙여넣으세요.', '#059669');
+      } else {
+        setStatus('⚠️ 자동 복사 실패. 아래 박스의 텍스트를 직접 선택해서 복사하세요.', '#d97706');
       }
     });
+
+    // 수동 복사용 영역 표시 함수
+    function showManualCopyArea(prompt, autoCopied, errorMsg){
+      let area = overlay.querySelector('#p17-manual-copy-area');
+      if(!area){
+        area = document.createElement('div');
+        area.id = 'p17-manual-copy-area';
+        area.style.cssText = 'margin-top:10px;padding:10px;background:#fef3c7;border:1px dashed #f59e0b;border-radius:8px;';
+        const promptBox = overlay.querySelector('#p17-gen-prompt').parentElement;
+        promptBox.appendChild(area);
+      }
+      const statusLabel = autoCopied 
+        ? '<span style="color:#059669;font-weight:700;">✅ 자동 복사됨</span> · 확인용 (수동 복사도 가능)'
+        : '<span style="color:#dc2626;font-weight:700;">❌ 자동 복사 실패</span> · 아래 텍스트를 전체 선택(Ctrl+A) 후 복사(Ctrl+C)하세요';
+      area.innerHTML = `
+        <div style="font-size:11px;color:#92400e;margin-bottom:6px;">${statusLabel}</div>
+        <textarea readonly style="width:100%;height:120px;font-family:monospace;font-size:11px;padding:8px;border:1px solid #d1d5db;border-radius:6px;background:white;resize:vertical;">${prompt.replace(/</g,'&lt;')}</textarea>
+        <button id="p17-manual-copy-btn" style="margin-top:6px;width:100%;padding:8px;background:#f59e0b;color:white;border:none;border-radius:6px;font-weight:600;cursor:pointer;font-size:12px;">📋 위 텍스트 전체 선택</button>
+      `;
+      // 텍스트 자동 전체 선택
+      const ta = area.querySelector('textarea');
+      const selectBtn = area.querySelector('#p17-manual-copy-btn');
+      selectBtn.addEventListener('click', () => {
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+      });
+      // 자동 복사 실패 시 즉시 텍스트 선택
+      if(!autoCopied){
+        setTimeout(() => { ta.focus(); ta.select(); }, 100);
+      }
+    }
 
     // JSON 파싱
     overlay.querySelector('#p17-parse').addEventListener('click', () => {
