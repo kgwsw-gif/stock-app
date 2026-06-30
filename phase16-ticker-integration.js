@@ -2,7 +2,7 @@
 // 종목별 정보 노트 통합 - TOP 종목 클릭 → 종목 전용 모달
 (function() {
   'use strict';
-  const VERSION =  '0.2.0'
+  const VERSION =  '0.3.0'
   // ===== 종목 데이터 조회 =====
   async function getTickerData(code) {
     const allVideos = await window.__phase16.getAllVideos();
@@ -16,6 +16,53 @@
     const reports = allReports.filter(r => r.ticker === code);
     
     return { videos, reports, code };
+  }
+  
+    // ===== 채널/분석가 적중률 계산 =====
+  function calculateHitRate(items, type) {
+    // type: 'video' (channelName 기준) | 'report' (analyst+firm 기준)
+    let hit = 0, total = 0;
+    items.forEach(item => {
+      const outcomes = item.outcomes || {};
+      Object.keys(outcomes).forEach(period => {
+        const periodData = outcomes[period] || {};
+        Object.keys(periodData).forEach(code => {
+          const o = periodData[code];
+          if (o?.price != null && o?.basePrice != null) {
+            total++;
+            // 단순 적중 판정: 영상은 톤 일치, 리포트는 가격 상승
+            const change = ((o.price - o.basePrice) / o.basePrice) * 100;
+            if (type === 'video') {
+              const ticker = (item.tickers || []).find(t => t.code === code);
+              const tone = ticker?.tone || item.overallTone;
+              if (tone === 'bullish' && change > 0) hit++;
+              else if (tone === 'bearish' && change < 0) hit++;
+              else if (tone === 'hold' && Math.abs(change) < 5) hit++;
+            } else {
+              // 리포트: buy + 상승 또는 sell + 하락이면 hit
+              if (item.rating === 'buy' && change > 0) hit++;
+              else if (item.rating === 'sell' && change < 0) hit++;
+              else if (item.rating === 'hold' && Math.abs(change) < 5) hit++;
+            }
+          }
+        });
+      });
+    });
+    return { hit, total, rate: total > 0 ? Math.round((hit / total) * 100) : null };
+  }
+
+  // ===== 채널 적중률 캐시 =====
+  async function getChannelHitRate(channelName) {
+    const allVideos = await window.__phase16.getAllVideos();
+    const channelVideos = allVideos.filter(v => v.channelName === channelName);
+    return calculateHitRate(channelVideos, 'video');
+  }
+
+  // ===== 분석가 적중률 캐시 =====
+  async function getAnalystHitRate(analyst, firm) {
+    const allReports = await window.__phase16.getAllReports();
+    const analystReports = allReports.filter(r => r.analyst === analyst && r.firm === firm);
+    return calculateHitRate(analystReports, 'report');
   }
   
   // ===== 채널 데이터 조회 =====
@@ -182,8 +229,23 @@ function attachChannelAnalystClicks() {
 }
 
   // ===== 종목 모달 열기 =====
-  async function openTickerModal(code, name) {
+    async function openTickerModal(code, name) {
     const data = await getTickerData(code);
+    
+    // 신뢰도 계산: 각 영상의 채널, 각 리포트의 분석가
+    const channelStats = {};
+    const analystStats = {};
+    for (const v of data.videos) {
+      if (v.channelName && !channelStats[v.channelName]) {
+        channelStats[v.channelName] = await getChannelHitRate(v.channelName);
+      }
+    }
+    for (const r of data.reports) {
+      const key = `${r.analyst}|${r.firm}`;
+      if (!analystStats[key]) {
+        analystStats[key] = await getAnalystHitRate(r.analyst, r.firm);
+      }
+    }
     
     // 기존 모달 제거
     document.getElementById('p16-ticker-modal')?.remove();
@@ -214,14 +276,14 @@ function attachChannelAnalystClicks() {
         ${data.videos.length > 0 ? `
         <h3 style="font-size:14px;font-weight:bold;color:#374151;margin:16px 0 8px 0;">📺 영상 (${data.videos.length})</h3>
         <div style="display:flex;flex-direction:column;gap:8px;">
-          ${data.videos.map(v => renderVideoCard(v, code)).join('')}
+          ${data.vide          ${data.videos.map(v => renderVideoCard(v, code, channelStats[v.channelName])).join('')}os.map(v => renderVideoCard(v, code)).join('')}
         </div>
         ` : ''}
         
         ${data.reports.length > 0 ? `
         <h3 style="font-size:14px;font-weight:bold;color:#374151;margin:16px 0 8px 0;">📄 리포트 (${data.reports.length})</h3>
         <div style="display:flex;flex-direction:column;gap:8px;">
-          ${data.reports.map(r => renderReportCard(r)).join('')}
+          ${data.report          ${data.reports.map(r => renderReportCard(r, analystStats[`${r.analyst}|${r.firm}`])).join('')}s.map(r => renderReportCard(r)).join('')}
         </div>
         ` : ''}
         
@@ -240,15 +302,18 @@ function attachChannelAnalystClicks() {
     modal.onclick = e => { if (e.target === modal) modal.remove(); };
   }
 
-  function renderVideoCard(v, code) {
+    function renderVideoCard(v, code, channelHit) {
     const ticker = v.tickers?.find(t => t.code === code);
     const tone = ticker?.tone || v.overallTone || '-';
-    const toneColor = {'강세':'#16a34a','약세':'#dc2626','중립':'#6b7280'}[tone] || '#6b7280';
+    const toneColor = {'강세':'#16a34a','약세':'#dc2626','중립':'#6b7280','bullish':'#16a34a','bearish':'#dc2626','hold':'#6b7280'}[tone] || '#6b7280';
+    const hitBadge = channelHit?.rate != null 
+      ? `<span style="display:inline-block;padding:1px 6px;background:${channelHit.rate >= 70 ? '#10b981' : channelHit.rate >= 50 ? '#f59e0b' : '#ef4444'};color:white;font-size:10px;border-radius:8px;margin-left:4px;font-weight:bold;">적중률 ${channelHit.rate}% (${channelHit.hit}/${channelHit.total})</span>` 
+      : '';
     
     return `
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;">
         <div style="font-size:13px;font-weight:600;color:#1f2937;margin-bottom:4px;">${escape(v.videoTitle || '(제목 없음)')}</div>
-        <div style="font-size:11px;color:#6b7280;margin-bottom:4px;">📺 ${escape(v.channelName || '-')}</div>
+        <div style="font-size:11px;color:#6b7280;margin-bottom:4px;">📺 ${escape(v.channelName || '-')}${hitBadge}</div>
         <div style="display:flex;gap:6px;align-items:center;">
           <span style="background:${toneColor};color:white;font-size:10px;padding:2px 8px;border-radius:10px;">${tone}</span>
           ${ticker?.toneHit ? `<span style="font-size:11px;color:${ticker.toneHit==='적중'?'#16a34a':'#dc2626'};">${ticker.toneHit}</span>` : ''}
@@ -257,12 +322,15 @@ function attachChannelAnalystClicks() {
     `;
   }
 
-  function renderReportCard(r) {
-    const ratingColor = {'매수':'#16a34a','매도':'#dc2626','중립':'#6b7280','보유':'#f59e0b'}[r.rating] || '#6b7280';
+    function renderReportCard(r, analystHit) {
+    const ratingColor = {'매수':'#16a34a','매도':'#dc2626','중립':'#6b7280','보유':'#f59e0b','buy':'#16a34a','sell':'#dc2626','hold':'#6b7280'}[r.rating] || '#6b7280';
+    const hitBadge = analystHit?.rate != null 
+      ? `<span style="display:inline-block;padding:1px 6px;background:${analystHit.rate >= 70 ? '#10b981' : analystHit.rate >= 50 ? '#f59e0b' : '#ef4444'};color:white;font-size:10px;border-radius:8px;margin-left:4px;font-weight:bold;">적중률 ${analystHit.rate}% (${analystHit.hit}/${analystHit.total})</span>` 
+      : '';
     
     return `
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;">
-        <div style="font-size:13px;font-weight:600;color:#1f2937;margin-bottom:4px;">${escape(r.analyst || '-')} | ${escape(r.firm || '-')}</div>
+        <div style="font-size:13px;font-weight:600;color:#1f2937;margin-bottom:4px;">${escape(r.analyst || '-')} | ${escape(r.firm || '-')}${hitBadge}</div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
           <span style="background:${ratingColor};color:white;font-size:10px;padding:2px 8px;border-radius:10px;">${r.rating || '-'}</span>
           ${r.targetPrice ? `<span style="font-size:11px;color:#6b7280;">목표가 ${r.targetPrice.toLocaleString()}원</span>` : ''}
