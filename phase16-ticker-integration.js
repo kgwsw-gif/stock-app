@@ -1,26 +1,24 @@
-// phase16-ticker-integration.js v0.1.0
+// phase16-ticker-integration.js v0.3.0
 // 종목별 정보 노트 통합 - TOP 종목 클릭 → 종목 전용 모달
+// + 채널/분석가 클릭 모달 + 적중률 배지
 (function() {
   'use strict';
-  const VERSION =  '0.3.0'
+  const VERSION = '0.3.0';
+
   // ===== 종목 데이터 조회 =====
   async function getTickerData(code) {
     const allVideos = await window.__phase16.getAllVideos();
     const allReports = await window.__phase16.getAllReports();
-    
     const videos = allVideos.filter(v => {
       const tickers = v.tickers || [];
       return tickers.some(t => t.code === code);
     });
-    
     const reports = allReports.filter(r => r.ticker === code);
-    
     return { videos, reports, code };
   }
-  
-    // ===== 채널/분석가 적중률 계산 =====
+
+  // ===== 채널/분석가 적중률 계산 =====
   function calculateHitRate(items, type) {
-    // type: 'video' (channelName 기준) | 'report' (analyst+firm 기준)
     let hit = 0, total = 0;
     items.forEach(item => {
       const outcomes = item.outcomes || {};
@@ -30,7 +28,6 @@
           const o = periodData[code];
           if (o?.price != null && o?.basePrice != null) {
             total++;
-            // 단순 적중 판정: 영상은 톤 일치, 리포트는 가격 상승
             const change = ((o.price - o.basePrice) / o.basePrice) * 100;
             if (type === 'video') {
               const ticker = (item.tickers || []).find(t => t.code === code);
@@ -39,7 +36,6 @@
               else if (tone === 'bearish' && change < 0) hit++;
               else if (tone === 'hold' && Math.abs(change) < 5) hit++;
             } else {
-              // 리포트: buy + 상승 또는 sell + 하락이면 hit
               if (item.rating === 'buy' && change > 0) hit++;
               else if (item.rating === 'sell' && change < 0) hit++;
               else if (item.rating === 'hold' && Math.abs(change) < 5) hit++;
@@ -51,20 +47,18 @@
     return { hit, total, rate: total > 0 ? Math.round((hit / total) * 100) : null };
   }
 
-  // ===== 채널 적중률 캐시 =====
   async function getChannelHitRate(channelName) {
     const allVideos = await window.__phase16.getAllVideos();
     const channelVideos = allVideos.filter(v => v.channelName === channelName);
     return calculateHitRate(channelVideos, 'video');
   }
 
-  // ===== 분석가 적중률 캐시 =====
   async function getAnalystHitRate(analyst, firm) {
     const allReports = await window.__phase16.getAllReports();
     const analystReports = allReports.filter(r => r.analyst === analyst && r.firm === firm);
     return calculateHitRate(analystReports, 'report');
   }
-  
+
   // ===== 채널 데이터 조회 =====
   async function getChannelData(channelName) {
     const allVideos = await window.__phase16.getAllVideos();
@@ -83,11 +77,11 @@
   async function openChannelModal(channelName) {
     const data = await getChannelData(channelName);
     document.getElementById('p16-entity-modal')?.remove();
-    
+
     const modal = document.createElement('div');
     modal.id = 'p16-entity-modal';
     modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100010;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
-    
+
     const toneColors = {bullish:'#10b981',bearish:'#ef4444',hold:'#6b7280'};
     const videoCards = data.videos.map(v => {
       const tone = v.overallTone || 'hold';
@@ -98,7 +92,7 @@
         ${(v.tickers||[]).map(t=>`<span style="display:inline-block;padding:2px 8px;background:#e5e7eb;border-radius:10px;font-size:10px;margin-left:4px;color:#374151;">${escape(t.name)} (${t.code})</span>`).join('')}
       </div>`;
     }).join('') || '<div style="text-align:center;color:#9ca3af;padding:20px;">관련 영상 없음</div>';
-    
+
     modal.innerHTML = `
       <div style="background:white;border-radius:12px;padding:20px;max-width:600px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,0.2);">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -109,7 +103,7 @@
         <div>${videoCards}</div>
       </div>
     `;
-    
+
     document.body.appendChild(modal);
     document.getElementById('p16-entity-close').onclick = () => modal.remove();
     modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
@@ -119,11 +113,11 @@
   async function openAnalystModal(analystName, firm) {
     const data = await getAnalystData(analystName, firm);
     document.getElementById('p16-entity-modal')?.remove();
-    
+
     const modal = document.createElement('div');
     modal.id = 'p16-entity-modal';
     modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100010;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
-    
+
     const ratingColors = {buy:'#10b981',hold:'#6b7280',sell:'#ef4444'};
     const reportCards = data.reports.map(r => `
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-bottom:8px;">
@@ -133,7 +127,7 @@
         <span style="display:inline-block;padding:2px 8px;background:#e5e7eb;border-radius:10px;font-size:10px;margin-left:4px;color:#374151;">목표가 ${(r.targetPrice||0).toLocaleString()}원</span>
       </div>
     `).join('') || '<div style="text-align:center;color:#9ca3af;padding:20px;">관련 리포트 없음</div>';
-    
+
     modal.innerHTML = `
       <div style="background:white;border-radius:12px;padding:20px;max-width:600px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,0.2);">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -144,94 +138,88 @@
         <div>${reportCards}</div>
       </div>
     `;
-    
+
     document.body.appendChild(modal);
     document.getElementById('p16-entity-close').onclick = () => modal.remove();
     modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
   }
 
   // ===== 채널/분석가 클릭 이벤트 부착 =====
-function attachChannelAnalystClicks() {
-  const statsModal = document.getElementById('p16-stats-modal');
-  if (!statsModal) return;
-  
-  // 채널별 적중률 섹션
-  const channelSection = Array.from(statsModal.querySelectorAll('h3')).find(h =>
-    h.textContent?.includes('채널별 적중률')
-  )?.parentElement;
-  
-  if (channelSection && channelSection.dataset.p16ChannelDelegationAttached !== '1') {
-    channelSection.dataset.p16ChannelDelegationAttached = '1';
-    channelSection.addEventListener('click', e => {
-      let t = e.target;
-      while (t && t !== channelSection) {
-        const txt = (t.textContent || '').trim();
-        // 채널명 패턴: "815머니톡" 으로 시작하고 "n/m (xx%)" 형식 포함
-        const m = txt.match(/^([^\d\n]+?)\s*\d+\/\d+\s*\(\d+%\)/);
-        if (m && txt.length < 100 && !/적중률|TOP/.test(txt)) {
-          e.preventDefault(); e.stopPropagation();
-          openChannelModal(m[1].trim());
-          return;
+  function attachChannelAnalystClicks() {
+    const statsModal = document.getElementById('p16-stats-modal');
+    if (!statsModal) return;
+
+    const channelSection = Array.from(statsModal.querySelectorAll('h3')).find(h =>
+      h.textContent?.includes('채널별 적중률')
+    )?.parentElement;
+
+    if (channelSection && channelSection.dataset.p16ChannelDelegationAttached !== '1') {
+      channelSection.dataset.p16ChannelDelegationAttached = '1';
+      channelSection.addEventListener('click', e => {
+        let t = e.target;
+        while (t && t !== channelSection) {
+          const txt = (t.textContent || '').trim();
+          const m = txt.match(/^([^\d\n]+?)\s*\d+\/\d+\s*\(\d+%\)/);
+          if (m && txt.length < 100 && !/적중률|TOP/.test(txt)) {
+            e.preventDefault(); e.stopPropagation();
+            openChannelModal(m[1].trim());
+            return;
+          }
+          t = t.parentElement;
         }
-        t = t.parentElement;
-      }
-    }, true);
-  }
-  
-  // 채널 행에 cursor:pointer
-  channelSection?.querySelectorAll('div').forEach(d => {
-    if (d.dataset.p16ChannelCursor === '1') return;
-    const txt = (d.textContent || '').trim();
-    if (/^[^\d\n]+?\s*\d+\/\d+\s*\(\d+%\)/.test(txt) && txt.length < 100 && !/적중률|TOP/.test(txt)) {
-      d.style.cursor = 'pointer';
-      d.style.transition = '0.15s';
-      d.dataset.p16ChannelCursor = '1';
-      d.addEventListener('mouseenter', () => d.style.background = '#f3f4f6');
-      d.addEventListener('mouseleave', () => d.style.background = '');
+      }, true);
     }
-  });
-  
-  // 애널리스트별 적중률 섹션
-  const analystSection = Array.from(statsModal.querySelectorAll('h3')).find(h =>
-    h.textContent?.includes('애널리스트별 적중률')
-  )?.parentElement;
-  
-  if (analystSection && analystSection.dataset.p16AnalystDelegationAttached !== '1') {
-    analystSection.dataset.p16AnalystDelegationAttached = '1';
-    analystSection.addEventListener('click', e => {
-      let t = e.target;
-      while (t && t !== analystSection) {
-        const txt = (t.textContent || '').trim();
-        // 분석가 패턴: "김선우 | 메리츠증권" 형식
-        const m = txt.match(/^([^|]+?)\s*\|\s*([^\d\n]+?)\s*\d+\/\d+/);
-        if (m && txt.length < 100) {
-          e.preventDefault(); e.stopPropagation();
-          openAnalystModal(m[1].trim(), m[2].trim());
-          return;
+
+    channelSection?.querySelectorAll('div').forEach(d => {
+      if (d.dataset.p16ChannelCursor === '1') return;
+      const txt = (d.textContent || '').trim();
+      if (/^[^\d\n]+?\s*\d+\/\d+\s*\(\d+%\)/.test(txt) && txt.length < 100 && !/적중률|TOP/.test(txt)) {
+        d.style.cursor = 'pointer';
+        d.style.transition = '0.15s';
+        d.dataset.p16ChannelCursor = '1';
+        d.addEventListener('mouseenter', () => d.style.background = '#f3f4f6');
+        d.addEventListener('mouseleave', () => d.style.background = '');
+      }
+    });
+
+    const analystSection = Array.from(statsModal.querySelectorAll('h3')).find(h =>
+      h.textContent?.includes('애널리스트별 적중률')
+    )?.parentElement;
+
+    if (analystSection && analystSection.dataset.p16AnalystDelegationAttached !== '1') {
+      analystSection.dataset.p16AnalystDelegationAttached = '1';
+      analystSection.addEventListener('click', e => {
+        let t = e.target;
+        while (t && t !== analystSection) {
+          const txt = (t.textContent || '').trim();
+          const m = txt.match(/^([^|]+?)\s*\|\s*([^\d\n]+?)\s*\d+\/\d+/);
+          if (m && txt.length < 100) {
+            e.preventDefault(); e.stopPropagation();
+            openAnalystModal(m[1].trim(), m[2].trim());
+            return;
+          }
+          t = t.parentElement;
         }
-        t = t.parentElement;
-      }
-    }, true);
-  }
-  
-  // 분석가 행에 cursor:pointer
-  analystSection?.querySelectorAll('div').forEach(d => {
-    if (d.dataset.p16AnalystCursor === '1') return;
-    const txt = (d.textContent || '').trim();
-    if (/^[^|]+?\s*\|\s*[^\d\n]+?\s*\d+\/\d+/.test(txt) && txt.length < 100) {
-      d.style.cursor = 'pointer';
-      d.style.transition = '0.15s';
-      d.dataset.p16AnalystCursor = '1';
-      d.addEventListener('mouseenter', () => d.style.background = '#f3f4f6');
-      d.addEventListener('mouseleave', () => d.style.background = '');
+      }, true);
     }
-  });
-}
+
+    analystSection?.querySelectorAll('div').forEach(d => {
+      if (d.dataset.p16AnalystCursor === '1') return;
+      const txt = (d.textContent || '').trim();
+      if (/^[^|]+?\s*\|\s*[^\d\n]+?\s*\d+\/\d+/.test(txt) && txt.length < 100) {
+        d.style.cursor = 'pointer';
+        d.style.transition = '0.15s';
+        d.dataset.p16AnalystCursor = '1';
+        d.addEventListener('mouseenter', () => d.style.background = '#f3f4f6');
+        d.addEventListener('mouseleave', () => d.style.background = '');
+      }
+    });
+  }
 
   // ===== 종목 모달 열기 =====
-    async function openTickerModal(code, name) {
+  async function openTickerModal(code, name) {
     const data = await getTickerData(code);
-    
+
     // 신뢰도 계산: 각 영상의 채널, 각 리포트의 분석가
     const channelStats = {};
     const analystStats = {};
@@ -246,14 +234,13 @@ function attachChannelAnalystClicks() {
         analystStats[key] = await getAnalystHitRate(r.analyst, r.firm);
       }
     }
-    
-    // 기존 모달 제거
+
     document.getElementById('p16-ticker-modal')?.remove();
-    
+
     const modal = document.createElement('div');
     modal.id = 'p16-ticker-modal';
     modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100010;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
-    
+
     modal.innerHTML = `
       <div style="background:white;border-radius:12px;padding:20px;max-width:600px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,0.2);">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -261,7 +248,7 @@ function attachChannelAnalystClicks() {
           <button id="p16-ticker-close" style="background:none;border:none;font-size:24px;cursor:pointer;color:#6b7280;">×</button>
         </div>
         <div style="font-size:13px;color:#6b7280;margin-bottom:16px;">종목 코드: ${code}</div>
-        
+
         <div style="background:#f3f4f6;border-radius:8px;padding:12px;margin-bottom:16px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
           <div>
             <div style="font-size:11px;color:#6b7280;">📺 관련 영상</div>
@@ -272,21 +259,21 @@ function attachChannelAnalystClicks() {
             <div style="font-size:20px;font-weight:bold;color:#1f2937;">${data.reports.length}건</div>
           </div>
         </div>
-        
+
         ${data.videos.length > 0 ? `
         <h3 style="font-size:14px;font-weight:bold;color:#374151;margin:16px 0 8px 0;">📺 영상 (${data.videos.length})</h3>
         <div style="display:flex;flex-direction:column;gap:8px;">
-          ${data.vide          ${data.videos.map(v => renderVideoCard(v, code, channelStats[v.channelName])).join('')}os.map(v => renderVideoCard(v, code)).join('')}
+          ${data.videos.map(v => renderVideoCard(v, code, channelStats[v.channelName])).join('')}
         </div>
         ` : ''}
-        
+
         ${data.reports.length > 0 ? `
         <h3 style="font-size:14px;font-weight:bold;color:#374151;margin:16px 0 8px 0;">📄 리포트 (${data.reports.length})</h3>
         <div style="display:flex;flex-direction:column;gap:8px;">
-          ${data.report          ${data.reports.map(r => renderReportCard(r, analystStats[`${r.analyst}|${r.firm}`])).join('')}s.map(r => renderReportCard(r)).join('')}
+          ${data.reports.map(r => renderReportCard(r, analystStats[`${r.analyst}|${r.firm}`])).join('')}
         </div>
         ` : ''}
-        
+
         ${data.videos.length === 0 && data.reports.length === 0 ? `
         <div style="text-align:center;padding:30px;color:#9ca3af;font-size:14px;">
           이 종목에 대한 정보 노트가 없습니다.
@@ -294,22 +281,20 @@ function attachChannelAnalystClicks() {
         ` : ''}
       </div>
     `;
-    
+
     document.body.appendChild(modal);
-    
-    // 닫기 이벤트
     document.getElementById('p16-ticker-close').onclick = () => modal.remove();
     modal.onclick = e => { if (e.target === modal) modal.remove(); };
   }
 
-    function renderVideoCard(v, code, channelHit) {
+  function renderVideoCard(v, code, channelHit) {
     const ticker = v.tickers?.find(t => t.code === code);
     const tone = ticker?.tone || v.overallTone || '-';
     const toneColor = {'강세':'#16a34a','약세':'#dc2626','중립':'#6b7280','bullish':'#16a34a','bearish':'#dc2626','hold':'#6b7280'}[tone] || '#6b7280';
-    const hitBadge = channelHit?.rate != null 
-      ? `<span style="display:inline-block;padding:1px 6px;background:${channelHit.rate >= 70 ? '#10b981' : channelHit.rate >= 50 ? '#f59e0b' : '#ef4444'};color:white;font-size:10px;border-radius:8px;margin-left:4px;font-weight:bold;">적중률 ${channelHit.rate}% (${channelHit.hit}/${channelHit.total})</span>` 
+    const hitBadge = channelHit?.rate != null
+      ? `<span style="display:inline-block;padding:1px 6px;background:${channelHit.rate >= 70 ? '#10b981' : channelHit.rate >= 50 ? '#f59e0b' : '#ef4444'};color:white;font-size:10px;border-radius:8px;margin-left:4px;font-weight:bold;">적중률 ${channelHit.rate}% (${channelHit.hit}/${channelHit.total})</span>`
       : '';
-    
+
     return `
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;">
         <div style="font-size:13px;font-weight:600;color:#1f2937;margin-bottom:4px;">${escape(v.videoTitle || '(제목 없음)')}</div>
@@ -322,12 +307,12 @@ function attachChannelAnalystClicks() {
     `;
   }
 
-    function renderReportCard(r, analystHit) {
+  function renderReportCard(r, analystHit) {
     const ratingColor = {'매수':'#16a34a','매도':'#dc2626','중립':'#6b7280','보유':'#f59e0b','buy':'#16a34a','sell':'#dc2626','hold':'#6b7280'}[r.rating] || '#6b7280';
-    const hitBadge = analystHit?.rate != null 
-      ? `<span style="display:inline-block;padding:1px 6px;background:${analystHit.rate >= 70 ? '#10b981' : analystHit.rate >= 50 ? '#f59e0b' : '#ef4444'};color:white;font-size:10px;border-radius:8px;margin-left:4px;font-weight:bold;">적중률 ${analystHit.rate}% (${analystHit.hit}/${analystHit.total})</span>` 
+    const hitBadge = analystHit?.rate != null
+      ? `<span style="display:inline-block;padding:1px 6px;background:${analystHit.rate >= 70 ? '#10b981' : analystHit.rate >= 50 ? '#f59e0b' : '#ef4444'};color:white;font-size:10px;border-radius:8px;margin-left:4px;font-weight:bold;">적중률 ${analystHit.rate}% (${analystHit.hit}/${analystHit.total})</span>`
       : '';
-    
+
     return `
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;">
         <div style="font-size:13px;font-weight:600;color:#1f2937;margin-bottom:4px;">${escape(r.analyst || '-')} | ${escape(r.firm || '-')}${hitBadge}</div>
@@ -345,22 +330,19 @@ function attachChannelAnalystClicks() {
     }[c]));
   }
 
-    // ===== TOP 종목 클릭 이벤트 부착 (이벤트 위임 방식) =====
+  // ===== TOP 종목 클릭 이벤트 부착 (이벤트 위임 방식) =====
   function attachTopTickerClicks() {
     const statsModal = document.getElementById('p16-stats-modal');
     if (!statsModal) return;
-    
+
     const topSection = Array.from(statsModal.querySelectorAll('h3')).find(h =>
       h.textContent?.includes('가장 많이 언급된')
     )?.parentElement;
-    
+
     if (!topSection) return;
-    
-    // 이벤트 위임 부착 (한 번만)
+
     if (topSection.dataset.p16DelegationAttached !== '1') {
       topSection.dataset.p16DelegationAttached = '1';
-      
-      // capture 단계로 등록 → 다른 핸들러보다 먼저 실행
       topSection.addEventListener('click', (e) => {
         let target = e.target;
         while (target && target !== topSection) {
@@ -378,8 +360,7 @@ function attachChannelAnalystClicks() {
         }
       }, true);
     }
-    
-    // 시각적 힌트: 코드 행에 커서 스타일 적용
+
     const allDivs = Array.from(topSection.querySelectorAll('div'));
     allDivs.forEach(d => {
       if (d.dataset.p16CursorApplied === '1') return;
@@ -396,21 +377,23 @@ function attachChannelAnalystClicks() {
 
   // ===== 자동 감지 =====
   setInterval(() => {
-  if (document.getElementById('p16-stats-modal')) {
-    attachTopTickerClicks();
-    attachChannelAnalystClicks();  // C-2 추가
-  }
-}, 1500);
+    if (document.getElementById('p16-stats-modal')) {
+      attachTopTickerClicks();
+      attachChannelAnalystClicks();
+    }
+  }, 1500);
 
   window.__phase16Ticker = {
-  version: VERSION,
-  openTicker: openTickerModal,
-  openChannel: openChannelModal,    // C-2 추가
-  openAnalyst: openAnalystModal,    // C-2 추가
-  getTickerData,
-  getChannelData,
-  getAnalystData
-};
-  
+    version: VERSION,
+    openTicker: openTickerModal,
+    openChannel: openChannelModal,
+    openAnalyst: openAnalystModal,
+    getTickerData,
+    getChannelData,
+    getAnalystData,
+    getChannelHitRate,
+    getAnalystHitRate
+  };
+
   console.log(`[phase16-ticker-integration ${VERSION}] ✅ 로드됨`);
 })();
