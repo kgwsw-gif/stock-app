@@ -17,6 +17,91 @@
     
     return { videos, reports, code };
   }
+  
+  // ===== 채널 데이터 조회 =====
+  async function getChannelData(channelName) {
+    const allVideos = await window.__phase16.getAllVideos();
+    const videos = allVideos.filter(v => v.channelName === channelName);
+    return { videos, channelName };
+  }
+
+  // ===== 분석가 데이터 조회 =====
+  async function getAnalystData(analystName, firm) {
+    const allReports = await window.__phase16.getAllReports();
+    const reports = allReports.filter(r => r.analyst === analystName && r.firm === firm);
+    return { reports, analystName, firm };
+  }
+
+  // ===== 채널 모달 열기 =====
+  async function openChannelModal(channelName) {
+    const data = await getChannelData(channelName);
+    document.getElementById('p16-entity-modal')?.remove();
+    
+    const modal = document.createElement('div');
+    modal.id = 'p16-entity-modal';
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100010;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
+    
+    const toneColors = {bullish:'#10b981',bearish:'#ef4444',hold:'#6b7280'};
+    const videoCards = data.videos.map(v => {
+      const tone = v.overallTone || 'hold';
+      return `<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-bottom:8px;">
+        <div style="font-size:13px;font-weight:600;color:#1f2937;margin-bottom:4px;">${escape(v.videoTitle || '(제목 없음)')}</div>
+        <div style="font-size:11px;color:#6b7280;margin-bottom:6px;">📅 ${v.watchedAt || v.publishedAt || '-'}</div>
+        <span style="display:inline-block;padding:2px 8px;background:${toneColors[tone]||'#6b7280'};color:#fff;border-radius:10px;font-size:10px;">${tone}</span>
+        ${(v.tickers||[]).map(t=>`<span style="display:inline-block;padding:2px 8px;background:#e5e7eb;border-radius:10px;font-size:10px;margin-left:4px;color:#374151;">${escape(t.name)} (${t.code})</span>`).join('')}
+      </div>`;
+    }).join('') || '<div style="text-align:center;color:#9ca3af;padding:20px;">관련 영상 없음</div>';
+    
+    modal.innerHTML = `
+      <div style="background:white;border-radius:12px;padding:20px;max-width:600px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,0.2);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <h2 style="margin:0;font-size:18px;font-weight:bold;color:#1f2937;">📺 ${escape(channelName)}</h2>
+          <button id="p16-entity-close" style="background:none;border:none;font-size:24px;cursor:pointer;color:#6b7280;">×</button>
+        </div>
+        <div style="font-size:13px;color:#6b7280;margin-bottom:16px;">전체 영상 ${data.videos.length}건</div>
+        <div>${videoCards}</div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    document.getElementById('p16-entity-close').onclick = () => modal.remove();
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+  }
+
+  // ===== 분석가 모달 열기 =====
+  async function openAnalystModal(analystName, firm) {
+    const data = await getAnalystData(analystName, firm);
+    document.getElementById('p16-entity-modal')?.remove();
+    
+    const modal = document.createElement('div');
+    modal.id = 'p16-entity-modal';
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:100010;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
+    
+    const ratingColors = {buy:'#10b981',hold:'#6b7280',sell:'#ef4444'};
+    const reportCards = data.reports.map(r => `
+      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-bottom:8px;">
+        <div style="font-size:13px;font-weight:600;color:#1f2937;margin-bottom:4px;">${escape(r.tickerName)} (${r.ticker})</div>
+        <div style="font-size:11px;color:#6b7280;margin-bottom:6px;">📅 ${r.reportDate || '-'}</div>
+        <span style="display:inline-block;padding:2px 8px;background:${ratingColors[r.rating]||'#6b7280'};color:#fff;border-radius:10px;font-size:10px;">${r.rating}</span>
+        <span style="display:inline-block;padding:2px 8px;background:#e5e7eb;border-radius:10px;font-size:10px;margin-left:4px;color:#374151;">목표가 ${(r.targetPrice||0).toLocaleString()}원</span>
+      </div>
+    `).join('') || '<div style="text-align:center;color:#9ca3af;padding:20px;">관련 리포트 없음</div>';
+    
+    modal.innerHTML = `
+      <div style="background:white;border-radius:12px;padding:20px;max-width:600px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 30px rgba(0,0,0,0.2);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <h2 style="margin:0;font-size:18px;font-weight:bold;color:#1f2937;">💼 ${escape(analystName)}</h2>
+          <button id="p16-entity-close" style="background:none;border:none;font-size:24px;cursor:pointer;color:#6b7280;">×</button>
+        </div>
+        <div style="font-size:13px;color:#6b7280;margin-bottom:16px;">${escape(firm)} · 전체 리포트 ${data.reports.length}건</div>
+        <div>${reportCards}</div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    document.getElementById('p16-entity-close').onclick = () => modal.remove();
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+  }
 
   // ===== 채널/분석가 클릭 이벤트 부착 =====
 function attachChannelAnalystClicks() {
