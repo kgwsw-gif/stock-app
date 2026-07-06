@@ -10,8 +10,8 @@
  */
 (function(){
   'use strict';
-  const VERSION = '0.3.0';
-
+  const VERSION = '0.3.1';
+  
   const CORP_MAP = {
     '005930': {code: '00126380', name: '삼성전자'},
     '000660': {code: '00164779', name: 'SK하이닉스'},
@@ -154,7 +154,7 @@
     return data.list || [];
   }
 
-  function analyze(list){
+    function analyze(list){
     // 노이즈 클러스터(100명 이상 동일 접수일) 자동 제외
     const byDate = {};
     list.forEach(function(item){
@@ -180,21 +180,29 @@
       return irds <= -100;
     });
 
-    // 강한매수: 사장급 이상 + 5,000주+
+    // 강한매수: 사장급 이상 + 5,000주+ + 단독성 (같은 날 매수 임원 5명 이하)
     const strong = buys.filter(function(item){
-      const title = (item.isu_exctv_ofcps || '') + ' ' + (item.isu_exctv_rgist_exctv_at || '');
+      const title = item.isu_exctv_ofcps || '';
       const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
       const isSenior = /사장|CEO|대표이사|회장|부회장/.test(title);
-      return isSenior && irds >= 5000;
+      if(!isSenior || irds < 5000) return false;
+      // 단독성 체크: 같은 접수일에 5명 이하만 매수한 경우
+      const sameDay = byDate[item.rcept_dt] || [];
+      const sameDayBuys = sameDay.filter(function(x){
+        const v = parseInt(String(x.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
+        return v >= 100;
+      });
+      return sameDayBuys.length <= 5;
     });
 
     // 주목매수: 등기임원 + 1,000주+, 최근 180일
     const now = new Date();
     const cutoff180 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 180);
     const notable = buys.filter(function(item){
-      const isRegistered = item.isu_exctv_rgist_exctv_at && item.isu_exctv_rgist_exctv_at.includes('등기');
+      // 정확히 "등기임원"만 (비등기임원 제외)
+      const isRegistered = item.isu_exctv_rgist_at === '등기임원';
       const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
-      const dt = new Date(item.rcept_dt.slice(0,4) + '-' + item.rcept_dt.slice(4,6) + '-' + item.rcept_dt.slice(6,8));
+      const dt = new Date(item.rcept_dt); // 이미 YYYY-MM-DD 형식
       return isRegistered && irds >= 1000 && dt >= cutoff180;
     }).sort(function(a,b){ return b.rcept_dt.localeCompare(a.rcept_dt); }).slice(0, 15);
 
@@ -221,11 +229,11 @@
     // 최근 30일 매수/매도
     const cutoff30 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
     const recent30buys = buys.filter(function(item){
-      const dt = new Date(item.rcept_dt.slice(0,4) + '-' + item.rcept_dt.slice(4,6) + '-' + item.rcept_dt.slice(6,8));
+      const dt = new Date(item.rcept_dt);
       return dt >= cutoff30;
     });
     const recent30sells = sells.filter(function(item){
-      const dt = new Date(item.rcept_dt.slice(0,4) + '-' + item.rcept_dt.slice(4,6) + '-' + item.rcept_dt.slice(6,8));
+      const dt = new Date(item.rcept_dt);
       return dt >= cutoff30;
     });
 
@@ -241,7 +249,11 @@
     };
   }
 
-  function fmtDate(rcept_dt){
+    function fmtDate(rcept_dt){
+    if(!rcept_dt) return '';
+    // 이미 하이픈 포함된 형식이면 그대로 반환
+    if(rcept_dt.indexOf('-') >= 0) return rcept_dt;
+    // 8자리 숫자 형식이면 변환
     return rcept_dt.slice(0,4) + '-' + rcept_dt.slice(4,6) + '-' + rcept_dt.slice(6,8);
   }
 
@@ -256,8 +268,7 @@
   function signalCard(item, options){
     options = options || {};
     const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
-    const isRegistered = item.isu_exctv_rgist_exctv_at && item.isu_exctv_rgist_exctv_at.includes('등기');
-    const sign = irds >= 0 ? '+' : '';
+    const isRegistered = item.isu_exctv_rgist_at === '등기임원';
     const color = irds >= 0 ? '#059669' : '#dc2626';
 
     return '<div class="p18-card" style="padding:8px;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:6px;background:#fff;">' +
