@@ -481,8 +481,7 @@
     if(document.getElementById(MENU_BTN_ID)) return true;
 
     // Phase16의 기존 버튼을 앵커로 삼아 부모 그리드 발견
-    const anchorsconst anchors = ['p16-menu-stats', 'p16-menu-channels', 'p16-menu-info-note', 'p17-menu-ai-draft'];
-    = ['p16-menu-stats', 'p16-menu-channels', 'p16-menu-info-note', 'p17-menu-draft'];
+    const anchors = ['p16-menu-stats', 'p16-menu-channels', 'p16-menu-info-note', 'p17-menu-ai-draft'];
     let grid = null;
     for(const id of anchors){
       const el = document.getElementById(id);
