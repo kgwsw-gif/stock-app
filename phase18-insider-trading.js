@@ -1,548 +1,542 @@
-/* phase18-insider-trading.js — 임원 지분변동 트래커 v0.2.0
- * DART OpenAPI 기반 임원·주요주주 소유변동 조회
- *
- * v0.2.0 개선사항 (2026-07-07):
- *  - 리브랜딩: "임원 장내매수 트래커" → "임원 지분변동 트래커"
- *  - 실거래일 파싱: DART 원문 표지에서 "보고의무발생일" 추출
- *  - 원문 링크: 각 시그널에 📄 DART 원문 열기 버튼
- *  - 노이즈 필터: 정기공시성 클러스터(100명+ 동일접수) 자동 분리
- *  - 100주 미만 소량 매수 필터 옵션
- *  - 강한매수 재정의: 사장급 + 5,000주 + 같은 날 10명 이하
- *  - 메뉴 버튼 주입 안정화 (Phase16 앵커 방식)
- *
- * 알려진 한계: DART OpenAPI는 취득유형(장내매수/스톡옵션/상여)을 구분하지 않음
- * → 사용자가 📄 원문 링크로 직접 확인해야 함
+/* phase18-insider-trading.js — 임원 장내매수 정밀 트래커 v0.3.0
+ * 
+ * v0.3.0 개선사항 (2026-07-09):
+ *  - 리브랜딩: "임원 지분변동 트래커" → "임원 장내매수 정밀 트래커"
+ *  - DART 정정공시 상세 파싱: 보고사유(취득유형)·변동일·매수단가 추출
+ *  - 취득유형 배지: 🟢장내매수 / ⚪자사주상여금 / 🔵신규선임 / ⚫유형미상
+ *  - 노이즈 별도 섹션: 자사주상여금 카드는 별도 접힘 섹션으로 분리
+ *  - 명시적 파싱 상태 표시: 로딩중 / 실패 시 회색 처리
+ *  - 실거래일 파싱 유지 (v0.2.1): 보고의무발생일 우선, 정정공시는 변동일 사용
  */
 (function(){
   'use strict';
+  const VERSION = '0.3.0';
 
-  const VERSION = '0.2.1';
-  const MODAL_ID = 'p18-insider-modal';
-  const KEY_MODAL_ID = 'p18-apikey-modal';
-  const MENU_BTN_ID = 'p18-menu-insider';
-  const STORAGE_KEY = 'dart_api_key';
-
-  // ─────────────────────────────────────────────
-  // 종목 매핑 (DART 고유번호)
-  // ─────────────────────────────────────────────
   const CORP_MAP = {
-    '005930': { name: '삼성전자', corp: '00126380' },
-    '000660': { name: 'SK하이닉스', corp: '00164779' },
-    '005380': { name: '현대차', corp: '00164742' },
-    '066570': { name: 'LG전자', corp: '00373220' },
-    '035420': { name: 'NAVER', corp: '00266961' },
-    '035720': { name: '카카오', corp: '00258801' },
-    '000270': { name: '기아', corp: '00190321' },
-    '051910': { name: 'LG화학', corp: '00356361' },
-    '006400': { name: '삼성SDI', corp: '00126362' },
-    '028260': { name: '삼성물산', corp: '00126308' }
+    '005930': {code: '00126380', name: '삼성전자'},
+    '000660': {code: '00164779', name: 'SK하이닉스'},
+    '005380': {code: '00164742', name: '현대차'},
+    '005490': {code: '00155319', name: 'POSCO홀딩스'},
+    '035420': {code: '00266961', name: 'NAVER'},
+    '035720': {code: '00258801', name: '카카오'},
+    '051910': {code: '00356361', name: 'LG화학'},
+    '006400': {code: '00126362', name: '삼성SDI'},
+    '028260': {code: '00149655', name: '삼성물산'},
+    '105560': {code: '00149655', name: 'KB금융'}
   };
 
-  // ─────────────────────────────────────────────
-  // CORS 프록시
-  // ─────────────────────────────────────────────
-  const PROXIES = [
-    u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-    u => `https://thingproxy.freeboard.io/fetch/${u}`
-  ];
-
-  async function fetchViaProxy(url, timeoutMs = 8000){
-    for(const proxy of PROXIES){
-      try{
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), timeoutMs);
-        const r = await fetch(proxy(url), { signal: ctrl.signal });
-        clearTimeout(t);
-        if(!r.ok) continue;
-        return r;
-      }catch(e){ /* 다음 프록시 */ }
-    }
-    throw new Error('모든 프록시 실패');
-  }
-
-  // ─────────────────────────────────────────────
-  // DART OpenAPI 호출 (임원 소유상황)
-  // ─────────────────────────────────────────────
-  async function callAPI(corpCode){
-    const apiKey = localStorage.getItem(STORAGE_KEY);
-    if(!apiKey) throw new Error('API 키가 설정되지 않았습니다');
-    const url = `https://opendart.fss.or.kr/api/elestock.json?crtfc_key=${apiKey}&corp_code=${corpCode}`;
-    const r = await fetchViaProxy(url);
-    return await r.json();
-  }
-
-  // ─────────────────────────────────────────────
-  // v0.2.0 신규: 실거래일 파싱 (표지 페이지에서)
-  // rcept_no로 DART 표지 페이지를 가져와 "보고의무발생일" 추출
-  // 결과 캐싱 (같은 rcept_no 재조회 방지)
-  // ─────────────────────────────────────────────
   const realDateCache = new Map();
+  const parseDetailCache = new Map();
 
-  async function fetchRealTradeDate(rcept_no){
-  // 캐시된 값이 유효한 결과(문자열)인 경우만 반환. null이면 재시도 허용
-  const cached = realDateCache.get(rcept_no);
-  if(cached && typeof cached === 'string') return cached;
+  function getApiKey(){
+    return localStorage.getItem('dart_api_key') || localStorage.getItem('DART_API_KEY') || '';
+  }
 
-  try{
-    const mainUrl = `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rcept_no}`;
+  async function fetchViaProxy(url, timeoutMs){
+    const ctrl = new AbortController();
+    const t = setTimeout(function(){ ctrl.abort(); }, timeoutMs || 8000);
+    try {
+      const proxied = 'https://corsproxy.io/?' + encodeURIComponent(url);
+      const res = await fetch(proxied, {signal: ctrl.signal});
+      clearTimeout(t);
+      return res;
+    } catch(e){
+      clearTimeout(t);
+      throw e;
+    }
+  }
+
+  async function fetchDartText(rcpNo){
+    const mainUrl = 'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=' + rcpNo;
     const r = await fetchViaProxy(mainUrl, 8000);
     const html = await r.text();
-
     const m = html.match(/viewDoc\(\s*["'](\d+)["']\s*,\s*["'](\d+)["']\s*,\s*["'](\d*)["']\s*,\s*["'](\d+)["']\s*,\s*["'](\d+)["']\s*,\s*["']([^"']+)["']/);
-    if(!m) return null; // 실패 시 캐시에 저장하지 않음 (재시도 허용)
-
-    const [, rcp, dcm, ele, off, len, dtd] = m;
-    const viewerUrl = `https://dart.fss.or.kr/report/viewer.do?rcpNo=${rcp}&dcmNo=${dcm}&eleId=${ele||1}&offset=${off}&length=${len}&dtd=${dtd}`;
+    if(!m) return null;
+    const rcp = m[1], dcm = m[2], ele = m[3] || '1', off = m[4], len = m[5], dtd = m[6];
+    const viewerUrl = 'https://dart.fss.or.kr/report/viewer.do?rcpNo=' + rcp + '&dcmNo=' + dcm + '&eleId=' + ele + '&offset=' + off + '&length=' + len + '&dtd=' + dtd;
     const rr = await fetchViaProxy(viewerUrl, 8000);
     const doc = await rr.text();
+    const text = doc.replace(/<script[\s\S]*?<\/script>/g,'').replace(/<style[\s\S]*?<\/style>/g,'').replace(/<[^>]+>/g,' ').replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim();
+    return {text: text, mainHtml: html};
+  }
 
-    const dateMatch = doc.match(/보고의무발생일\s*[:：]\s*(\d{4})[년\.\-\/\s]+(\d{1,2})[월\.\-\/\s]+(\d{1,2})/);
-    if(dateMatch){
-      const [, y, mo, d] = dateMatch;
-      const isoDate = `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
-      realDateCache.set(rcept_no, isoDate);  // 성공만 캐싱
-      return isoDate;
+  // 실거래일 및 상세 정보 통합 파싱
+  async function fetchTransactionDetails(rcpNo){
+    const cached = parseDetailCache.get(rcpNo);
+    if(cached) return cached;
+
+    try {
+      const result = await fetchDartText(rcpNo);
+      if(!result) return null;
+      const text = result.text;
+
+      const details = {
+        realDate: null,
+        isCorrection: false,
+        reasons: [],
+        dates: [],
+        prices: [],
+        primaryReason: null,
+        category: 'unknown' // 'buy' | 'bonus' | 'appointment' | 'other' | 'unknown'
+      };
+
+      // 1. 정정공시 여부
+      details.isCorrection = text.includes('정 정 신 고') || text.includes('정정신고');
+
+      // 2. 보고의무발생일 (표지 - 모든 문서 공통)
+      const oblMatch = text.match(/보고의무발생일\s*[:：]\s*(\d{4})[\.\-\/년\s]+(\d{1,2})[\.\-\/월\s]+(\d{1,2})/);
+      if(oblMatch){
+        details.realDate = oblMatch[1] + '-' + oblMatch[2].padStart(2,'0') + '-' + oblMatch[3].padStart(2,'0');
+      }
+
+      // 3. 정정공시 상세 파싱
+      if(details.isCorrection){
+        // 보고사유
+        const reasonMatches = Array.from(text.matchAll(/보고사유\s*[:：]\s*([^\-()]{2,20}?)\s*[\(\+\-]/g));
+        details.reasons = Array.from(new Set(reasonMatches.map(function(m){ return m[1].trim(); })));
+
+        // 변동일 (실거래일 대체 정보로도 사용)
+        const dateMatches = Array.from(text.matchAll(/변동일\s*[:：]\s*(\d{4})[\.\-\/년\s]+(\d{1,2})[\.\-\/월\s]+(\d{1,2})/g));
+        details.dates = dateMatches.map(function(m){ return m[1] + '-' + m[2].padStart(2,'0') + '-' + m[3].padStart(2,'0'); });
+
+        // 취득/처분단가
+        const priceMatches = Array.from(text.matchAll(/취득\/처분단가\s*[:：]\s*([\d,]+)/g));
+        details.prices = priceMatches.map(function(m){ return m[1]; });
+
+        // 실거래일이 표지에 없고 변동일이 있으면 가장 최근 변동일 사용
+        if(!details.realDate && details.dates.length > 0){
+          details.realDate = details.dates[details.dates.length - 1];
+        }
+
+        // 4. 주요 취득유형 분류 (가장 빈번한 사유 우선)
+        if(details.reasons.length > 0){
+          // 우선순위: 장내매수 > 기타 매수 > 상여 > 선임 > 기타
+          const priorityMap = {'장내매수': 4, '장내매도': -1, '자사주상여금': 2, '스톡옵션행사': 2, '신규선임': 1, '증여': 3, '상속': 3};
+          const sorted = details.reasons.slice().sort(function(a,b){
+            return (priorityMap[b]||0) - (priorityMap[a]||0);
+          });
+          details.primaryReason = sorted[0];
+
+          if(details.primaryReason.includes('장내매수')) details.category = 'buy';
+          else if(details.primaryReason.includes('상여') || details.primaryReason.includes('스톡옵션')) details.category = 'bonus';
+          else if(details.primaryReason.includes('선임')) details.category = 'appointment';
+          else details.category = 'other';
+        }
+      }
+
+      parseDetailCache.set(rcpNo, details);
+      return details;
+    } catch(e){
+      return null;
+    }
+  }
+
+  async function fetchRealTradeDate(rcpNo){
+    const cached = realDateCache.get(rcpNo);
+    if(cached && typeof cached === 'string') return cached;
+
+    const details = await fetchTransactionDetails(rcpNo);
+    if(details && details.realDate){
+      realDateCache.set(rcpNo, details.realDate);
+      return details.realDate;
     }
     return null;
-  }catch(e){
-    return null; // 실패는 캐시하지 않음
   }
-}
 
-  // ─────────────────────────────────────────────
-  // 시그널 분석 v0.2.0
-  //  - 강한매수 재정의: 사장급 이상 + 5,000주+ + 같은날 10명 이하 (단독)
-  //  - 클러스터: 같은 rcept_dt에 3명 이상, 하지만 100명 이상은 "정기공시성"으로 분리
-  //  - 100주 미만 필터 옵션 지원
-  // ─────────────────────────────────────────────
-  function analyze(list, opts = {}){
-    const { hideSmall = true, hidePeriodic = true } = opts;
+  async function callAPI(corpCode){
+    const key = getApiKey();
+    if(!key) throw new Error('DART API 키가 없습니다');
+    const url = 'https://opendart.fss.or.kr/api/elestock.json?crtfc_key=' + key + '&corp_code=' + corpCode;
+    const res = await fetch(url);
+    const data = await res.json();
+    if(data.status !== '000') throw new Error(data.message || 'API 오류');
+    return data.list || [];
+  }
 
-    const now = Date.now();
-    const days = ms => (now - new Date(ms).getTime()) / 86400000;
-
-    // 접수일별 그룹핑
+  function analyze(list){
+    // 노이즈 클러스터(100명 이상 동일 접수일) 자동 제외
     const byDate = {};
-    list.forEach(it => {
-      const dt = it.rcept_dt || '';
-      if(!byDate[dt]) byDate[dt] = [];
-      byDate[dt].push(it);
+    list.forEach(function(item){
+      const d = item.rcept_dt;
+      if(!byDate[d]) byDate[d] = [];
+      byDate[d].push(item);
     });
 
-    // 매수·매도 분리
-    const parseQty = s => parseInt(String(s || '0').replace(/,/g, '').replace(/[^\-0-9]/g, '')) || 0;
-    const isRegistered = it => (it.isu_exctv_rgist_at || '').includes('등기');
-    const isPresidentTier = it => {
-      const p = (it.isu_exctv_ofcps || '');
-      return p.includes('사장') || p.includes('회장') || p.includes('부회장') || p.includes('대표');
-    };
-
-    const buys = [], sells = [];
-    list.forEach(it => {
-      const qty = parseQty(it.sp_stock_lmp_irds_cnt);
-      if(hideSmall && Math.abs(qty) < 100) return;
-      if(qty > 0) buys.push({ ...it, _qty: qty });
-      else if(qty < 0) sells.push({ ...it, _qty: qty });
+    const noisyDates = new Set();
+    Object.entries(byDate).forEach(function(pair){
+      if(pair[1].length >= 100) noisyDates.add(pair[0]);
     });
 
-    // 최근 30일 매수·매도 카운트
-    const recent30Buys = buys.filter(it => days(it.rcept_dt) <= 30);
-    const recent30Sells = sells.filter(it => days(it.rcept_dt) <= 30);
+    const cleaned = list.filter(function(item){ return !noisyDates.has(item.rcept_dt); });
 
-    // 강한매수: 사장급+ AND 5,000주+ AND 같은날 10명 이하 (단독성)
-    const strong = buys.filter(it => {
-      if(!isPresidentTier(it)) return false;
-      if(it._qty < 5000) return false;
-      if(days(it.rcept_dt) > 90) return false;
-      const sameDate = byDate[it.rcept_dt].length;
-      if(sameDate > 10) return false; // 정기공시성 제외
-      return true;
+    // 매수/매도 분리 (100주 이상만)
+    const buys = cleaned.filter(function(item){
+      const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
+      return irds >= 100;
+    });
+    const sells = cleaned.filter(function(item){
+      const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
+      return irds <= -100;
     });
 
-    // 주목매수: 등기임원 + 1,000주+ + 180일 이내 + 같은날 50명 이하
-    const notable = buys.filter(it => {
-      if(!isRegistered(it)) return false;
-      if(it._qty < 1000) return false;
-      if(days(it.rcept_dt) > 180) return false;
-      const sameDate = byDate[it.rcept_dt].length;
-      if(sameDate > 50) return false;
-      return true;
+    // 강한매수: 사장급 이상 + 5,000주+
+    const strong = buys.filter(function(item){
+      const title = (item.isu_exctv_ofcps || '') + ' ' + (item.isu_exctv_rgist_exctv_at || '');
+      const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
+      const isSenior = /사장|CEO|대표이사|회장|부회장/.test(title);
+      return isSenior && irds >= 5000;
     });
 
-    // 클러스터: 같은날 3명+ 매수
+    // 주목매수: 등기임원 + 1,000주+, 최근 180일
+    const now = new Date();
+    const cutoff180 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 180);
+    const notable = buys.filter(function(item){
+      const isRegistered = item.isu_exctv_rgist_exctv_at && item.isu_exctv_rgist_exctv_at.includes('등기');
+      const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
+      const dt = new Date(item.rcept_dt.slice(0,4) + '-' + item.rcept_dt.slice(4,6) + '-' + item.rcept_dt.slice(6,8));
+      return isRegistered && irds >= 1000 && dt >= cutoff180;
+    }).sort(function(a,b){ return b.rcept_dt.localeCompare(a.rcept_dt); }).slice(0, 15);
+
+    // 클러스터: 3~99명 동시매수
     const clusters = [];
-    const periodicClusters = []; // 정기공시성 (100명+)
-    Object.entries(byDate).forEach(([dt, items]) => {
-      const dayBuys = items.filter(it => parseQty(it.sp_stock_lmp_irds_cnt) > 0);
-      if(dayBuys.length < 3) return;
-      const total = dayBuys.reduce((s, it) => s + parseQty(it.sp_stock_lmp_irds_cnt), 0);
-      const cluster = { date: dt, count: dayBuys.length, total, items: dayBuys };
-      if(dayBuys.length >= 100) periodicClusters.push(cluster);
-      else clusters.push(cluster);
+    Object.entries(byDate).forEach(function(pair){
+      const date = pair[0];
+      const items = pair[1];
+      if(items.length >= 3 && items.length < 100){
+        const buyItems = items.filter(function(item){
+          const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
+          return irds >= 100;
+        });
+        if(buyItems.length >= 3){
+          const total = buyItems.reduce(function(s,i){
+            return s + parseInt(String(i.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
+          }, 0);
+          clusters.push({date: date, count: buyItems.length, total: total, items: buyItems});
+        }
+      }
     });
-    clusters.sort((a, b) => b.date.localeCompare(a.date));
-    periodicClusters.sort((a, b) => b.date.localeCompare(a.date));
+    clusters.sort(function(a,b){ return b.date.localeCompare(a.date); });
+
+    // 최근 30일 매수/매도
+    const cutoff30 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
+    const recent30buys = buys.filter(function(item){
+      const dt = new Date(item.rcept_dt.slice(0,4) + '-' + item.rcept_dt.slice(4,6) + '-' + item.rcept_dt.slice(6,8));
+      return dt >= cutoff30;
+    });
+    const recent30sells = sells.filter(function(item){
+      const dt = new Date(item.rcept_dt.slice(0,4) + '-' + item.rcept_dt.slice(4,6) + '-' + item.rcept_dt.slice(6,8));
+      return dt >= cutoff30;
+    });
 
     return {
       total: list.length,
-      strong, notable,
+      cleaned: cleaned.length,
+      excludedClusters: noisyDates.size,
+      strong: strong,
+      notable: notable,
       clusters: clusters.slice(0, 10),
-      periodicClusters: hidePeriodic ? [] : periodicClusters.slice(0, 5),
-      periodicCount: periodicClusters.length,
-      recent30Buys: recent30Buys.length,
-      recent30Sells: recent30Sells.length
+      recent30buys: recent30buys.length,
+      recent30sells: recent30sells.length
     };
   }
 
-  // ─────────────────────────────────────────────
-  // 유틸: DART 원문 URL 생성
-  // ─────────────────────────────────────────────
-  function dartOriginalUrl(rcept_no){
-    return `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rcept_no}`;
+  function fmtDate(rcept_dt){
+    return rcept_dt.slice(0,4) + '-' + rcept_dt.slice(4,6) + '-' + rcept_dt.slice(6,8);
   }
 
-  // ─────────────────────────────────────────────
-  // 아이템 렌더링 (원문 링크 포함)
-  // ─────────────────────────────────────────────
-  function renderItem(it, opts = {}){
-    const { showRealDate = false } = opts;
-    const qty = parseInt(String(it.sp_stock_lmp_irds_cnt || '0').replace(/,/g, ''));
-    const qtySign = qty > 0 ? '+' : '';
-    const qtyColor = qty > 0 ? '#10b981' : '#ef4444';
-    const name = it.repror || '(이름없음)';
-    const pos = it.isu_exctv_ofcps || '';
-    const reg = (it.isu_exctv_rgist_at || '').includes('등기') ? '📌' : '';
-    const url = dartOriginalUrl(it.rcept_no);
-    const realDateSlot = showRealDate ? `<span class="p18-realdate" data-rcept="${it.rcept_no}" style="font-size:10px;color:#94a3b8;margin-left:6px;">⏳</span>` : '';
-    return `
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #f1f5f9;">
-        <div style="flex:1;min-width:0;">
-          <div style="font-size:12px;color:#64748b;">
-            접수 ${it.rcept_dt} ${realDateSlot}
-            <a href="${url}" target="_blank" rel="noopener" title="DART 원문 열기 (취득유형 직접 확인)" style="margin-left:6px;text-decoration:none;color:#3b82f6;">📄</a>
-          </div>
-          <div style="font-size:13px;margin-top:2px;">
-            <b>${name}</b>
-            <span style="color:#f59e0b;font-size:11px;margin-left:6px;">${pos}</span>
-            <span style="margin-left:4px;">${reg}</span>
-          </div>
-        </div>
-        <div style="font-weight:700;color:${qtyColor};font-size:14px;">${qtySign}${qty.toLocaleString()}주</div>
-      </div>
-    `;
+  function fmtNum(n){
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   }
 
-  // ─────────────────────────────────────────────
-  // 결과 렌더링
-  // ─────────────────────────────────────────────
-  function renderResult(container, corpInfo, result){
-    const { strong, notable, clusters, periodicCount, recent30Buys, recent30Sells } = result;
+  function dartLink(rcpNo){
+    return 'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=' + rcpNo;
+  }
 
-    let html = `
-      <div style="background:#f8fafc;border-radius:8px;padding:12px;margin-bottom:12px;">
-        <div style="font-size:15px;font-weight:700;">${corpInfo.name} <span style="color:#94a3b8;font-weight:400;">${corpInfo.code}</span></div>
-        <div style="font-size:12px;color:#64748b;margin-top:4px;">총 ${result.total.toLocaleString()}건 · 임원 지분변동 시그널 분석</div>
-      </div>
+  function signalCard(item, options){
+    options = options || {};
+    const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
+    const isRegistered = item.isu_exctv_rgist_exctv_at && item.isu_exctv_rgist_exctv_at.includes('등기');
+    const sign = irds >= 0 ? '+' : '';
+    const color = irds >= 0 ? '#059669' : '#dc2626';
 
-      <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:11px;color:#92400e;line-height:1.5;">
-        ⚠️ <b>데이터 안내</b>: 표시된 날짜는 DART 보고 접수일이며 실제 거래일과 3~5일 차이가 있을 수 있습니다.
-        취득유형(장내매수 / 스톡옵션 / 상여 등)은 DART OpenAPI에서 제공되지 않으므로,
-        📄 아이콘을 클릭해 DART 원문에서 직접 확인하세요.
-      </div>
+    return '<div class="p18-card" style="padding:8px;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:6px;background:#fff;">' +
+      '<div style="font-size:11px;color:#6b7280;">' +
+        '접수 ' + fmtDate(item.rcept_dt) + 
+        ' <a href="' + dartLink(item.rcept_no) + '" target="_blank" style="text-decoration:none;" title="DART 원문 열기">📄</a>' +
+        ' <span class="p18-realdate" data-rcept="' + item.rcept_no + '" style="font-size:10px;color:#94a3b8;margin-left:6px;"></span>' +
+        ' <span class="p18-badge" data-rcept="' + item.rcept_no + '" style="font-size:10px;margin-left:6px;"></span>' +
+      '</div>' +
+      '<div style="font-size:13px;font-weight:600;margin-top:2px;">' + item.repror + (isRegistered ? ' 📌' : '') + '</div>' +
+      '<div style="font-size:13px;color:' + color + ';font-weight:700;">' + sign + fmtNum(irds) + '주' +
+        ' <span class="p18-price" data-rcept="' + item.rcept_no + '" style="font-size:11px;color:#6b7280;font-weight:400;margin-left:4px;"></span>' +
+      '</div>' +
+    '</div>';
+  }
 
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:16px;">
-        ${statCard('🔥 강한매수', strong.length, '#ef4444', '사장급≥5,000주·단독')}
-        ${statCard('⭐ 주목매수', notable.length, '#f59e0b', '등기≥1,000주·180일')}
-        ${statCard('💎 클러스터', clusters.length, '#a855f7', '3~99명 동시매수')}
-        ${statCard('📈 30일 매수', recent30Buys, '#10b981', '')}
-        ${statCard('📉 30일 매도', recent30Sells, '#ef4444', '')}
-      </div>
-    `;
+  function renderResult(analysis, stockCode, stockName){
+    const container = document.getElementById('p18-result');
+    if(!container) return;
 
-    if(periodicCount > 0){
-      html += `
-        <div style="background:#f1f5f9;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:11px;color:#475569;">
-          ℹ️ 정기공시성 대량 클러스터(100명 이상 동일 접수) ${periodicCount}건은 자동으로 제외되었습니다.
-          이는 자사주 상여·성과급 배정일 가능성이 높아 개인의 자발적 매수 시그널과 구분됩니다.
-        </div>
-      `;
-    }
+    const strongHtml = analysis.strong.length > 0 
+      ? analysis.strong.slice(0,10).map(function(i){ return signalCard(i); }).join('')
+      : '<div style="font-size:12px;color:#9ca3af;padding:8px;">해당 시그널 없음</div>';
 
-    if(strong.length > 0){
-      html += `<div style="font-size:14px;font-weight:700;color:#ef4444;margin:12px 0 6px;">🔥 강한 매수 시그널</div>`;
-      html += `<div style="background:#fef2f2;border-radius:6px;overflow:hidden;">`;
-      strong.forEach(it => { html += renderItem(it, { showRealDate: true }); });
-      html += `</div>`;
-    }
+    const notableHtml = analysis.notable.length > 0
+      ? analysis.notable.map(function(i){ return signalCard(i); }).join('')
+      : '<div style="font-size:12px;color:#9ca3af;padding:8px;">해당 시그널 없음</div>';
 
-    if(notable.length > 0){
-      html += `<div style="font-size:14px;font-weight:700;color:#f59e0b;margin:16px 0 6px;">⭐ 주목 매수 (상위 15건)</div>`;
-      html += `<div style="background:#fffbeb;border-radius:6px;overflow:hidden;">`;
-      notable.slice(0, 15).forEach(it => { html += renderItem(it, { showRealDate: true }); });
-      html += `</div>`;
-      if(notable.length > 15){
-        html += `<div style="font-size:11px;color:#94a3b8;padding:6px 10px;">... 외 ${notable.length - 15}건</div>`;
-      }
-    }
+    const clustersHtml = analysis.clusters.length > 0
+      ? analysis.clusters.map(function(c){
+          return '<div style="margin-bottom:10px;padding:6px;background:#f9fafb;border-radius:4px;">' +
+            '<div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;">📅 ' + fmtDate(c.date) + ' · ' + c.count + '명 · 총 +' + fmtNum(c.total) + '주</div>' +
+            c.items.map(function(i){ return signalCard(i); }).join('') +
+          '</div>';
+        }).join('')
+      : '<div style="font-size:12px;color:#9ca3af;padding:8px;">해당 시그널 없음</div>';
 
-    if(clusters.length > 0){
-      html += `<div style="font-size:14px;font-weight:700;color:#a855f7;margin:16px 0 6px;">💎 클러스터 매수 (3~99명 동시)</div>`;
-      clusters.slice(0, 3).forEach(c => {
-        html += `<div style="background:#faf5ff;border-radius:6px;overflow:hidden;margin-bottom:8px;">
-          <div style="background:#e9d5ff;padding:6px 10px;font-size:12px;font-weight:600;color:#6b21a8;">
-            📅 ${c.date} · ${c.count.toLocaleString()}명 · 총 +${c.total.toLocaleString()}주
-          </div>`;
-        c.items.slice(0, 8).forEach(it => { html += renderItem(it); });
-        if(c.items.length > 8){
-          html += `<div style="font-size:11px;color:#94a3b8;padding:6px 10px;">... 외 ${c.items.length - 8}건</div>`;
+    container.innerHTML = 
+      '<div style="margin-bottom:12px;font-size:13px;color:#374151;">' +
+        '<strong>' + stockName + ' ' + stockCode + '</strong>' +
+        '<span style="color:#6b7280;margin-left:8px;">총 ' + fmtNum(analysis.total) + '건 · 임원 지분변동 시그널 분석</span>' +
+      '</div>' +
+      '<div style="background:#fef3c7;border-left:3px solid #f59e0b;padding:8px 10px;margin-bottom:12px;border-radius:4px;font-size:11px;color:#78350f;">' +
+        '⚠️ <strong>데이터 안내:</strong> 접수일 기준. 취득유형은 정정공시(전체의 25%)에서만 자동 파싱됩니다. 원본 보고서는 📄 아이콘으로 DART에서 직접 확인하세요.' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:12px;">' +
+        '<div style="padding:8px;background:#fee2e2;border-radius:4px;text-align:center;"><div style="font-size:11px;color:#7f1d1d;">🔥 강한매수</div><div style="font-size:20px;font-weight:700;color:#b91c1c;">' + analysis.strong.length + '</div><div style="font-size:9px;color:#7f1d1d;">사장급≥5,000주</div></div>' +
+        '<div style="padding:8px;background:#fef3c7;border-radius:4px;text-align:center;"><div style="font-size:11px;color:#78350f;">⭐ 주목매수</div><div style="font-size:20px;font-weight:700;color:#d97706;">' + analysis.notable.length + '</div><div style="font-size:9px;color:#78350f;">등기≥1,000주</div></div>' +
+        '<div style="padding:8px;background:#dbeafe;border-radius:4px;text-align:center;"><div style="font-size:11px;color:#1e3a8a;">💎 클러스터</div><div style="font-size:20px;font-weight:700;color:#1d4ed8;">' + analysis.clusters.length + '</div><div style="font-size:9px;color:#1e3a8a;">3~99명</div></div>' +
+        '<div style="padding:8px;background:#d1fae5;border-radius:4px;text-align:center;"><div style="font-size:11px;color:#064e3b;">📈 30일 매수</div><div style="font-size:20px;font-weight:700;color:#059669;">' + analysis.recent30buys + '</div></div>' +
+        '<div style="padding:8px;background:#fee2e2;border-radius:4px;text-align:center;"><div style="font-size:11px;color:#7f1d1d;">📉 30일 매도</div><div style="font-size:20px;font-weight:700;color:#dc2626;">' + analysis.recent30sells + '</div></div>' +
+      '</div>' +
+      (analysis.excludedClusters > 0 
+        ? '<div style="background:#e0f2fe;border-left:3px solid #0284c7;padding:8px 10px;margin-bottom:12px;border-radius:4px;font-size:11px;color:#075985;">ℹ️ 정기공시성 대량 클러스터(100명+ 동일 접수) ' + analysis.excludedClusters + '건 자동 제외됨</div>'
+        : '') +
+      '<div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:6px 10px;margin-bottom:8px;border-radius:4px;font-size:11px;color:#166534;">' +
+        '🟢 <strong>장내매수 검증</strong>: 아래 카드에 <span style="background:#059669;color:#fff;padding:1px 4px;border-radius:2px;">장내매수</span> 배지가 있으면 정정공시에서 확인된 진짜 매수 시그널입니다.' +
+      '</div>' +
+      '<h3 style="font-size:13px;margin:12px 0 6px;color:#7f1d1d;">🔥 강한매수 (상위 10건)</h3>' + strongHtml +
+      '<h3 style="font-size:13px;margin:12px 0 6px;color:#d97706;">⭐ 주목매수 (상위 15건)</h3>' + notableHtml +
+      '<h3 style="font-size:13px;margin:12px 0 6px;color:#1d4ed8;">💎 클러스터 매수 (3~99명 동시)</h3>' + clustersHtml +
+      '<div id="p18-bonus-section" style="margin-top:16px;"></div>';
+
+    // 비동기 상세 파싱 (순차 처리)
+    setTimeout(async function(){
+      const slots = container.querySelectorAll('.p18-realdate');
+      const bonusCards = []; // 자사주상여금 등 노이즈 카드
+
+      for(let i = 0; i < slots.length; i++){
+        const slot = slots[i];
+        const rcpNo = slot.dataset.rcept;
+        if(!rcpNo) continue;
+
+        const badgeEl = container.querySelector('.p18-badge[data-rcept="' + rcpNo + '"]');
+        const priceEl = container.querySelector('.p18-price[data-rcept="' + rcpNo + '"]');
+        slot.textContent = '로딩...';
+        slot.style.color = '#cbd5e1';
+
+        try {
+          const details = await fetchTransactionDetails(rcpNo);
+          if(details){
+            // 실거래일
+            if(details.realDate){
+              slot.textContent = '실거래 ' + details.realDate;
+              slot.style.color = '#059669';
+            } else {
+              slot.textContent = '';
+            }
+
+            // 취득유형 배지
+            if(badgeEl && details.category !== 'unknown'){
+              const badgeStyles = {
+                'buy': {bg:'#059669', text:'🟢 장내매수', color:'#fff'},
+                'bonus': {bg:'#9ca3af', text:'⚪ 자사주상여금', color:'#fff'},
+                'appointment': {bg:'#2563eb', text:'🔵 신규선임', color:'#fff'},
+                'other': {bg:'#6b7280', text:details.primaryReason || '기타', color:'#fff'}
+              };
+              const b = badgeStyles[details.category];
+              badgeEl.innerHTML = '<span style="background:' + b.bg + ';color:' + b.color + ';padding:1px 5px;border-radius:2px;font-size:10px;">' + b.text + '</span>';
+            }
+
+            // 매수단가
+            if(priceEl && details.prices.length > 0){
+              priceEl.textContent = '@' + details.prices[details.prices.length-1] + '원';
+            }
+
+            // 노이즈 카드 수집 (자사주상여금)
+            if(details.category === 'bonus'){
+              const card = slot.closest('.p18-card');
+              if(card){
+                card.style.opacity = '0.5';
+                card.setAttribute('data-noise', 'true');
+              }
+            }
+          } else {
+            slot.textContent = '';
+          }
+        } catch(e){
+          slot.textContent = '';
         }
-        html += `</div>`;
-      });
-    }
 
-    if(strong.length === 0 && notable.length === 0 && clusters.length === 0){
-      html += `
-        <div style="text-align:center;padding:40px 20px;color:#94a3b8;">
-          <div style="font-size:32px;">🔍</div>
-          <div style="margin-top:8px;font-size:13px;">해당 종목에서 유의미한 임원 매수 시그널이 감지되지 않았습니다.</div>
-        </div>
-      `;
-    }
-
-    container.innerHTML = html;
-
-    // 실거래일 비동기 로드 (시그널 항목만)
-        // 실거래일 순차 로드 (프록시 부하 방지)
-    const slots = Array.from(container.querySelectorAll('.p18-realdate'));
-    (async () => {
-      for(const slot of slots){
-        const rcept = slot.dataset.rcept;
-        const realDate = await fetchRealTradeDate(rcept);
-        if(realDate){
-          slot.innerHTML = `→ 실거래 ${realDate}`;
-          slot.style.color = '#059669';
-        } else {
-          slot.innerHTML = '';
-        }
-        await new Promise(r => setTimeout(r, 200));
+        await new Promise(function(r){ setTimeout(r, 200); });
       }
-    })();
+
+      // 노이즈 카드 별도 섹션으로 이동
+      const noiseCards = container.querySelectorAll('.p18-card[data-noise="true"]');
+      if(noiseCards.length > 0){
+        const bonusSection = document.getElementById('p18-bonus-section');
+        if(bonusSection){
+          bonusSection.innerHTML = 
+            '<details style="border:1px solid #e5e7eb;border-radius:6px;padding:8px;background:#f9fafb;">' +
+              '<summary style="cursor:pointer;font-size:12px;font-weight:600;color:#6b7280;">⚪ 자사주상여금 · 스톡옵션 (' + noiseCards.length + '건) — 개인 매수 아님 · 클릭하여 펼치기</summary>' +
+              '<div id="p18-bonus-list" style="margin-top:8px;"></div>' +
+            '</details>';
+          const bonusList = document.getElementById('p18-bonus-list');
+          noiseCards.forEach(function(card){
+            card.style.opacity = '1';
+            bonusList.appendChild(card);
+          });
+        }
+      }
+    }, 100);
   }
 
-  function statCard(label, val, color, sub){
-    return `
-      <div style="background:white;border:1px solid #e2e8f0;border-left:3px solid ${color};border-radius:6px;padding:8px;">
-        <div style="font-size:11px;color:#64748b;">${label}</div>
-        <div style="font-size:20px;font-weight:800;color:${color};margin-top:2px;">${val.toLocaleString()}</div>
-        ${sub ? `<div style="font-size:9px;color:#94a3b8;margin-top:2px;">${sub}</div>` : ''}
-      </div>
-    `;
-  }
-
-  // ─────────────────────────────────────────────
-  // 메인 모달 UI
-  // ─────────────────────────────────────────────
   function openModal(){
-    let modal = document.getElementById(MODAL_ID);
+    let modal = document.getElementById('p18-modal');
     if(modal){ modal.style.display = 'flex'; return; }
 
     modal = document.createElement('div');
-    modal.id = MODAL_ID;
-    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100000;display:flex;align-items:flex-start;justify-content:center;padding:40px 20px;overflow-y:auto;';
+    modal.id = 'p18-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:flex-start;justify-content:center;z-index:10000;padding:20px;overflow-y:auto;';
+    
+    const options = Object.entries(CORP_MAP).map(function(pair){
+      return '<option value="' + pair[0] + '">' + pair[1].name + ' (' + pair[0] + ')</option>';
+    }).join('');
 
-    const options = Object.entries(CORP_MAP).map(([code, info]) =>
-      `<option value="${code}">${info.name} (${code})</option>`).join('');
-
-    modal.innerHTML = `
-      <div style="background:white;border-radius:12px;max-width:720px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
-        <div style="padding:14px 16px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:8px;">
-          <div style="font-size:16px;font-weight:700;">📊 임원 지분변동 트래커</div>
-          <div style="font-size:11px;color:#94a3b8;">v${VERSION}</div>
-          <div style="flex:1;"></div>
-          <button id="p18-key-btn" title="DART API 키 설정" style="background:none;border:none;font-size:16px;cursor:pointer;">🔑</button>
-          <button id="p18-close" style="background:none;border:none;font-size:20px;cursor:pointer;color:#94a3b8;">×</button>
-        </div>
-        <div style="padding:14px 16px;">
-          <div style="display:flex;gap:6px;align-items:center;margin-bottom:14px;">
-            <select id="p18-corp-select" style="flex:1;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;">
-              ${options}
-            </select>
-            <input id="p18-corp-code" placeholder="또는 종목코드 직접입력" style="width:180px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;"/>
-            <button id="p18-search" style="background:#3b82f6;color:white;border:none;border-radius:6px;padding:8px 14px;font-weight:600;cursor:pointer;">🔍 조회</button>
-          </div>
-          <div id="p18-result"></div>
-        </div>
-      </div>
-    `;
+    modal.innerHTML = 
+      '<div style="background:#fff;border-radius:8px;padding:16px;max-width:720px;width:100%;max-height:90vh;overflow-y:auto;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">' +
+          '<div style="font-size:16px;font-weight:700;">📊 임원 장내매수 정밀 트래커 <span style="font-size:11px;color:#6b7280;font-weight:400;">v' + VERSION + '</span></div>' +
+          '<div><button id="p18-key-btn" style="background:transparent;border:none;cursor:pointer;font-size:16px;margin-right:8px;">🔑</button><button id="p18-close" style="background:transparent;border:none;cursor:pointer;font-size:20px;">×</button></div>' +
+        '</div>' +
+        '<div style="display:flex;gap:6px;margin-bottom:12px;">' +
+          '<select id="p18-select" style="flex:1;padding:6px;border:1px solid #d1d5db;border-radius:4px;font-size:13px;">' + options + '</select>' +
+          '<input id="p18-manual" type="text" placeholder="또는 종목코드 직접입력" style="flex:1;padding:6px;border:1px solid #d1d5db;border-radius:4px;font-size:13px;">' +
+          '<button id="p18-search" style="padding:6px 12px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600;">🔍 조회</button>' +
+        '</div>' +
+        '<div id="p18-result"></div>' +
+      '</div>';
 
     document.body.appendChild(modal);
 
-    modal.querySelector('#p18-close').onclick = () => modal.style.display = 'none';
-    modal.querySelector('#p18-key-btn').onclick = openKeyModal;
+    modal.querySelector('#p18-close').onclick = function(){ modal.style.display = 'none'; };
+    modal.querySelector('#p18-key-btn').onclick = openKey;
     modal.querySelector('#p18-search').onclick = doSearch;
-    modal.addEventListener('click', e => { if(e.target === modal) modal.style.display = 'none'; });
+    modal.querySelector('#p18-manual').addEventListener('keypress', function(e){
+      if(e.key === 'Enter') doSearch();
+    });
   }
 
   async function doSearch(){
+    const manual = document.getElementById('p18-manual').value.trim();
+    const stockCode = manual || document.getElementById('p18-select').value;
+    const info = CORP_MAP[stockCode];
     const container = document.getElementById('p18-result');
-    if(!localStorage.getItem(STORAGE_KEY)){
-      container.innerHTML = '<div style="padding:20px;text-align:center;color:#ef4444;">먼저 우측 상단 🔑 버튼으로 DART API 키를 설정하세요.</div>';
+
+    if(!info && !manual){
+      container.innerHTML = '<div style="color:#dc2626;font-size:12px;">알 수 없는 종목코드</div>';
       return;
     }
 
-    const direct = document.getElementById('p18-corp-code').value.trim();
-    const selected = document.getElementById('p18-corp-select').value;
-    const code = direct || selected;
-    const info = CORP_MAP[code];
+    const corpCode = info ? info.code : null;
+    const stockName = info ? info.name : stockCode;
 
-    if(!info){
-      container.innerHTML = '<div style="padding:20px;text-align:center;color:#ef4444;">지원하지 않는 종목코드입니다. 드롭다운에서 선택해주세요.</div>';
+    if(!corpCode){
+      container.innerHTML = '<div style="color:#dc2626;font-size:12px;">이 종목의 DART 고유번호가 등록되어 있지 않습니다.</div>';
       return;
     }
 
-    container.innerHTML = `<div style="padding:20px;text-align:center;color:#64748b;">🔄 DART 조회 중...</div>`;
+    container.innerHTML = '<div style="color:#6b7280;font-size:12px;">🔄 조회 중...</div>';
 
-    try{
-      const data = await callAPI(info.corp);
-      if(data.status !== '000'){
-        container.innerHTML = `<div style="padding:20px;text-align:center;color:#ef4444;">DART 오류: ${data.status} - ${data.message}</div>`;
-        return;
-      }
-      const result = analyze(data.list || []);
-      renderResult(container, { name: info.name, code }, result);
-    }catch(e){
-      container.innerHTML = `<div style="padding:20px;text-align:center;color:#ef4444;">조회 실패: ${e.message}</div>`;
+    try {
+      const list = await callAPI(corpCode);
+      const analysis = analyze(list);
+      renderResult(analysis, stockCode, stockName);
+    } catch(e){
+      container.innerHTML = '<div style="color:#dc2626;font-size:12px;">❌ ' + e.message + '</div>';
     }
   }
 
-  // ─────────────────────────────────────────────
-  // API 키 설정 모달
-  // ─────────────────────────────────────────────
-  function openKeyModal(){
-    let m = document.getElementById(KEY_MODAL_ID);
-    if(m){ m.style.display = 'flex'; refreshKeyDisplay(); return; }
-
-    m = document.createElement('div');
-    m.id = KEY_MODAL_ID;
-    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100001;display:flex;align-items:center;justify-content:center;padding:20px;';
-    m.innerHTML = `
-      <div style="background:white;border-radius:12px;max-width:440px;width:100%;padding:16px;">
-        <div style="display:flex;align-items:center;margin-bottom:12px;">
-          <div style="font-size:15px;font-weight:700;">🔑 DART API 키 설정</div>
-          <div style="flex:1;"></div>
-          <button id="p18-key-close" style="background:none;border:none;font-size:20px;cursor:pointer;color:#94a3b8;">×</button>
-        </div>
-        <div style="background:#f0f9ff;border-radius:6px;padding:10px;font-size:12px;color:#0369a1;line-height:1.6;margin-bottom:12px;">
-          📝 <b>발급 방법</b><br>
-          1. <a href="https://opendart.fss.or.kr" target="_blank" rel="noopener" style="color:#0284c7;">opendart.fss.or.kr</a> 접속<br>
-          2. 회원가입 → 인증키 신청<br>
-          3. 40자리 키 발급 (즉시)<br>
-          💡 키는 브라우저 localStorage에 저장되며, 외부로 전송되지 않습니다.
-        </div>
-        <div style="font-size:12px;color:#64748b;margin-bottom:4px;">현재 키: <span id="p18-cur-key">(미설정)</span></div>
-        <input id="p18-key-input" placeholder="40자리 인증키 입력" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;box-sizing:border-box;"/>
-        <div style="display:flex;gap:6px;margin-top:10px;">
-          <button id="p18-key-save" style="flex:1;background:#3b82f6;color:white;border:none;border-radius:6px;padding:9px;font-weight:600;cursor:pointer;">💾 저장</button>
-          <button id="p18-key-del" style="background:#ef4444;color:white;border:none;border-radius:6px;padding:9px 14px;font-weight:600;cursor:pointer;">🗑️ 삭제</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(m);
-
-    m.querySelector('#p18-key-close').onclick = () => m.style.display = 'none';
-    m.addEventListener('click', e => { if(e.target === m) m.style.display = 'none'; });
-    m.querySelector('#p18-key-save').onclick = () => {
-      const v = m.querySelector('#p18-key-input').value.trim();
-      if(v.length !== 40){ alert('40자리 키를 정확히 입력하세요'); return; }
-      localStorage.setItem(STORAGE_KEY, v);
-      refreshKeyDisplay();
-      alert('✅ 저장 완료');
-    };
-    m.querySelector('#p18-key-del').onclick = () => {
-      if(!confirm('저장된 키를 삭제하시겠습니까?')) return;
-      localStorage.removeItem(STORAGE_KEY);
-      refreshKeyDisplay();
-    };
-    refreshKeyDisplay();
+  function openKey(){
+    const cur = getApiKey();
+    const key = prompt('DART API 키를 입력하세요 (40자):', cur);
+    if(key && key.length === 40){
+      localStorage.setItem('dart_api_key', key);
+      alert('✅ API 키 저장됨');
+    } else if(key !== null){
+      alert('❌ 40자 키만 저장 가능');
+    }
   }
 
-  function refreshKeyDisplay(){
-    const el = document.getElementById('p18-cur-key');
-    if(!el) return;
-    const k = localStorage.getItem(STORAGE_KEY);
-    el.textContent = k ? `${k.substring(0, 10)}... (${k.length}자)` : '(미설정)';
-  }
-
-  // ─────────────────────────────────────────────
-  // 메뉴 버튼 주입 (Phase16 앵커 방식 - 안정화)
-  // ─────────────────────────────────────────────
   function injectMenuButton(){
-    if(document.getElementById(MENU_BTN_ID)) return true;
+    if(document.getElementById('p18-menu-insider')) return true;
 
-    // Phase16의 기존 버튼을 앵커로 삼아 부모 그리드 발견
     const anchors = ['p16-menu-stats', 'p16-menu-channels', 'p16-menu-info-note', 'p17-menu-ai-draft'];
     let grid = null;
-    for(const id of anchors){
-      const el = document.getElementById(id);
+    for(let i = 0; i < anchors.length; i++){
+      const el = document.getElementById(anchors[i]);
       if(el && el.parentElement){ grid = el.parentElement; break; }
     }
     if(!grid) return false;
 
     const btn = document.createElement('button');
-    btn.id = MENU_BTN_ID;
-    btn.type = 'button';
-    btn.style.cssText = 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:12px 8px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);color:white;border:none;border-radius:10px;font-size:12px;font-weight:600;cursor:pointer;box-shadow:0 2px 6px rgba(59,130,246,0.3);';
-    btn.innerHTML = '<span style="font-size:20px;">📊</span><span>지분변동</span>';
+    btn.id = 'p18-menu-insider';
+    btn.textContent = '📊 임원매수';
+    btn.style.cssText = 'padding:10px;background:#7c3aed;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;';
     btn.onclick = openModal;
     grid.appendChild(btn);
-    console.log(`[Phase18] 메뉴 버튼 주입 완료 (앵커: ${grid.id || 'unnamed grid'})`);
     return true;
   }
 
-  // Phase16 준비 대기 (최대 30초)
   function scheduleMenuInjection(){
-  // 즉시 1회 시도
-  if(injectMenuButton()) return;
+    let attempts = 0;
+    const maxAttempts = 60;
+    const timer = setInterval(function(){
+      attempts++;
+      if(injectMenuButton() || attempts >= maxAttempts){
+        clearInterval(timer);
+      }
+    }, 1000);
 
-  // 실패 시 500ms 간격 재시도 (최대 60초)
-  let tries = 0;
-  const iv = setInterval(() => {
-    tries++;
-    if(injectMenuButton() || tries > 120){ clearInterval(iv); }
-  }, 500);
+    // 메뉴 모달 열림 감지 (MutationObserver)
+    const observer = new MutationObserver(function(){
+      if(!document.getElementById('p18-menu-insider')){
+        injectMenuButton();
+      }
+    });
+    observer.observe(document.body, {childList: true, subtree: true});
+  }
 
-  // 추가 안전장치: window.load 이벤트 후에도 1회 시도
-  window.addEventListener('load', () => {
-    setTimeout(() => injectMenuButton(), 100);
-  });
-
-  // 최종 안전장치: 3초 뒤 강제 시도
-  setTimeout(() => injectMenuButton(), 3000);
-}
-
-  // ─────────────────────────────────────────────
-  // 초기화
-  // ─────────────────────────────────────────────
-  window.p18OpenInsiderModal = openModal;
-  window.p18OpenKeyModal = openKeyModal;
-
+  // 전역 노출
   window.__phase18Insider = {
     version: VERSION,
     open: openModal,
-    openKey: openKeyModal,
-    callAPI,
-    analyze,
-    fetchRealTradeDate,
+    openKey: openKey,
+    callAPI: callAPI,
+    analyze: analyze,
     corpMap: CORP_MAP,
-    injectMenuButton
+    fetchRealTradeDate: fetchRealTradeDate,
+    fetchTransactionDetails: fetchTransactionDetails,
+    injectMenuButton: injectMenuButton,
+    realDateCache: realDateCache,
+    parseDetailCache: parseDetailCache
   };
+  window.p18OpenInsiderModal = openModal;
 
   if(document.readyState === 'loading'){
     document.addEventListener('DOMContentLoaded', scheduleMenuInjection);
   } else {
     scheduleMenuInjection();
   }
-
-  console.log(`[Phase18] 임원 지분변동 트래커 v${VERSION} 로드 완료`);
+  console.log('[Phase18] 임원 장내매수 정밀 트래커 v' + VERSION + ' 로드 완료');
 })();
