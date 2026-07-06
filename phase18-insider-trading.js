@@ -266,11 +266,12 @@
     return 'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=' + rcpNo;
   }
 
-  function signalCard(item, options){
+    function signalCard(item, options){
     options = options || {};
-    const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
-    const isRegistered = item.isu_exctv_rgist_at === '등기임원';
-    const color = irds >= 0 ? '#059669' : '#dc2626';
+    var irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
+    var isRegistered = item.isu_exctv_rgist_at === '등기임원';
+    var sign = irds >= 0 ? '+' : '';
+    var color = irds >= 0 ? '#059669' : '#dc2626';
 
     return '<div class="p18-card" style="padding:8px;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:6px;background:#fff;">' +
       '<div style="font-size:11px;color:#6b7280;">' +
