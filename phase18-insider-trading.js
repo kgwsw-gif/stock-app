@@ -10,7 +10,7 @@
  */
 (function(){
   'use strict';
-  const VERSION = '0.3.1';
+  const VERSION = '0.3.2';
   
   const CORP_MAP = {
     '005930': {code: '00126380', name: '삼성전자'},
@@ -154,7 +154,7 @@
     return data.list || [];
   }
 
-    function analyze(list){
+      function analyze(list){
     // 노이즈 클러스터(100명 이상 동일 접수일) 자동 제외
     const byDate = {};
     list.forEach(function(item){
@@ -168,7 +168,12 @@
       if(pair[1].length >= 100) noisyDates.add(pair[0]);
     });
 
-    const cleaned = list.filter(function(item){ return !noisyDates.has(item.rcept_dt); });
+    // v0.3.2: 노이즈 날짜여도 등기임원+1000주+ 매수는 예외적으로 유지 (개인 매수 가능성)
+    const cleaned = list.filter(function(item){
+      if(!noisyDates.has(item.rcept_dt)) return true;
+      const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
+      return item.isu_exctv_rgist_at === '등기임원' && irds >= 1000;
+    });
 
     // 매수/매도 분리 (100주 이상만)
     const buys = cleaned.filter(function(item){
@@ -180,13 +185,16 @@
       return irds <= -100;
     });
 
-    // 강한매수: 사장급 이상 + 5,000주+ + 단독성 (같은 날 매수 임원 5명 이하)
+    // v0.3.2: 강한매수는 등기임원 필터 추가 + 노이즈 날짜의 사장급 대량매수도 인정
     const strong = buys.filter(function(item){
       const title = item.isu_exctv_ofcps || '';
       const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
+      const isRegistered = item.isu_exctv_rgist_at === '등기임원';
       const isSenior = /사장|CEO|대표이사|회장|부회장/.test(title);
-      if(!isSenior || irds < 5000) return false;
-      // 단독성 체크: 같은 접수일에 5명 이하만 매수한 경우
+      if(!isRegistered || !isSenior || irds < 5000) return false;
+      // 노이즈 날짜(정기공시)에도 사장급 5000주+ 매수는 진짜 시그널로 인정
+      if(noisyDates.has(item.rcept_dt)) return true;
+      // 일반 날짜는 단독성 체크 (같은 날 매수 5명 이하)
       const sameDay = byDate[item.rcept_dt] || [];
       const sameDayBuys = sameDay.filter(function(x){
         const v = parseInt(String(x.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
@@ -199,14 +207,13 @@
     const now = new Date();
     const cutoff180 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 180);
     const notable = buys.filter(function(item){
-      // 정확히 "등기임원"만 (비등기임원 제외)
       const isRegistered = item.isu_exctv_rgist_at === '등기임원';
       const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
-      const dt = new Date(item.rcept_dt); // 이미 YYYY-MM-DD 형식
+      const dt = new Date(item.rcept_dt);
       return isRegistered && irds >= 1000 && dt >= cutoff180;
     }).sort(function(a,b){ return b.rcept_dt.localeCompare(a.rcept_dt); }).slice(0, 15);
 
-    // 클러스터: 3~99명 동시매수
+    // 클러스터: 3~99명 동시매수 (노이즈 날짜는 원래대로 제외)
     const clusters = [];
     Object.entries(byDate).forEach(function(pair){
       const date = pair[0];
