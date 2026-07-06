@@ -201,7 +201,6 @@
     const notable = buys.filter(function(item){
       // 정확히 "등기임원"만 (비등기임원 제외)
       const isRegistered = item.isu_exctv_rgist_at === '등기임원';
-      const sign = irds >= 0 ? '+' : '';
       const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
       const dt = new Date(item.rcept_dt); // 이미 YYYY-MM-DD 형식
       return isRegistered && irds >= 1000 && dt >= cutoff180;
