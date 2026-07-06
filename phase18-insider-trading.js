@@ -80,38 +80,35 @@
   const realDateCache = new Map();
 
   async function fetchRealTradeDate(rcept_no){
-    if(realDateCache.has(rcept_no)) return realDateCache.get(rcept_no);
-    try{
-      const mainUrl = `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rcept_no}`;
-      const r = await fetchViaProxy(mainUrl, 5000);
-      const html = await r.text();
+  // 캐시된 값이 유효한 결과(문자열)인 경우만 반환. null이면 재시도 허용
+  const cached = realDateCache.get(rcept_no);
+  if(cached && typeof cached === 'string') return cached;
 
-      // viewDoc 파라미터 추출
-      const m = html.match(/viewDoc\(\s*["'](\d+)["']\s*,\s*["'](\d+)["']\s*,\s*["'](\d*)["']\s*,\s*["'](\d+)["']\s*,\s*["'](\d+)["']\s*,\s*["']([^"']+)["']/);
-      if(!m){
-        realDateCache.set(rcept_no, null);
-        return null;
-      }
-      const [, rcp, dcm, ele, off, len, dtd] = m;
-      const viewerUrl = `https://dart.fss.or.kr/report/viewer.do?rcpNo=${rcp}&dcmNo=${dcm}&eleId=${ele||1}&offset=${off}&length=${len}&dtd=${dtd}`;
-      const rr = await fetchViaProxy(viewerUrl, 5000);
-      const doc = await rr.text();
+  try{
+    const mainUrl = `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rcept_no}`;
+    const r = await fetchViaProxy(mainUrl, 8000);
+    const html = await r.text();
 
-      // "보고의무발생일 : YYYY년 MM월 DD일" 패턴 추출
-      const dateMatch = doc.match(/보고의무발생일\s*[:：]\s*(\d{4})[년\.\-\/\s]+(\d{1,2})[월\.\-\/\s]+(\d{1,2})/);
-      if(dateMatch){
-        const [, y, mo, d] = dateMatch;
-        const isoDate = `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
-        realDateCache.set(rcept_no, isoDate);
-        return isoDate;
-      }
-      realDateCache.set(rcept_no, null);
-      return null;
-    }catch(e){
-      realDateCache.set(rcept_no, null);
-      return null;
+    const m = html.match(/viewDoc\(\s*["'](\d+)["']\s*,\s*["'](\d+)["']\s*,\s*["'](\d*)["']\s*,\s*["'](\d+)["']\s*,\s*["'](\d+)["']\s*,\s*["']([^"']+)["']/);
+    if(!m) return null; // 실패 시 캐시에 저장하지 않음 (재시도 허용)
+
+    const [, rcp, dcm, ele, off, len, dtd] = m;
+    const viewerUrl = `https://dart.fss.or.kr/report/viewer.do?rcpNo=${rcp}&dcmNo=${dcm}&eleId=${ele||1}&offset=${off}&length=${len}&dtd=${dtd}`;
+    const rr = await fetchViaProxy(viewerUrl, 8000);
+    const doc = await rr.text();
+
+    const dateMatch = doc.match(/보고의무발생일\s*[:：]\s*(\d{4})[년\.\-\/\s]+(\d{1,2})[월\.\-\/\s]+(\d{1,2})/);
+    if(dateMatch){
+      const [, y, mo, d] = dateMatch;
+      const isoDate = `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
+      realDateCache.set(rcept_no, isoDate);  // 성공만 캐싱
+      return isoDate;
     }
+    return null;
+  }catch(e){
+    return null; // 실패는 캐시하지 않음
   }
+}
 
   // ─────────────────────────────────────────────
   // 시그널 분석 v0.2.0
@@ -316,13 +313,21 @@
     container.innerHTML = html;
 
     // 실거래일 비동기 로드 (시그널 항목만)
-    const slots = container.querySelectorAll('.p18-realdate');
-    slots.forEach(async slot => {
-      const rcept = slot.dataset.rcept;
-      const realDate = await fetchRealTradeDate(rcept);
-      if(realDate) slot.innerHTML = `→ 실거래 ${realDate}`;
-      else slot.innerHTML = '';
-    });
+        // 실거래일 순차 로드 (프록시 부하 방지)
+    const slots = Array.from(container.querySelectorAll('.p18-realdate'));
+    (async () => {
+      for(const slot of slots){
+        const rcept = slot.dataset.rcept;
+        const realDate = await fetchRealTradeDate(rcept);
+        if(realDate){
+          slot.innerHTML = `→ 실거래 ${realDate}`;
+          slot.style.color = '#059669';
+        } else {
+          slot.innerHTML = '';
+        }
+        await new Promise(r => setTimeout(r, 200));
+      }
+    })();
   }
 
   function statCard(label, val, color, sub){
