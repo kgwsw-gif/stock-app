@@ -143,11 +143,12 @@
     return null;
   }
 
-  async function callAPI(corpCode){
+    async function callAPI(corpCode){
     const key = getApiKey();
     if(!key) throw new Error('DART API 키가 없습니다');
     const url = 'https://opendart.fss.or.kr/api/elestock.json?crtfc_key=' + key + '&corp_code=' + corpCode;
-    const res = await fetch(url);
+    const proxied = 'https://corsproxy.io/?' + encodeURIComponent(url);
+    const res = await fetch(proxied);
     const data = await res.json();
     if(data.status !== '000') throw new Error(data.message || 'API 오류');
     return data.list || [];
