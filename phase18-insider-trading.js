@@ -16,7 +16,7 @@
 (function(){
   'use strict';
 
-  const VERSION = '0.2.0';
+  const VERSION = '0.2.1';
   const MODAL_ID = 'p18-insider-modal';
   const KEY_MODAL_ID = 'p18-apikey-modal';
   const MENU_BTN_ID = 'p18-menu-insider';
@@ -476,7 +476,8 @@
     if(document.getElementById(MENU_BTN_ID)) return true;
 
     // Phase16의 기존 버튼을 앵커로 삼아 부모 그리드 발견
-    const anchors = ['p16-menu-stats', 'p16-menu-channels', 'p16-menu-info-note', 'p17-menu-draft'];
+    const anchorsconst anchors = ['p16-menu-stats', 'p16-menu-channels', 'p16-menu-info-note', 'p17-menu-ai-draft'];
+    = ['p16-menu-stats', 'p16-menu-channels', 'p16-menu-info-note', 'p17-menu-draft'];
     let grid = null;
     for(const id of anchors){
       const el = document.getElementById(id);
@@ -497,12 +498,24 @@
 
   // Phase16 준비 대기 (최대 30초)
   function scheduleMenuInjection(){
-    let tries = 0;
-    const iv = setInterval(() => {
-      tries++;
-      if(injectMenuButton() || tries > 60){ clearInterval(iv); }
-    }, 500);
-  }
+  // 즉시 1회 시도
+  if(injectMenuButton()) return;
+
+  // 실패 시 500ms 간격 재시도 (최대 60초)
+  let tries = 0;
+  const iv = setInterval(() => {
+    tries++;
+    if(injectMenuButton() || tries > 120){ clearInterval(iv); }
+  }, 500);
+
+  // 추가 안전장치: window.load 이벤트 후에도 1회 시도
+  window.addEventListener('load', () => {
+    setTimeout(() => injectMenuButton(), 100);
+  });
+
+  // 최종 안전장치: 3초 뒤 강제 시도
+  setTimeout(() => injectMenuButton(), 3000);
+}
 
   // ─────────────────────────────────────────────
   // 초기화
