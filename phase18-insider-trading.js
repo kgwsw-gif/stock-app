@@ -10,7 +10,7 @@
  */
 (function(){
   'use strict';
-  const VERSION = '0.3.2';
+  const VERSION = '0.3.3';
   
   const CORP_MAP = {
     '005930': {code: '00126380', name: '삼성전자'},
@@ -82,6 +82,19 @@
 
       // 1. 정정공시 여부
       details.isCorrection = text.includes('정 정 신 고') || text.includes('정정신고');
+      // v0.3.3: 짧은 정정사유 추출 (표지 요약형 정정공시용)
+      if(details.isCorrection){
+        // "정정사유" 컬럼 다음의 텍스트를 최대 30자까지 추출
+        const shortReasonMatch = text.match(/정정사유\s*정\s*정\s*전\s*정\s*정\s*후\s*([^0-9]{2,30}?)(?:\s*\d|\s*-|\s*보고사유)/);
+        if(shortReasonMatch){
+          details.shortReason = shortReasonMatch[1].trim().replace(/\s+/g, ' ');
+        }
+        // 대체 패턴: "특정증권 소유상황" 다음의 한글 텍스트
+        if(!details.shortReason){
+          const altMatch = text.match(/특정증권\s*소유상황\s+([가-힣\s]{5,40}?)(?:\s*\d|주\s|\s\d)/);
+          if(altMatch) details.shortReason = altMatch[1].trim().replace(/\s+/g,' ');
+        }
+      }
 
       // 2. 보고의무발생일 (표지 - 모든 문서 공통)
       const oblMatch = text.match(/보고의무발생일\s*[:：]\s*(\d{4})[\.\-\/년\s]+(\d{1,2})[\.\-\/월\s]+(\d{1,2})/);
@@ -320,7 +333,7 @@
         '<span style="color:#6b7280;margin-left:8px;">총 ' + fmtNum(analysis.total) + '건 · 임원 지분변동 시그널 분석</span>' +
       '</div>' +
       '<div style="background:#fef3c7;border-left:3px solid #f59e0b;padding:8px 10px;margin-bottom:12px;border-radius:4px;font-size:11px;color:#78350f;">' +
-        '⚠️ <strong>데이터 안내:</strong> 접수일 기준. 취득유형은 정정공시(전체의 25%)에서만 자동 파싱됩니다. 원본 보고서는 📄 아이콘으로 DART에서 직접 확인하세요.' +
+        '⚠️ <strong>데이터 안내:</strong> 접수일 기준. 취득유형 배지: 🟢장내매수 / ⚪자사주상여금 / 🔵신규선임 / 📝정정공시(사유 축약) / ⚫원문 확인 필요. 상세는 📄 DART 원문 참고.' +
       '</div>' +
       '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:12px;">' +
         '<div style="padding:8px;background:#fee2e2;border-radius:4px;text-align:center;"><div style="font-size:11px;color:#7f1d1d;">🔥 강한매수</div><div style="font-size:20px;font-weight:700;color:#b91c1c;">' + analysis.strong.length + '</div><div style="font-size:9px;color:#7f1d1d;">사장급≥5,000주</div></div>' +
@@ -340,10 +353,9 @@
       '<h3 style="font-size:13px;margin:12px 0 6px;color:#1d4ed8;">💎 클러스터 매수 (3~99명 동시)</h3>' + clustersHtml +
       '<div id="p18-bonus-section" style="margin-top:16px;"></div>';
 
-    // 비동기 상세 파싱 (순차 처리)
+        // 비동기 상세 파싱 (순차 처리) - v0.3.3
     setTimeout(async function(){
       const slots = container.querySelectorAll('.p18-realdate');
-      const bonusCards = []; // 자사주상여금 등 노이즈 카드
 
       for(let i = 0; i < slots.length; i++){
         const slot = slots[i];
@@ -366,16 +378,30 @@
               slot.textContent = '';
             }
 
-            // 취득유형 배지
-            if(badgeEl && details.category !== 'unknown'){
+            // v0.3.3: 취득유형 배지 (확장)
+            if(badgeEl){
               const badgeStyles = {
-                'buy': {bg:'#059669', text:'🟢 장내매수', color:'#fff'},
-                'bonus': {bg:'#9ca3af', text:'⚪ 자사주상여금', color:'#fff'},
-                'appointment': {bg:'#2563eb', text:'🔵 신규선임', color:'#fff'},
-                'other': {bg:'#6b7280', text:details.primaryReason || '기타', color:'#fff'}
+                'buy': {bg:'#059669', text:'🟢 장내매수', color:'#fff', title:'정정공시에서 장내매수 확인'},
+                'bonus': {bg:'#9ca3af', text:'⚪ 자사주상여금', color:'#fff', title:'자사주 상여 또는 스톡옵션'},
+                'appointment': {bg:'#2563eb', text:'🔵 신규선임', color:'#fff', title:'선임 시 보유주식 보고'},
+                'other': {bg:'#6b7280', text:'⚫ ' + (details.primaryReason || '기타'), color:'#fff', title:details.primaryReason || '기타 사유'}
               };
-              const b = badgeStyles[details.category];
-              badgeEl.innerHTML = '<span style="background:' + b.bg + ';color:' + b.color + ';padding:1px 5px;border-radius:2px;font-size:10px;">' + b.text + '</span>';
+
+              if(details.category !== 'unknown'){
+                // 파싱 성공: 취득유형 배지
+                const b = badgeStyles[details.category];
+                badgeEl.innerHTML = '<span title="' + b.title + '" style="background:' + b.bg + ';color:' + b.color + ';padding:1px 5px;border-radius:2px;font-size:10px;">' + b.text + '</span>';
+              } else if(details.isCorrection){
+                // 정정공시지만 취득유형 파싱 실패: 정정 아이콘 + 짧은 사유
+                const reasonText = details.shortReason 
+                  ? '📝 정정: ' + details.shortReason.slice(0, 20)
+                  : '📝 정정공시';
+                const title = details.shortReason || '정정공시 (상세는 📄 원문 확인)';
+                badgeEl.innerHTML = '<span title="' + title.replace(/"/g,'&quot;') + '" style="background:#f59e0b;color:#fff;padding:1px 5px;border-radius:2px;font-size:10px;">' + reasonText + '</span>';
+              } else {
+                // 원본 보고서: 취득유형 확인 불가
+                badgeEl.innerHTML = '<span title="원문 확인 필요 (📄 아이콘 클릭)" style="background:#e5e7eb;color:#4b5563;padding:1px 5px;border-radius:2px;font-size:10px;">⚫ 원문 확인</span>';
+              }
             }
 
             // 매수단가
@@ -393,6 +419,10 @@
             }
           } else {
             slot.textContent = '';
+            // 파싱 자체 실패: 회색 배지
+            if(badgeEl){
+              badgeEl.innerHTML = '<span title="파싱 실패 (프록시 오류 또는 접근 불가)" style="background:#e5e7eb;color:#9ca3af;padding:1px 5px;border-radius:2px;font-size:10px;">❌ 파싱실패</span>';
+            }
           }
         } catch(e){
           slot.textContent = '';
