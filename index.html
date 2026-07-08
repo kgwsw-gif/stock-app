@@ -26886,7 +26886,7 @@ window.showAddHoldingModal = showAddHoldingModal;
       return entry;
     };
 
-    // ─── UI: 마지막 갱신 시각 배지 ───
+        // ─── UI: 마지막 갱신 시각 배지 (v0.3.7.1 hotfix) ───
     window.renderWagthedogFreshness = function() {
       var log = JSON.parse(localStorage.getItem('wagthedog_log') || '[]');
       if (log.length === 0) return;
@@ -26899,9 +26899,15 @@ window.showAddHoldingModal = showAddHoldingModal;
       var isStale = ageMin > 1440;
       var color = isStale ? '#dc2626' : '#059669';
       var icon = isStale ? '⚠️' : '✅';
-      var header = Array.from(document.querySelectorAll('*')).find(function(el){
-        return el.textContent.trim().indexOf('📋 과거 이력') === 0 && el.children.length === 0;
-      });
+      // 개선된 헤더 탐색: "과거 이력" 텍스트를 직접 포함하는 가장 작은 요소
+      var candidates = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p,td,th'))
+        .filter(function(el){
+          return Array.from(el.childNodes).some(function(n){
+            return n.nodeType === 3 && n.textContent.indexOf('과거 이력') !== -1;
+          });
+        })
+        .sort(function(a, b){ return a.textContent.length - b.textContent.length; });
+      var header = candidates[0];
       if (!header) return;
       var existingBadge = document.getElementById('wtd-freshness-badge');
       if (existingBadge) existingBadge.remove();
