@@ -26831,6 +26831,113 @@ window.showAddHoldingModal = showAddHoldingModal;
   <script src="phase16-ticker-integration.js"></script>
   <script src="phase17-ai-draft.js"></script>
   <script src="phase18-insider-trading.js"></script>
+  
+  <!-- ══════════════════════════════════════════════════════ -->
+  <!-- v0.3.7 왭더독 자동 백필 & UI 개선 (2026-07-08 추가) -->
+  <!-- ══════════════════════════════════════════════════════ -->
+  <script>
+  (function() {
+    'use strict';
+
+    // ─── 자동 백필 함수 (스켈레톤: v0.3.8에서 파서 완성) ───
+    window.backfillWagthedog = async function(days) {
+      days = days || 30;
+      console.log('🔄 왭더독 백필 대상 스캔 (최근 ' + days + '일)');
+      var existing = new Set(
+        JSON.parse(localStorage.getItem('wagthedog_log') || '[]').map(function(x){return x.date;})
+      );
+      var targets = [];
+      var now = new Date();
+      for (var i = 1; i <= days; i++) {
+        var d = new Date(now.getTime() - i * 86400000);
+        var dow = d.getDay();
+        if (dow === 0 || dow === 6) continue;
+        var iso = d.toISOString().slice(0, 10);
+        if (!existing.has(iso)) targets.push(iso);
+      }
+      if (targets.length === 0) {
+        console.log('✅ 백필 대상 없음. 모든 영업일 존재.');
+        return { filled: 0, skipped: 0, failed: 0, details: [] };
+      }
+      console.log('📋 수동 입력 대상 ' + targets.length + '일:', targets);
+      console.log('💡 fillWagthedog("YYYY-MM-DD", 현물억, 선물계약, KP200등락률) 로 하나씩 입력하세요.');
+      return { filled: 0, skipped: targets.length, failed: 0,
+               details: targets.map(function(d){return {date:d, status:'need_manual'};}) };
+    };
+
+    // ─── 수동 입력 헬퍼 ───
+    window.fillWagthedog = function(date, spotNet, futuresNet, kospi200Change) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        console.error('❌ 날짜 형식은 YYYY-MM-DD');
+        return null;
+      }
+      if (typeof window.saveForeignFlow !== 'function') {
+        console.error('❌ saveForeignFlow 함수를 찾을 수 없습니다.');
+        return null;
+      }
+      var entry = window.saveForeignFlow(date, spotNet, futuresNet, kospi200Change);
+      console.log('✅ 저장:', entry);
+      console.log('총 건수:', window.getForeignFlowHistory().length);
+      setTimeout(function(){
+        if (typeof window.renderWagthedogFreshness === 'function') {
+          window.renderWagthedogFreshness();
+        }
+      }, 100);
+      return entry;
+    };
+
+    // ─── UI: 마지막 갱신 시각 배지 ───
+    window.renderWagthedogFreshness = function() {
+      var log = JSON.parse(localStorage.getItem('wagthedog_log') || '[]');
+      if (log.length === 0) return;
+      var latest = log[log.length - 1];
+      var savedAt = new Date(latest.savedAt);
+      var ageMin = Math.floor((Date.now() - latest.savedAt) / 60000);
+      var ageStr = ageMin < 60 ? ageMin + '분 전'
+        : ageMin < 1440 ? Math.floor(ageMin/60) + '시간 전'
+        : Math.floor(ageMin/1440) + '일 전';
+      var isStale = ageMin > 1440;
+      var color = isStale ? '#dc2626' : '#059669';
+      var icon = isStale ? '⚠️' : '✅';
+      var header = Array.from(document.querySelectorAll('*')).find(function(el){
+        return el.textContent.trim().indexOf('📋 과거 이력') === 0 && el.children.length === 0;
+      });
+      if (!header) return;
+      var existingBadge = document.getElementById('wtd-freshness-badge');
+      if (existingBadge) existingBadge.remove();
+      var badge = document.createElement('span');
+      badge.id = 'wtd-freshness-badge';
+      badge.style.cssText =
+        'display:inline-block;margin-left:12px;padding:2px 8px;' +
+        'background:' + color + '15;color:' + color + ';border-radius:12px;' +
+        'font-size:11px;font-weight:600;vertical-align:middle;';
+      badge.innerHTML = icon + ' ' + latest.date + ' · ' + ageStr;
+      badge.title = '저장 시각: ' + savedAt.toLocaleString('ko-KR') + '\n총 ' + log.length + '건';
+      header.appendChild(badge);
+    };
+
+    // ─── showWagTheDog 래핑 (배지 자동 표시) ───
+    if (typeof window.showWagTheDog === 'function') {
+      var _origShowWTD = window.showWagTheDog;
+      window.showWagTheDog = function() {
+        var result = _origShowWTD.apply(this, arguments);
+        setTimeout(function(){ window.renderWagthedogFreshness(); }, 100);
+        return result;
+      };
+    }
+
+    // ─── 앱 로드 시 자동 실행 ───
+    var runInit = function() {
+      setTimeout(function(){
+        window.renderWagthedogFreshness();
+      }, 2000);
+    };
+    if (document.readyState === 'complete') runInit();
+    else window.addEventListener('load', runInit);
+
+    console.log('✅ v0.3.7 왭더독 백필 & UI 개선 로드 완료');
+  })();
+</script>
 </body>
 </html>
 
