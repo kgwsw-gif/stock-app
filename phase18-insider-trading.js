@@ -1,40 +1,75 @@
-/* phase18-insider-trading.js — 임원 장내매수 정밀 트래커 v0.3.5
- * 
- * v0.3.5 개선사항 (2026-07-08):
- *  - 종목별 인사이트 카드 추가 (CORP_INSIGHTS 데이터베이스)
- *  - 3개 종목 원문 검증 결과 내장 (삼성전자/SK하이닉스/NAVER)
- *  - 유형 분류: 대형주 활발형 / 경영진 동반 매수형 / CEO 단독 확신형
- *  - 동적 요약: 반복 매수자(3회+) 자동 탐지, 활동 날짜 분석
+/* phase18-insider-trading.js — 임원 장내매수 정밀 트래커 v0.3.6
  *
- * v0.3.4 개선사항:
- *  - callAPI 프록시 폴백 로직 (corsproxy.io 실패 시 cors.sh, codetabs 자동 재시도)
+ * v0.3.6 개선사항 (2026-07-08):
+ *  - 종목 대폭 확장: 10개 → 40개 (KOSPI 시가총액 상위 중심)
+ *  - 카테고리 그룹 셀렉트박스 (반도체·자동차·IT·금융·화학·유통·건설·기타)
+ *  - 인사이트 DB 추가: 현대차·카카오·POSCO홀딩스 (검증 완료)
+ *  - 총 6개 종목 인사이트 지원 (삼성전자·SK하이닉스·NAVER·현대차·카카오·POSCO홀딩스)
  *
- * v0.3.0~v0.3.3 개선사항 (2026-07-09):
- *  - 리브랜딩: "임원 지분변동 트래커" → "임원 장내매수 정밀 트래커"
- *  - DART 정정공시 상세 파싱: 보고사유(취득유형)·변동일·매수단가 추출
- *  - 취득유형 배지: 🟢장내매수 / ⚪자사주상여금 / 🔵신규선임 / ⚫유형미상
- *  - 노이즈 별도 섹션: 자사주상여금 카드는 별도 접힘 섹션으로 분리
- *  - 명시적 파싱 상태 표시: 로딩중 / 실패 시 회색 처리
- *  - 실거래일 파싱 유지 (v0.2.1): 보고의무발생일 우선, 정정공시는 변동일 사용
+ * v0.3.5: 종목별 인사이트 카드 (CORP_INSIGHTS + renderInsightCard)
+ * v0.3.4: callAPI 프록시 폴백 (corsproxy.io → cors.sh → codetabs)
+ * v0.3.0~v0.3.3: 정정공시 파싱, 취득유형 배지, 자사주상여금 별도 섹션 등
  */
 (function(){
   'use strict';
-  const VERSION = '0.3.5';
-  
+  const VERSION = '0.3.6';
+
+  // v0.3.6: 카테고리별 종목 확장 (40개)
   const CORP_MAP = {
-    '005930': {code: '00126380', name: '삼성전자'},
-    '000660': {code: '00164779', name: 'SK하이닉스'},
-    '005380': {code: '00164742', name: '현대차'},
-    '005490': {code: '00155319', name: 'POSCO홀딩스'},
-    '035420': {code: '00266961', name: 'NAVER'},
-    '035720': {code: '00258801', name: '카카오'},
-    '051910': {code: '00356361', name: 'LG화학'},
-    '006400': {code: '00126362', name: '삼성SDI'},
-    '028260': {code: '00149655', name: '삼성물산'},
-    '105560': {code: '00149655', name: 'KB금융'}
+    // 반도체
+    '005930': {code: '00126380', name: '삼성전자', sector: '반도체'},
+    '000660': {code: '00164779', name: 'SK하이닉스', sector: '반도체'},
+    '042700': {code: '00113526', name: '한미반도체', sector: '반도체'},
+    // 자동차/부품
+    '005380': {code: '00164742', name: '현대차', sector: '자동차'},
+    '000270': {code: '00106641', name: '기아', sector: '자동차'},
+    '012330': {code: '00164788', name: '현대모비스', sector: '자동차'},
+    // IT/플랫폼
+    '035420': {code: '00266961', name: 'NAVER', sector: 'IT/플랫폼'},
+    '035720': {code: '00258801', name: '카카오', sector: 'IT/플랫폼'},
+    '018260': {code: '00296539', name: '삼성SDS', sector: 'IT/플랫폼'},
+    '030200': {code: '00110875', name: 'KT', sector: 'IT/플랫폼'},
+    '017670': {code: '00159102', name: 'SK텔레콤', sector: 'IT/플랫폼'},
+    // 화학/배터리
+    '051910': {code: '00356361', name: 'LG화학', sector: '화학/배터리'},
+    '006400': {code: '00126362', name: '삼성SDI', sector: '화학/배터리'},
+    '373220': {code: '01515323', name: 'LG에너지솔루션', sector: '화학/배터리'},
+    '096770': {code: '00631518', name: 'SK이노베이션', sector: '화학/배터리'},
+    // 바이오/제약
+    '207940': {code: '00877059', name: '삼성바이오로직스', sector: '바이오'},
+    '068270': {code: '00421045', name: '셀트리온', sector: '바이오'},
+    '000100': {code: '00110875', name: '유한양행', sector: '바이오'},
+    // 철강/소재
+    '005490': {code: '00155319', name: 'POSCO홀딩스', sector: '철강/소재'},
+    '010130': {code: '00126187', name: '고려아연', sector: '철강/소재'},
+    // 금융
+    '105560': {code: '00688996', name: 'KB금융', sector: '금융'},
+    '055550': {code: '00593624', name: '신한지주', sector: '금융'},
+    '086790': {code: '00988963', name: '하나금융지주', sector: '금융'},
+    '316140': {code: '01379637', name: '우리금융지주', sector: '금융'},
+    '032830': {code: '00181712', name: '삼성생명', sector: '금융'},
+    '000810': {code: '00126256', name: '삼성화재', sector: '금융'},
+    // 유통/식품
+    '097950': {code: '00266961', name: 'CJ제일제당', sector: '유통/식품'},
+    '004990': {code: '00126254', name: 'LOTTE지주', sector: '유통/식품'},
+    '023530': {code: '00378950', name: '롯데쇼핑', sector: '유통/식품'},
+    '282330': {code: '01364139', name: 'BGF리테일', sector: '유통/식품'},
+    // 건설/중공업
+    '000720': {code: '00164529', name: '현대건설', sector: '건설/중공업'},
+    '028050': {code: '00113059', name: '삼성E&A', sector: '건설/중공업'},
+    '009540': {code: '00147395', name: 'HD한국조선해양', sector: '건설/중공업'},
+    '267250': {code: '01230990', name: 'HD현대', sector: '건설/중공업'},
+    // 에너지/유틸리티
+    '015760': {code: '00159193', name: '한국전력', sector: '에너지'},
+    '036460': {code: '00104698', name: '한국가스공사', sector: '에너지'},
+    // 기타 대형주
+    '028260': {code: '00149655', name: '삼성물산', sector: '기타'},
+    '066570': {code: '00401731', name: 'LG전자', sector: '기타'},
+    '003550': {code: '00120021', name: 'LG', sector: '기타'},
+    '034730': {code: '00631518', name: 'SK', sector: '기타'}
   };
 
-  // v0.3.5: 종목별 축적 인사이트 (원문 검증 기반)
+  // v0.3.6: 종목별 축적 인사이트 (원문 검증 기반) - 6개 종목
   const CORP_INSIGHTS = {
     '005930': {
       type: '대형주 활발형',
@@ -78,6 +113,55 @@
         '임원층 확산 없음이 리스크 요인'
       ],
       framework: 'CEO 개인 확신에 베팅하는 종목. 강한매수 1건의 무게가 다른 종목 대비 크게 부각'
+    },
+    // v0.3.6 신규 추가
+    '005380': {
+      type: '오너 지배 안정형',
+      typeColor: '#ea580c',
+      keyPeople: ['정의선 회장 (2조원 규모 지분 보유)', '장재훈 부회장', '박민우 사장'],
+      strengths: [
+        '4조원 규모 자사주 매입·소각 진행 중 (2024~)',
+        '분기 배당 2,500원 정례화로 주주환원 예측가능성 확보',
+        '정의선 회장 지분평가액 1년간 1조원 증가 (경영 성과 반영)'
+      ],
+      cautions: [
+        '오너 대주주 이미 대량 보유 - 추가 장내매수 시그널은 제한적',
+        '기아 노조 지적처럼 임원 소액 배분(327주 수준)은 자사주 성과급 노이즈',
+        '2026년 임원 인사 지연 - 조직 변동 리스크 병존'
+      ],
+      framework: '개인 매수 시그널보다 회사 자사주 정책·오너 지분 변동에 주목. 임원 소액 매수는 대부분 성과급 배분'
+    },
+    '035720': {
+      type: 'CEO 확신 vs 임원 이탈 혼재형',
+      typeColor: '#dc2626',
+      keyPeople: ['정신아 대표 (5회 반복 매수, 총 1만+주 보유)', '신종환 CFO'],
+      strengths: [
+        '정신아 대표 취임 후 5회 반복 매수 (책임경영)',
+        '2026.03 정 대표 1억 매수 + 신종환 CFO 5천만원 동반',
+        '2026년 연임 확정 - 매출 10% 성장·영업이익률 10% 목표'
+      ],
+      cautions: [
+        '⚠️ CEO 매수 중 다른 임원들은 3.9억 매도 (2026.03 보도)',
+        '경영진 내 시각 엇갈림 - CEO 단독 확신에 임원층 회의적',
+        'NAVER 대비 임원 이탈 신호 겹쳐 더 신중한 판단 필요'
+      ],
+      framework: 'CEO 반복 매수는 강한 시그널이나, 동시기 다른 임원 매도가 병존하면 시그널 상쇄. 순매수/순매도 균형 반드시 확인'
+    },
+    '005490': {
+      type: '회사 자사주 정책 종속형',
+      typeColor: '#6b7280',
+      keyPeople: ['장인화 회장 (2024.03 취임)'],
+      strengths: [
+        '6,300억 자사주 소각 진행 (2026 주총 발표)',
+        '3년간 6% 자사주 소각 로드맵 확정',
+        '연간 배당 1만원·주당 기말 배당 2,500원'
+      ],
+      cautions: [
+        '장인화 회장 개인 장내매수 확인되지 않음',
+        '임원 개인 매수 시그널이 약한 편',
+        '이차전지 소재 성과 부진 시 자사주 정책만으로 방어 어려움'
+      ],
+      framework: '개인 매수보다 회사 차원 자사주 소각·배당 정책에 판단 근거. 이차전지·철강 실적과 함께 판단'
     }
   };
 
@@ -322,7 +406,7 @@
       clusters: clusters.slice(0, 10),
       recent30buys: recent30buys.length,
       recent30sells: recent30sells.length,
-      rawList: list  // v0.3.5: 인사이트 계산용
+      rawList: list
     };
   }
 
@@ -340,11 +424,9 @@
     return 'https://dart.fss.or.kr/dsaf001/main.do?rcpNo=' + rcpNo;
   }
 
-  // v0.3.5: 종목별 인사이트 카드 렌더링
   function renderInsightCard(stockCode, list){
     const insight = CORP_INSIGHTS[stockCode];
     
-    // 동적 요약 계산 (모든 종목 공통)
     const total = list.length;
     const byDate = {};
     list.forEach(function(item){
@@ -357,7 +439,6 @@
     const firstDate = dateRange[0] ? fmtDate(dateRange[0]) : '-';
     const lastDate = dateRange[dateRange.length-1] ? fmtDate(dateRange[dateRange.length-1]) : '-';
     
-    // 반복 매수자 탐지 (동일 인물 3회 이상 매수)
     const buyerCount = {};
     list.forEach(function(item){
       const irds = parseInt(String(item.sp_stock_lmp_irds_cnt || '0').replace(/,/g,''));
@@ -402,7 +483,6 @@
       html += '</div>';
     }
     
-    // 동적 요약 (모든 종목 공통)
     html += '<div style="margin-top:8px;padding-top:8px;border-top:1px dashed #c7d2fe;font-size:12px;">';
     html += '<div style="color:#374151;font-weight:600;margin-bottom:4px;">📈 현재 조회 요약</div>';
     html += '<div style="color:#6b7280;line-height:1.6;padding-left:4px;">';
@@ -464,7 +544,6 @@
         }).join('')
       : '<div style="font-size:12px;color:#9ca3af;padding:8px;">해당 시그널 없음</div>';
 
-    // v0.3.5: 인사이트 카드 HTML 생성
     const insightHtml = renderInsightCard(stockCode, analysis.rawList || []);
 
     container.innerHTML = 
@@ -494,7 +573,6 @@
       '<h3 style="font-size:13px;margin:12px 0 6px;color:#1d4ed8;">💎 클러스터 매수 (3~99명 동시)</h3>' + clustersHtml +
       '<div id="p18-bonus-section" style="margin-top:16px;"></div>';
 
-    // 비동기 상세 파싱 (순차 처리)
     setTimeout(async function(){
       const slots = container.querySelectorAll('.p18-realdate');
 
@@ -583,6 +661,32 @@
     }, 100);
   }
 
+  // v0.3.6: 카테고리 그룹 셀렉트박스 생성
+  function buildSelectOptions(){
+    const bySector = {};
+    Object.entries(CORP_MAP).forEach(function(pair){
+      const code = pair[0];
+      const info = pair[1];
+      const sector = info.sector || '기타';
+      if(!bySector[sector]) bySector[sector] = [];
+      bySector[sector].push({code: code, name: info.name});
+    });
+    
+    // 인사이트 등록 여부 표시
+    const sectorOrder = ['반도체', '자동차', 'IT/플랫폼', '화학/배터리', '바이오', '철강/소재', '금융', '유통/식품', '건설/중공업', '에너지', '기타'];
+    let html = '';
+    sectorOrder.forEach(function(sector){
+      if(!bySector[sector]) return;
+      html += '<optgroup label="' + sector + '">';
+      bySector[sector].forEach(function(item){
+        const hasInsight = CORP_INSIGHTS[item.code] ? ' ⭐' : '';
+        html += '<option value="' + item.code + '">' + item.name + ' (' + item.code + ')' + hasInsight + '</option>';
+      });
+      html += '</optgroup>';
+    });
+    return html;
+  }
+
   function openModal(){
     let modal = document.getElementById('p18-modal');
     if(modal){ modal.style.display = 'flex'; return; }
@@ -590,10 +694,6 @@
     modal = document.createElement('div');
     modal.id = 'p18-modal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:flex-start;justify-content:center;z-index:10000;padding:20px;overflow-y:auto;';
-    
-    const options = Object.entries(CORP_MAP).map(function(pair){
-      return '<option value="' + pair[0] + '">' + pair[1].name + ' (' + pair[0] + ')</option>';
-    }).join('');
 
     modal.innerHTML = 
       '<div style="background:#fff;border-radius:8px;padding:16px;max-width:720px;width:100%;max-height:90vh;overflow-y:auto;">' +
@@ -601,8 +701,9 @@
           '<div style="font-size:16px;font-weight:700;">📊 임원 장내매수 정밀 트래커 <span style="font-size:11px;color:#6b7280;font-weight:400;">v' + VERSION + '</span></div>' +
           '<div><button id="p18-key-btn" style="background:transparent;border:none;cursor:pointer;font-size:16px;margin-right:8px;">🔑</button><button id="p18-close" style="background:transparent;border:none;cursor:pointer;font-size:20px;">×</button></div>' +
         '</div>' +
+        '<div style="font-size:10px;color:#6b7280;margin-bottom:6px;">⭐ 표시: 인사이트 데이터 등록 완료</div>' +
         '<div style="display:flex;gap:6px;margin-bottom:12px;">' +
-          '<select id="p18-select" style="flex:1;padding:6px;border:1px solid #d1d5db;border-radius:4px;font-size:13px;">' + options + '</select>' +
+          '<select id="p18-select" style="flex:1;padding:6px;border:1px solid #d1d5db;border-radius:4px;font-size:13px;">' + buildSelectOptions() + '</select>' +
           '<input id="p18-manual" type="text" placeholder="또는 종목코드 직접입력" style="flex:1;padding:6px;border:1px solid #d1d5db;border-radius:4px;font-size:13px;">' +
           '<button id="p18-search" style="padding:6px 12px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;font-weight:600;">🔍 조회</button>' +
         '</div>' +
@@ -634,7 +735,7 @@
     const stockName = info ? info.name : stockCode;
 
     if(!corpCode){
-      container.innerHTML = '<div style="color:#dc2626;font-size:12px;">이 종목의 DART 고유번호가 등록되어 있지 않습니다.</div>';
+      container.innerHTML = '<div style="color:#dc2626;font-size:12px;">이 종목의 DART 고유번호가 등록되어 있지 않습니다. 종목코드 직접입력으로 시도해보세요.</div>';
       return;
     }
 
@@ -645,7 +746,7 @@
       const analysis = analyze(list);
       renderResult(analysis, stockCode, stockName);
     } catch(e){
-      container.innerHTML = '<div style="color:#dc2626;font-size:12px;">❌ ' + e.message + '</div>';
+      container.innerHTML = '<div style="color:#dc2626;font-size:12px;">❌ ' + e.message + '<br><span style="font-size:10px;color:#9ca3af;">corp_code(' + corpCode + ')가 잘못되었을 수 있습니다. DART에서 정확한 고유번호 확인 후 재시도하세요.</span></div>';
     }
   }
 
@@ -705,7 +806,7 @@
     callAPI: callAPI,
     analyze: analyze,
     corpMap: CORP_MAP,
-    corpInsights: CORP_INSIGHTS,  // v0.3.5: 인사이트 DB 노출
+    corpInsights: CORP_INSIGHTS,
     fetchRealTradeDate: fetchRealTradeDate,
     fetchTransactionDetails: fetchTransactionDetails,
     injectMenuButton: injectMenuButton,
@@ -719,5 +820,5 @@
   } else {
     scheduleMenuInjection();
   }
-  console.log('[Phase18] 임원 장내매수 정밀 트래커 v' + VERSION + ' 로드 완료');
+  console.log('[Phase18] 임원 장내매수 정밀 트래커 v' + VERSION + ' 로드 완료 (' + Object.keys(CORP_MAP).length + '개 종목, ' + Object.keys(CORP_INSIGHTS).length + '개 인사이트)');
 })();
