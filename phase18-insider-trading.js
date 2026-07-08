@@ -156,15 +156,37 @@
     return null;
   }
 
-    async function callAPI(corpCode){
+      async function callAPI(corpCode){
     const key = getApiKey();
     if(!key) throw new Error('DART API 키가 없습니다');
-    const url = 'https://opendart.fss.or.kr/api/elestock.json?crtfc_key=' + key + '&corp_code=' + corpCode;
-    const proxied = 'https://corsproxy.io/?' + encodeURIComponent(url);
-    const res = await fetch(proxied);
-    const data = await res.json();
-    if(data.status !== '000') throw new Error(data.message || 'API 오류');
-    return data.list || [];
+    const target = 'https://opendart.fss.or.kr/api/elestock.json?crtfc_key=' + key + '&corp_code=' + corpCode;
+    
+    const proxies = [
+      'https://corsproxy.io/?' + encodeURIComponent(target),
+      'https://proxy.cors.sh/' + target,
+      'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(target)
+    ];
+    
+    let lastErr = null;
+    for(let i = 0; i < proxies.length; i++){
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(function(){ ctrl.abort(); }, 15000);
+        const res = await fetch(proxies[i], {signal: ctrl.signal});
+        clearTimeout(timer);
+        if(!res.ok){ lastErr = 'HTTP ' + res.status; continue; }
+        const text = await res.text();
+        if(!text.trim().startsWith('{')){ lastErr = 'Non-JSON'; continue; }
+        const data = JSON.parse(text);
+        if(data.status !== '000') throw new Error(data.message || 'API 오류');
+        if(i > 0) console.log('[Phase18] Fallback proxy ' + i + ' succeeded');
+        return data.list || [];
+      } catch(e){
+        lastErr = e.message;
+        if(e.message && e.message.includes('API 오류')) throw e; // API 자체 에러는 즉시 중단
+      }
+    }
+    throw new Error('모든 프록시 실패: ' + lastErr);
   }
 
       function analyze(list){
